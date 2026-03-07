@@ -909,7 +909,7 @@ function renderDashboard() {
                     <p style="color: var(--color-text-muted);">Stay focused on your 90-day outcome.</p>
                 </div>
                 <div style="display: flex; gap: 0.75rem; align-items: center;">
-                    <button class="btn btn-primary btn-sm" id="btn-open-quick-sale" style="display: flex; align-items: center; gap: 0.25rem;">
+                    <button class="btn btn-primary btn-sm btn-open-quick-sale" style="display: flex; align-items: center; gap: 0.25rem;">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                         Log a Sale
                     </button>
@@ -940,7 +940,10 @@ function renderDashboard() {
                                     </span>
                                     <span style="font-size: 0.9rem; font-weight: 500; color: var(--color-primary-dark);">${coach.actionLabel}</span>
                                 </div>
-                                <a href="${coach.actionHash}" class="btn btn-sm" style="background: white; border: 1px solid var(--color-border); color: var(--color-black); white-space: nowrap;">Go →</a>
+                                ${coach.actionOpenModal ?
+                    `<button class="btn btn-sm btn-open-quick-sale" style="background: white; border: 1px solid var(--color-border); color: var(--color-black); white-space: nowrap;">Go →</button>` :
+                    `<a href="${coach.actionHash}" class="btn btn-sm" style="background: white; border: 1px solid var(--color-border); color: var(--color-black); white-space: nowrap;">Go →</a>`
+                }
                             </div>
                         </div>
                     </div>
@@ -1294,8 +1297,8 @@ function getCoachingEngineData(store, activePlan, revInsights) {
         return {
             title: "Celebration",
             message: `Great job, ${userName}! You've completed your Daily 3. Step away from the desk and recharge, or log a sale if you closed one today!`,
-            actionLabel: "Log revenue",
-            actionHash: "#/revenue",
+            actionLabel: "Log a sale",
+            actionOpenModal: true,
             color: "#00C2CB",
             icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>`
         };
@@ -1390,14 +1393,16 @@ function dashboardAttachEvents() {
 
     // Quick Sale Modal Logic
     const modal = document.getElementById('quick-sale-modal');
-    const btnOpen = document.getElementById('btn-open-quick-sale');
+    const openBtns = document.querySelectorAll('.btn-open-quick-sale');
     const btnClose = document.getElementById('btn-close-quick-sale');
     const form = document.getElementById('quick-sale-form');
 
-    if (btnOpen && modal && btnClose) {
-        btnOpen.addEventListener('click', () => {
-            modal.style.display = 'flex';
-            document.getElementById('qs-amount').focus();
+    if (modal && btnClose) {
+        openBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                modal.style.display = 'flex';
+                document.getElementById('qs-amount').focus();
+            });
         });
 
         const closeModal = () => { modal.style.display = 'none'; };
