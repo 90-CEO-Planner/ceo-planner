@@ -36,11 +36,11 @@ function router() {
 
     appContainer.innerHTML = ''; // Clear current content
     
-    // Check if user has completed setup
+    // Check if user has completed setup (only if authenticated)
     const store = getStore();
     const isSetupComplete = store.goals && store.goals.focus !== '';
 
-    if (!isSetupComplete && hash !== '#/' && hash !== '#/wizard') {
+    if (!isSetupComplete && hash !== '#/' && hash !== '#/wizard' && hash !== '#/login' && hash !== '#/signup') {
         window.location.hash = '#/';
         return;
     }
