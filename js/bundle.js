@@ -561,7 +561,7 @@ Instructions:
     return prompt;
 }
 
-export async function generateAIResponse(messageHistory) {
+async function generateAIResponse(messageHistory) {
     const apiKey = localStorage.getItem('ceo_openai_key');
     
     if (!apiKey) {

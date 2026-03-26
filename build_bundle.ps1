@@ -32,6 +32,7 @@ foreach ($file in $files) {
         $content = $content -replace '(?m)^import\s+.*$(?:\r?\n)?', ''
         $content = $content -replace '(?m)^export\s+default\s+', ''
         $content = $content -replace '(?m)^export\s+function\s+', 'function '
+        $content = $content -replace '(?m)^export\s+async\s+function\s+', 'async function '
         $content = $content -replace '(?m)^export\s+const\s+', 'const '
         $content = $content -replace '(?m)^export\s+let\s+', 'let '
         $content = $content -replace '(?m)^export\s+\{.*\}\s*;?(?:\r?\n)?', ''
