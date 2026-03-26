@@ -518,6 +518,92 @@ function seedMockData() {
 }
 
 
+// --- js\aiService.js ---
+// aiService.js
+
+// Prepares the hyper-contextual system prompt by scraping the entire database
+function buildSystemPrompt() {
+    const store = getStore();
+    
+    const bizName = store.profile?.businessName || "their company";
+    const ceoName = store.profile?.name || "CEO";
+    const focus = store.goals?.focus || "None set yet";
+    const outcome = store.goals?.outcome || "None set yet";
+    const bottleneck = store.profile?.bottleneck || "Unknown";
+    const model = store.profile?.businessModel || "Unknown";
+    const phase = store.profile?.stage || "Unknown";
+    
+    const priorities = store.goals?.priorities || [];
+    
+    let totalRev = 0;
+    if (store.revenue && store.revenue.entries) {
+        totalRev = store.revenue.entries.reduce((sum, entry) => sum + (parseFloat(entry.amount) || 0), 0);
+    }
+    const revGoal = store.revenue?.quarterlyGoal || 0;
+
+    let prompt = `You are an elite, highly-paid Chief Operating Officer and Executive Coach. You speak directly, concisely, and with extreme strategic clarity. You do NOT use fluffy language, emojis, or polite pleasantries. You get straight to the point.
+You are advising ${ceoName}, the CEO of ${bizName}.
+
+Here is their exact, real-time business context:
+- Business Model: ${model} (${phase} stage)
+- #1 Current Bottleneck: ${bottleneck}
+- Primary 90-Day Goal: ${focus}
+- Desired 90-Day Outcome: ${outcome}
+- Quarterly Revenue: $${totalRev.toLocaleString()} out of $${revGoal.toLocaleString()} goal.
+- Current Active Priorities: ${priorities.join(', ') || 'None set'}.
+
+Instructions:
+1. Base all of your advice strictly on the exact context provided above.
+2. If they are behind on revenue, aggressively pivot them to sales/marketing actions.
+3. If they complain about being overwhelmed, tell them to delete tasks that do not serve their primary 90-Day Goal.
+4. Keep all responses under 3 paragraphs. Use bullet points if necessary. NEVER provide generic business advice; always tie it back to their specific bottleneck or revenue target.`;
+
+    return prompt;
+}
+
+export async function generateAIResponse(messageHistory) {
+    const apiKey = localStorage.getItem('ceo_openai_key');
+    
+    if (!apiKey) {
+        throw new Error("API_KEY_MISSING");
+    }
+
+    // Inject the dynamic system prompt as the absolute baseline truth
+    const messages = [
+        { role: 'system', content: buildSystemPrompt() },
+        ...messageHistory
+    ];
+
+    try {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+                model: 'gpt-4o-mini',
+                messages: messages,
+                temperature: 0.7,
+                max_tokens: 500
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.error) {
+            console.error("OpenAI API Error:", data.error);
+            throw new Error(data.error.message);
+        }
+
+        return data.choices[0].message.content;
+    } catch (error) {
+        console.error("Generative AI Service Failed:", error);
+        throw error;
+    }
+}
+
+
 // --- js\components\nav.js ---
 // nav.js
 
@@ -3120,6 +3206,18 @@ function renderSettings() {
 
             </div>
 
+            <h3 class="mb-4 pt-4" style="border-top: 1px solid var(--color-border); color: #10a37f; display: flex; align-items: center; gap: 0.5rem;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                Generative AI Integration
+            </h3>
+            <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1rem;">
+                Connect your OpenAI API key to unlock the Level 3 AI Coach. Your key is stored <b>exclusively locally</b> in this browser and never sent to our database.
+            </p>
+            <div class="form-group">
+                <label>ChatGPT API Key</label>
+                <input type="password" id="set-openai-key" class="form-input" placeholder="sk-..." value="${localStorage.getItem('ceo_openai_key') || ''}">
+            </div>
+
             <div class="mt-8 flex justify-end">
                 <button type="submit" class="btn btn-primary">Save Preferences</button>
             </div>
@@ -3209,6 +3307,23 @@ function settingsAttachEvents() {
             const p1 = document.getElementById('set-p1').value;
             const p2 = document.getElementById('set-p2').value;
             const p3 = document.getElementById('set-p3').value;
+
+            const planningDay = document.getElementById('planning-day-select').value;
+            const bottleneck = document.getElementById('set-bottleneck').value;
+            const strategyMode = document.getElementById('set-strategy').value;
+
+            updateProfile({
+                name: name,
+                businessName: biz,
+                logo: finalLogo,
+                bottleneck: bottleneck,
+                strategyMode: strategyMode,
+                reminderTimes: newReminders,
+                planningDay: planningDay
+            });
+
+            const openaiKey = document.getElementById('set-openai-key').value;
+            localStorage.setItem('ceo_openai_key', openaiKey);
 
             updateGoals({
                 focus: focus,
@@ -3362,134 +3477,80 @@ function quarterResetAttachEvents() {
 // --- js\screens\coach.js ---
 // coach.js
 
-function renderCoach() {
-    window.setScreenModule({ attachEvents: coachAttachEvents });
-    const store = getStore();
+function renderMessage(role, content) {
+    const isAi = role === 'assistant';
+    const bg = isAi ? 'white' : 'var(--color-primary)';
+    const color = isAi ? 'var(--color-text-main)' : 'white';
+    const align = isAi ? 'flex-start' : 'flex-end';
+    const radius = isAi ? '16px 16px 16px 4px' : '16px 16px 4px 16px';
+    const border = isAi ? '1px solid var(--color-border)' : 'none';
 
-    // Generate AI Insights
-    const insight = generateInsights(store);
+    // Parse markdown (simple bold/breaks for MVP)
+    let formattedContent = content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>');
 
     return `
-        ${renderNav()}
-        <div class="main-content" style="max-width: 800px;">
-            <div style="margin-bottom: 2rem;">
-                <h2>CEO Coach & Insights</h2>
-                <p style="color: var(--color-text-muted);">AI-powered analysis and decision filtering based on your recent activity.</p>
-            </div>
-
-            <!-- CEO Insight Engine -->
-            <div class="card mb-8" style="border-top: 4px solid var(--color-primary);">
-                <div class="flex items-center gap-2 mb-4">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
-                    <h3 style="margin: 0; display: flex; align-items: center;">
-                        Weekly CEO Insight
-                        ${renderTooltip("Identifies the area most likely slowing your progress right now.", "Solving the right problem is faster than doing more work. If you have a bottleneck, a CEO stops and fixes the pipe before pouring more water.")}
-                    </h3>
-                </div>
-                <div style="background: var(--color-bg-main); padding: 1.5rem; border-radius: var(--radius-md); font-size: 1.05rem; line-height: 1.6; color: var(--color-black);">
-                    ${insight}
-                </div>
-            </div>
-
-            <!-- Decision Filter -->
-            <div class="card mb-8" style="border-top: 4px solid var(--color-secondary);">
-                <div class="flex items-center gap-2 mb-4">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--color-secondary-dark)" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
-                    <h3 style="margin: 0; display: flex; align-items: center;">
-                        CEO vs Busy Work
-                        ${renderTooltip("A simple filter to test if a new idea or task is worth doing.", "We all have 'squirrel!' moments. Before you drop everything to launch a new funnel or switch platforms, run it through this filter.")}
-                    </h3>
-                </div>
-                <p style="color: var(--color-text-muted); font-size: 0.9rem; margin-bottom: 1.5rem;">Should I focus on this? Paste a new idea below to evaluate it against your 90-day goal and current priorities.</p>
-                
-                <form id="decision-filter-form">
-                    <div class="form-group">
-                        <textarea class="form-textarea" id="idea-input" placeholder="e.g., Launch a new mini course, start a TikTok channel..." required></textarea>
-                    </div>
-                    <button type="submit" class="btn btn-secondary mt-4">Evaluate Idea</button>
-                </form>
-
-                <div id="decision-result" class="mt-6" style="display: none; background: var(--color-secondary-light); padding: 1.5rem; border-radius: var(--radius-md); border-left: 4px solid var(--color-secondary);">
-                    <div class="flex items-center gap-2 mb-2">
-                        <span style="font-weight: 600; color: var(--color-secondary-dark);">Verdict:</span>
-                        <span id="alignment-score" style="font-weight: 700; padding: 0.25rem 0.75rem; border-radius: 12px; font-size: 0.85rem;"></span>
-                    </div>
-                    <p id="alignment-explanation" style="font-size: 0.95rem; color: var(--color-text-main); margin-top: 0.5rem; line-height: 1.5;"></p>
-                </div>
-            </div>
-
-            <!-- Current Strategy Mode -->
-            <div class="card" style="background-color: var(--color-primary-light); border-color: var(--color-primary-light);">
-                 <p style="font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-primary-dark); font-weight: 600; margin-bottom: var(--spacing-sm);">Active Strategy Mode</p>
-                 <h4 style="color: var(--color-black); margin-bottom: 0.5rem;">${store.profile?.strategyMode || 'Standard'}</h4>
-                 <p style="font-size: 0.9rem; color: var(--color-text-main);">Your planning prompts and metrics are currently customized for this strategy.</p>
-            </div>
+        <div style="align-self: ${align}; max-width: 85%; background: ${bg}; color: ${color}; padding: 1rem 1.25rem; border-radius: ${radius}; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: ${border}; line-height: 1.5; font-size: 0.95rem;">
+            ${formattedContent}
         </div>
     `;
 }
 
-function generateInsights(store) {
-    const reviews = store.reviews || [];
-    const plans = store.weeklyPlans || [];
-    const name = store.profile?.name || 'CEO';
-    const bottleneck = store.profile?.bottleneck || '';
+function renderCoach() {
+    window.setScreenModule({ attachEvents: coachAttachEvents });
 
-    let baseGreeting = `Hey ${name}, let's look at your momentum. `;
+    const hasKey = !!localStorage.getItem('ceo_openai_key');
 
-    if (reviews.length < 2 && plans.length < 2) {
-        return baseGreeting + "Complete a few more weekly plans and Friday reviews so I can start learning your working patterns and generating personalized insights.";
+    if (!hasKey) {
+        return `
+            ${renderNav()}
+            <div class="main-content" style="max-width: 800px;">
+                <div class="card text-center" style="max-width: 500px; margin: 4rem auto; padding: 3rem; border: dashed 2px var(--color-border); box-shadow: none;">
+                    <div style="background: #E0E7FF; width: 64px; height: 64px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 1.5rem auto;">
+                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                    </div>
+                    <h2 style="margin-bottom: 1rem; color: var(--color-black);">Unlock the General AI Advisor</h2>
+                    <p style="color: var(--color-text-muted); margin-bottom: 2rem; line-height: 1.5;">The conversational CEO Advisor requires an OpenAI API Key to securely process and analyze your local strategy database.</p>
+                    <a href="#/settings" class="btn btn-primary" style="display: inline-block;">Go to Settings</a>
+                </div>
+            </div>
+        `;
     }
 
-    // Logic 1: Check Follow-ups vs Visibility (Sales Bottleneck)
-    const recentPlans = plans.slice(-3); // Last 3 plans
-    let visibilityCount = 0;
-    let followUpCount = 0;
-    let revActionCount = 0;
+    return `
+        ${renderNav()}
+        <div class="main-content" style="max-width: 900px; height: 100vh; padding: 1rem 2rem; display: flex; flex-direction: column;">
+            
+            <div style="display: flex; flex-direction: column; flex: 1; background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); overflow: hidden; border: 1px solid var(--color-border);">
+                
+                <!-- Header -->
+                <div style="padding: 1rem 1.5rem; border-bottom: 1px solid var(--color-border); display: flex; align-items: center; justify-content: space-between; background: #F8FAFC;">
+                    <div style="display: flex; align-items: center; gap: 1rem;">
+                        <div style="width: 40px; height: 40px; border-radius: 50%; background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark)); display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; box-shadow: 0 4px 6px -1px rgba(78, 14, 255, 0.3);">AI</div>
+                        <div>
+                            <h3 style="margin:0; font-size: 1.1rem; color: var(--color-black);">CEO Advisor</h3>
+                            <p style="margin:0; font-size: 0.8rem; color: var(--color-text-muted);">Powered by GPT-4o-mini | Fully Context-Aware</p>
+                        </div>
+                    </div>
+                    <button id="clear-chat-btn" class="btn btn-outline" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;">Clear Chat</button>
+                </div>
 
-    recentPlans.forEach(p => {
-        if (p.visibilityAction && p.visibilityAction.length > 5) visibilityCount++;
-        if (p.followUps && p.followUps.length > 5 && !p.followUps.toLowerCase().includes('none')) followUpCount++;
-        if (p.revenueAction && p.revenueAction.length > 5) revActionCount++;
-    });
+                <!-- Chat Area -->
+                <div id="chat-messages" style="flex: 1; overflow-y: auto; padding: 1.5rem; display: flex; flex-direction: column; gap: 1.5rem; background: #F8FAFC;">
+                    <!-- Messages will be injected here -->
+                </div>
 
-    if (visibilityCount >= 2 && followUpCount === 0) {
-        let msg = baseGreeting + "I'm noticing you've had strong visibility over the last few weeks, which is fantastic! However, I don't see many follow-ups planned. ";
-        if (bottleneck.includes('Sales')) {
-            msg += "Since you mentioned sales conversion is a bottleneck for you right now, I highly recommend scheduling two follow-up conversations this week to convert that generated interest into revenue.";
-        } else {
-            msg += "Consider scheduling two follow-up conversations this week to ensure that visibility turns into revenue.";
-        }
-        return msg;
-    }
-
-    if (revActionCount < 2 && recentPlans.length >= 3) {
-        return baseGreeting + "I noticed that revenue-generating actions haven't been your main focus for the past couple of weeks. As a CEO, protecting your revenue time is crucial. Let's make direct sales conversations or a promotional push your top priority this week.";
-    }
-
-    // Logic 2: Review difficulty analysis (Delivery/Time bottleneck)
-    const recentReviews = reviews.slice(-3);
-    let difficultMentionsEmailOrContent = false;
-    recentReviews.forEach(r => {
-        if (r.difficult) {
-            const difficult = r.difficult.toLowerCase();
-            if (difficult.includes('email') || difficult.includes('content') || difficult.includes('writing') || difficult.includes('post')) {
-                difficultMentionsEmailOrContent = true;
-            }
-        }
-    });
-
-    if (difficultMentionsEmailOrContent) {
-        let msg = baseGreeting + "You've consistently mentioned content creation or email writing as a drain in your recent Friday reviews. ";
-        if (bottleneck.includes('Time')) {
-            msg += "Since time and delivery are already tight for you, consider batch-creating your content, lowering your posting volume, or dedicating a specific 90-minute block early in the week to get it out of the way.";
-        } else {
-            msg += "Consider lowering the volume, or dedicating a specific focused block early in the week to get it out of the way before it drains your energy.";
-        }
-        return msg;
-    }
-
-    // Default positive reinforcement
-    return baseGreeting + "You are consistently logging your plans and protecting your CEO time—well done! Keep focusing closely on your revenue-generating actions and notice what brings you energy this week.";
+                <!-- Input Area -->
+                <div style="padding: 1rem 1.5rem; border-top: 1px solid var(--color-border); background: white;">
+                    <form id="chat-form" style="display: flex; gap: 0.75rem;">
+                        <input type="text" id="chat-input" class="form-input" placeholder="Ask for strategy, complain about bottlenecks, or get advice..." style="flex: 1; border-radius: 20px; padding-left: 1.25rem;" autocomplete="off" required>
+                        <button type="submit" class="btn btn-primary" id="chat-submit" style="border-radius: 20px; padding: 0.75rem 1.5rem;">
+                            Send
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    `;
 }
 
 function coachAttachEvents() {
@@ -3497,52 +3558,81 @@ function coachAttachEvents() {
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
     document.getElementById('nav-coach')?.classList.add('active');
 
-    const form = document.getElementById('decision-filter-form');
-    if (form) {
-        form.addEventListener('submit', (e) => {
-            e.preventDefault();
-            const idea = document.getElementById('idea-input').value.toLowerCase();
-            const store = getStore();
-            const focus = (store.goals?.focus || '').toLowerCase();
-            const priorities = (store.goals?.priorities || []).join(' ').toLowerCase();
-            const mode = (store.profile?.strategyMode || '').toLowerCase();
+    const messagesContainer = document.getElementById('chat-messages');
+    const form = document.getElementById('chat-form');
+    const input = document.getElementById('chat-input');
+    const submitBtn = document.getElementById('chat-submit');
+    const clearBtn = document.getElementById('clear-chat-btn');
 
-            let score = "Busy Work";
-            let color = "#B42318";
-            let bg = "#FEE4E2";
-            let explanation = "This idea does not strongly align with your current 90-day focus or priorities. It may be a distraction. Put it in an idea parking lot for the next quarter.";
+    if (!messagesContainer || !form) return;
 
-            // Basic AI simulation logic using keyword matching
-            const ideaWords = idea.split(' ').filter(w => w.length > 3);
-            let matchCount = 0;
-
-            ideaWords.forEach(word => {
-                if (focus.includes(word) || priorities.includes(word) || mode.includes(word)) {
-                    matchCount++;
-                }
-            });
-
-            if (matchCount >= 2 || (idea.includes('course') && mode.includes('offer')) || (idea.includes('post') && mode.includes('audience'))) {
-                score = "Strategic";
-                color = "#027A48";
-                bg = "#E1FDF4";
-                explanation = "This idea strongly supports your current 90-day focus and aligns with your Strategy Mode. It's a solid action to add to your weekly plan.";
-            } else if (matchCount === 1 || idea.includes('email') || idea.includes('client')) {
-                score = "Busy Work";
-                color = "#B54708";
-                bg = "#FEF0C7";
-                explanation = "This idea has some alignment with your goals, but might be secondary to your Top 3 Priorities. Only proceed if you have extra capacity this week.";
+    if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+            if (confirm("Clear your working chat history?")) {
+                window.ceoChatHistory = [];
+                coachAttachEvents();
             }
-
-            const scoreEl = document.getElementById('alignment-score');
-            scoreEl.textContent = score;
-            scoreEl.style.color = color;
-            scoreEl.style.backgroundColor = bg;
-
-            document.getElementById('alignment-explanation').textContent = explanation;
-            document.getElementById('decision-result').style.display = 'block';
         });
     }
+
+    // Load initial greeting if history is empty
+    if (!window.ceoChatHistory || window.ceoChatHistory.length === 0) {
+        window.ceoChatHistory = [];
+        messagesContainer.innerHTML = renderMessage('assistant', "Hello. I have completely reviewed your 90-day trajectory, revenue pacing, and your primary bottlenecks. **What is standing in your way right now?**");
+    } else {
+        messagesContainer.innerHTML = window.ceoChatHistory.map(m => renderMessage(m.role, m.content)).join('');
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const text = input.value.trim();
+        if (!text) return;
+
+        // Add user message to history and UI
+        window.ceoChatHistory.push({ role: 'user', content: text });
+        messagesContainer.innerHTML += renderMessage('user', text);
+        
+        input.value = '';
+        input.disabled = true;
+        submitBtn.disabled = true;
+        submitBtn.innerText = '...';
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+        // Add loading skeleton
+        const loadingId = 'loading-' + Date.now();
+        messagesContainer.innerHTML += \`
+            <div id="\${loadingId}" style="align-self: flex-start; background: white; padding: 1rem 1.25rem; border-radius: 16px 16px 16px 4px; border: 1px solid var(--color-border); color: var(--color-text-muted);">
+                <i>Thinking...</i>
+            </div>
+        \`;
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+        try {
+            // Call aiService (global namespace from bundle)
+            const aiResponse = await generateAIResponse(window.ceoChatHistory);
+            
+            // Remove loading
+            const loader = document.getElementById(loadingId);
+            if(loader) loader.remove();
+
+            // Add AI response to history and UI
+            window.ceoChatHistory.push({ role: 'assistant', content: aiResponse });
+            messagesContainer.innerHTML += renderMessage('assistant', aiResponse);
+        } catch (err) {
+            const loader = document.getElementById(loadingId);
+            if(loader) loader.remove();
+            messagesContainer.innerHTML += renderMessage('assistant', \`**Network Protocol Error:** \${err.message}. Please verify your API key in Settings.\`);
+            // Pop the failed user message off history to prevent corrupted conversations
+            window.ceoChatHistory.pop();
+        } finally {
+            input.disabled = false;
+            submitBtn.disabled = false;
+            submitBtn.innerText = 'Send';
+            input.focus();
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+    });
 }
 
 
