@@ -1,4 +1,5 @@
 $files = @(
+    "js\supabaseClient.js",
     "js\store.js",
     "js\components\nav.js",
     "js\components\tooltip.js",
@@ -14,6 +15,7 @@ $files = @(
     "js\screens\coach.js",
     "js\screens\monthlyReview.js",
     "js\screens\mondayPlan.js",
+    "js\screens\auth.js",
     "js\app.js"
 )
 

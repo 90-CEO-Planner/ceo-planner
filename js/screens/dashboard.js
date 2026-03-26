@@ -1,4 +1,4 @@
-import { getStore, getRevenueInsights, addRevenueEntry } from '../store.js';
+import { getStore, getRevenueInsights, addRevenueEntry, updateDailyLog } from '../store.js';
 import { renderNav } from '../components/nav.js';
 import { renderTooltip } from '../components/tooltip.js';
 
@@ -40,7 +40,7 @@ export function renderDashboard() {
                     <p style="color: var(--color-text-muted);">Stay focused on your 90-day outcome.</p>
                 </div>
                 <div style="display: flex; gap: 0.75rem; align-items: center;">
-                    <button class="btn btn-primary btn-sm" id="btn-open-quick-sale" style="display: flex; align-items: center; gap: 0.25rem;">
+                    <button class="btn btn-primary btn-sm btn-open-quick-sale" style="display: flex; align-items: center; gap: 0.25rem;">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                         Log a Sale
                     </button>
@@ -71,7 +71,10 @@ export function renderDashboard() {
                                     </span>
                                     <span style="font-size: 0.9rem; font-weight: 500; color: var(--color-primary-dark);">${coach.actionLabel}</span>
                                 </div>
-                                <a href="${coach.actionHash}" class="btn btn-sm" style="background: white; border: 1px solid var(--color-border); color: var(--color-black); white-space: nowrap;">Go →</a>
+                                ${coach.actionOpenModal ?
+                    `<button class="btn btn-sm btn-open-quick-sale" style="background: white; border: 1px solid var(--color-border); color: var(--color-black); white-space: nowrap;">Go →</button>` :
+                    `<a href="${coach.actionHash}" class="btn btn-sm" style="background: white; border: 1px solid var(--color-border); color: var(--color-black); white-space: nowrap;">Go →</a>`
+                }
                             </div>
                         </div>
                     </div>
@@ -266,21 +269,22 @@ export function renderDashboard() {
         return genericOptions[Math.floor(Math.random() * genericOptions.length)];
     }
 
-    // Use the explicit Daily 3 from the Monday Plan if available, otherwise fallback to AI generated tasks based on priorities & weekly plan.
-    let displayTasks = generateDaily3([0, 1, 2].map(i => g.priorities[i] || 'Color'), activePlan);
+    // Use the explicit Daily 3 from the actual day if available, otherwise fallback to AI generated tasks based on priorities & weekly plan.
+    const todayStrDash = new Date().toISOString().split('T')[0];
+    let todaysLog = store.dailyLogs[todayStrDash];
 
-    if (activePlan && activePlan.daily3 && activePlan.daily3.length === 3) {
-        displayTasks = activePlan.daily3;
-        // If they left it blank, fallback to generated priority step
-        const fallbacks = generateDaily3([0, 1, 2].map(i => g.priorities[i] || ''), activePlan);
-        displayTasks = displayTasks.map((t, i) => t.trim() ? t : fallbacks[i]);
+    if (!todaysLog) {
+        const currentPriorities = activePlan && activePlan.topActions ? activePlan.topActions : g.priorities;
+        let generatedTasks = generateDaily3([0, 1, 2].map(i => currentPriorities[i] || ''), activePlan);
+        todaysLog = generatedTasks.map(t => ({ text: t, done: false }));
+        window._tempGeneratedTodaysLog = todaysLog; // to be saved on attachEvents
     }
 
-    displayTasks.forEach((taskText, i) => {
+    todaysLog.forEach((taskObj, i) => {
         dailyTasksHtml += `
             <label style="display: flex; align-items: center; gap: 0.75rem; cursor: pointer; padding: 0.5rem; border-radius: var(--radius-sm); transition: background-color var(--transition-fast);" class="dailyhover">
-                <input type="checkbox" id="daily-task-${i}" style="width: 18px; height: 18px; accent-color: var(--color-primary);">
-                <span style="font-size: 0.95rem; font-weight: 500;">${taskText}</span>
+                <input type="checkbox" id="daily-task-${i}" ${taskObj.done ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: var(--color-primary);">
+                <span style="font-size: 0.95rem; font-weight: 500; ${taskObj.done ? 'text-decoration: line-through; color: var(--color-text-muted);' : ''}">${taskObj.text}</span>
             </label>
         `;
     });
@@ -298,13 +302,13 @@ export function renderDashboard() {
                  </div>
             </div>
 
-            <!--CEO Commitment-- >
+            <!--CEO Commitment-->
             <div class="card" style="background-color: var(--color-primary-light); border-color: var(--color-primary-light); text-align: center;">
                 <p style="font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-primary-dark); font-weight: 600; margin-bottom: var(--spacing-sm);">${store.profile?.name ? store.profile.name + "'s" : "Your"} Commitment</p>
                 <p style="font-size: 1.125rem; font-family: var(--font-heading); font-style: italic; color: var(--color-black);">"${g.statement || "I commit to leading with confidence."}"</p>
             </div>
 
-            <!--Quick Actions-- >
+            <!--Quick Actions-->
             <div class="mt-8 flex justify-center gap-4">
                 <a href="#/review" class="btn btn-secondary">Do Friday Review</a>
             </div>
@@ -314,10 +318,10 @@ export function renderDashboard() {
             </div>
         </div >
 
-        < !--Quick Sale Modal-- >
-            <div id="quick-sale-modal" class="modal-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 100; align-items: center; justify-content: center;">
-                <div class="card" style="width: 100%; max-width: 400px; padding: 2rem; position: relative;">
-                    <button id="btn-close-quick-sale" style="position: absolute; top: 1rem; right: 1rem; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--color-text-muted);">&times;</button>
+        <!--Quick Sale Modal-->
+        <div id="quick-sale-modal" class="modal-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 100; align-items: center; justify-content: center;">
+            <div class="card" style="width: 100%; max-width: 400px; padding: 2rem; position: relative;">
+                <button id="btn-close-quick-sale" style="position: absolute; top: 1rem; right: 1rem; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--color-text-muted);">&times;</button>
                     <h3 style="margin-bottom: 1.5rem;">Log a Sale</h3>
                     <form id="quick-sale-form">
                         <div class="form-group">
@@ -364,13 +368,60 @@ function getCoachingEngineData(store, activePlan, revInsights) {
     // Check Daily Tasks completion
     const todayStr = new Date().toISOString().split('T')[0];
     let allDailyChecked = true;
-    for (let i = 0; i < 3; i++) {
-        if (localStorage.getItem(`ceoPlanner_daily_${todayStr}_${i} `) !== 'true') {
-            allDailyChecked = false;
-        }
+    const todaysLog = store.dailyLogs[todayStr];
+    if (!todaysLog || todaysLog.length < 3) {
+        allDailyChecked = false;
+    } else {
+        todaysLog.forEach(t => { if (!t.done) allDailyChecked = false; });
     }
 
     // --- State Priority Evaluation ---
+
+    // 0. Quarter Reset Needed (90 days elapsed)
+    if (store.weeklyPlans && store.weeklyPlans.length > 0) {
+        const firstPlanDate = new Date(store.weeklyPlans[0].date);
+        const daysElapsed = Math.floor((Date.now() - firstPlanDate.getTime()) / (1000 * 60 * 60 * 24));
+        if (daysElapsed >= 90) {
+            return {
+                title: "Quarter Complete",
+                message: `You've been executing this plan for ${daysElapsed} days! It's time to run your Quarter Reset, safely archive this data, and set your next 90-day focus.`,
+                actionLabel: "Run Quarter Reset",
+                actionHash: "#/quarter-reset",
+                color: "#111111", // Black
+                icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>`
+            };
+        }
+    }
+
+    // 0.5 Monthly Review Needed
+    // Rule: Prompt during the last 3 days of the month, or the 1st day of the new month
+    const currentDate = new Date();
+    const daysInMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0).getDate();
+    const currentDay = currentDate.getDate();
+    
+    let needsMonthlyReview = false;
+    if (currentDay >= daysInMonth - 2 || currentDay === 1) {
+        const monthlyReviews = store.monthlyReviews || [];
+        const lastMonthly = monthlyReviews.length > 0 
+            ? new Date(monthlyReviews[monthlyReviews.length - 1].date || 0)
+            : null;
+        
+        // If never done or the last one was over 15 days ago (to prevent prompting again)
+        if (!lastMonthly || (currentDate.getTime() - lastMonthly.getTime()) > (15 * 24 * 60 * 60 * 1000)) {
+            needsMonthlyReview = true;
+        }
+    }
+
+    if (needsMonthlyReview) {
+        return {
+            title: "Monthly Strategy Audit",
+            message: `It's the end of the month, ${userName}. Before you sprint into next week, take 10 minutes to run your Monthly CEO Review to identify your bottlenecks and set your strategy.`,
+            actionLabel: "Do Monthly Review",
+            actionHash: "#/monthly-review",
+            color: "#6941C6", // Purple
+            icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>`
+        };
+    }
 
     // 1. Missing weekly plan (Highest Priority early week)
     if (!activePlan && day >= 1 && day <= 3) {
@@ -425,8 +476,8 @@ function getCoachingEngineData(store, activePlan, revInsights) {
         return {
             title: "Celebration",
             message: `Great job, ${userName}! You've completed your Daily 3. Step away from the desk and recharge, or log a sale if you closed one today!`,
-            actionLabel: "Log revenue",
-            actionHash: "#/revenue",
+            actionLabel: "Log a sale",
+            actionOpenModal: true,
             color: "#00C2CB",
             icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>`
         };
@@ -495,17 +546,25 @@ function dashboardAttachEvents() {
         scoreValEl.textContent = 'No Plan';
     }
 
-    // Daily 3 state persistence using UI-level local storage (keys reset daily)
+    // Daily 3 state persistence using the store logic
     const todayStr = new Date().toISOString().split('T')[0];
+    if (window._tempGeneratedTodaysLog) {
+        updateDailyLog(todayStr, window._tempGeneratedTodaysLog);
+        delete window._tempGeneratedTodaysLog;
+    }
+
     [0, 1, 2].forEach(i => {
         const checkbox = document.getElementById(`daily-task-${i}`);
         if (checkbox) {
-            const key = `ceoPlanner_daily_${todayStr}_${i}`;
-            if (localStorage.getItem(key) === 'true') {
-                checkbox.checked = true;
-            }
             checkbox.addEventListener('change', (e) => {
-                localStorage.setItem(key, e.target.checked);
+                const updatedStore = getStore();
+                let log = updatedStore.dailyLogs[todayStr] || [];
+                if (log[i]) {
+                    log[i].done = e.target.checked;
+                    updateDailyLog(todayStr, log);
+                    // Rerender dashboard to apply strikethrough styling and coach engine updates safely
+                    window.dispatchEvent(new Event('hashchange'));
+                }
             });
         }
     });
@@ -521,14 +580,17 @@ function dashboardAttachEvents() {
 
     // Quick Sale Modal Logic
     const modal = document.getElementById('quick-sale-modal');
-    const btnOpen = document.getElementById('btn-open-quick-sale');
+    const openBtns = document.querySelectorAll('.btn-open-quick-sale');
     const btnClose = document.getElementById('btn-close-quick-sale');
     const form = document.getElementById('quick-sale-form');
 
-    if (btnOpen && modal && btnClose) {
-        btnOpen.addEventListener('click', () => {
-            modal.style.display = 'flex';
-            document.getElementById('qs-amount').focus();
+    if (modal && btnClose) {
+        openBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                modal.style.display = 'flex';
+                const input = document.getElementById('qs-amount');
+                if (input) input.focus();
+            });
         });
 
         const closeModal = () => { modal.style.display = 'none'; };
@@ -538,22 +600,24 @@ function dashboardAttachEvents() {
             if (e.target === modal) closeModal();
         });
 
-        form.addEventListener('submit', (e) => {
-            e.preventDefault();
-            const amount = parseFloat(document.getElementById('qs-amount').value);
-            const source = document.getElementById('qs-source').value;
-            const offer = document.getElementById('qs-offer').value;
-            const dateStr = document.getElementById('qs-date').value;
+        if (form) {
+            form.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const amount = parseFloat(document.getElementById('qs-amount').value);
+                const source = document.getElementById('qs-source').value;
+                const offer = document.getElementById('qs-offer').value;
+                const dateStr = document.getElementById('qs-date').value;
 
-            addRevenueEntry({
-                amount,
-                source,
-                offer,
-                date: new Date(dateStr).toISOString(),
-                notes: ''
+                addRevenueEntry({
+                    amount,
+                    source,
+                    offer,
+                    date: new Date(dateStr).toISOString(),
+                    notes: ''
+                });
+                closeModal();
+                window.location.reload();
             });
-            closeModal();
-            window.location.reload();
-        });
+        }
     }
 }

@@ -47,6 +47,29 @@ export function renderSettings() {
                 </div>
             </div>
 
+            <!-- CEO Profiling -->
+            <h4 class="mb-4 pt-4" style="border-top: 1px solid var(--color-border); color: var(--color-primary-dark);">CEO Business Profile</h4>
+            <div class="form-group mb-4">
+                <label class="form-label" style="font-weight: 600;">Top Business Bottleneck</label>
+                <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">The AI Coach uses this to prioritize its Friday Advice.</p>
+                <select id="set-bottleneck" class="form-input" style="padding: 0.75rem;">
+                    <option value="Sales Conversion" ${store.profile.bottleneck === 'Sales Conversion' ? 'selected' : ''}>Sales Conversion (Traffic is high, Sales are low)</option>
+                    <option value="Audience Size" ${store.profile.bottleneck === 'Audience Size' ? 'selected' : ''}>Audience Size (Offers are great, Visibility is low)</option>
+                    <option value="Time & Delivery" ${store.profile.bottleneck === 'Time & Delivery' || !store.profile.bottleneck ? 'selected' : ''}>Time / Delivery (Overworked & Burnt out)</option>
+                </select>
+            </div>
+
+            <div class="form-group mb-6">
+                <label class="form-label" style="font-weight: 600;">CEO Strategy Mode</label>
+                <p style="color: #6941C6; font-size: 0.85rem; margin-bottom: 0.5rem;"><strong>Important:</strong> Changing this completely rewrites the AI Planning Assistant and Smart Prompts to focus on this strict trajectory.</p>
+                <select id="set-strategy" class="form-input" style="padding: 0.75rem;">
+                    <option value="First Sale Sprint" ${store.profile.strategyMode === 'First Sale Sprint' ? 'selected' : ''}>First Sale Sprint (Focus: Direct Outreach & Fast Cash)</option>
+                    <option value="Offer Launch Quarter" ${store.profile.strategyMode === 'Offer Launch Quarter' ? 'selected' : ''}>Offer Launch Quarter (Focus: Build Hype & Open Cart)</option>
+                    <option value="Audience Growth" ${store.profile.strategyMode === 'Audience Growth' ? 'selected' : ''}>Audience Growth (Focus: Massive Lead Generation)</option>
+                    <option value="CEO Reset" ${store.profile.strategyMode === 'CEO Reset' || !store.profile.strategyMode ? 'selected' : ''}>CEO Reset (Focus: Systems, Automating & Hiring)</option>
+                </select>
+            </div>
+
             <!-- 90 Day Goals -->
             <h4 class="mb-4 pt-4" style="border-top: 1px solid var(--color-border); color: var(--color-primary-dark);">90-Day Vision</h4>
             <div class="form-group mb-4">
@@ -203,11 +226,15 @@ function settingsAttachEvents() {
             const p2 = document.getElementById('set-p2').value;
             const p3 = document.getElementById('set-p3').value;
             const planningDay = document.getElementById('planning-day-select').value;
+            const bottleneck = document.getElementById('set-bottleneck').value;
+            const strategyMode = document.getElementById('set-strategy').value;
 
             updateProfile({
                 name: name,
                 businessName: biz,
                 logo: finalLogo,
+                bottleneck: bottleneck,
+                strategyMode: strategyMode,
                 reminderTimes: newReminders,
                 planningDay: planningDay
             });

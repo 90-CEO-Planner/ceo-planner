@@ -1,6 +1,6 @@
 // revenue.js
 import { renderNav } from '../components/nav.js';
-import { getStore, updateRevenueSettings, addRevenueEntry, getRevenueInsights } from '../store.js';
+import { getStore, updateRevenueSettings, addRevenueEntry, deleteRevenueEntry, getRevenueInsights } from '../store.js';
 import { renderTooltip } from '../components/tooltip.js';
 
 export function renderRevenue() {
@@ -315,6 +315,8 @@ export function renderRevenue() {
                                    <option value="TikTok">TikTok</option>
                                    <option value="YouTube">YouTube</option>
                                    <option value="Skool Community">Skool Community</option>
+                                   <option value="Refund">Refund</option>
+                                   <option value="Adjustment">Adjustment</option>
                                    <option value="Other">Other</option>
                                </select>
                            </div>
@@ -328,6 +330,27 @@ export function renderRevenue() {
                            </div>
                            <button type="submit" class="btn btn-primary" style="width: 100%;">Log Entry</button>
                        </form>
+                   </div>
+
+                   <!-- Recent Transactions -->
+                   <div class="card mt-6">
+                       <div class="flex justify-between items-center mb-4">
+                           <h3 class="mb-0">Recent Transactions</h3>
+                           <button id="btn-export-revenue" class="btn btn-outline btn-sm" style="font-size: 0.8rem; padding: 0.25rem 0.75rem;">Export to Excel (CSV)</button>
+                       </div>
+                       ${insights.entries.length === 0 ? '<p style="color: var(--color-text-muted); font-size: 0.9rem;">No transactions logged yet.</p>' : `
+                       <div style="display: flex; flex-direction: column; gap: 0.75rem; max-height: 400px; overflow-y: auto; padding-right: 0.5rem;" class="custom-scroll">
+                           ${insights.entries.map(e => `
+                               <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.75rem; border-bottom: 1px solid var(--color-border);">
+                                   <div>
+                                       <span style="font-weight: 600; color: ${parseFloat(e.amount) < 0 ? '#D92D20' : 'var(--color-black)'}; display: block;">$${parseFloat(e.amount).toLocaleString()}</span>
+                                       <span style="font-size: 0.8rem; color: var(--color-text-muted);">${new Date(e.date).toLocaleDateString()} • ${e.source}</span>
+                                   </div>
+                                   <button type="button" class="btn btn-ghost btn-sm btn-delete-revenue" data-id="${e.id}" style="padding: 0.25rem 0.5rem; color: var(--color-text-muted);" title="Delete Entry">🗑️</button>
+                               </div>
+                           `).join('')}
+                       </div>
+                       `}
                    </div>
                 </div>
 
@@ -382,6 +405,62 @@ function revenueAttachEvents() {
                 date: new Date(dateStr).toISOString()
             });
             window.location.reload();
+        });
+    }
+
+    document.querySelectorAll('.btn-delete-revenue').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            if (confirm("Are you sure you want to delete this revenue entry?")) {
+                const id = e.currentTarget.getAttribute('data-id');
+                if (!id || id === 'undefined') {
+                    alert("Error: The exact database ID for this entry is missing.");
+                    return;
+                }
+                const success = deleteRevenueEntry(id);
+                if (success) {
+                    window.location.reload();
+                } else {
+                    alert("Error: Could not find the database entry matching this ID to delete it.");
+                }
+            }
+        });
+    });
+
+    const exportBtn = document.getElementById('btn-export-revenue');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', () => {
+            const insights = getRevenueInsights();
+            const entries = insights.entries || [];
+            if (entries.length === 0) {
+                alert("No revenue transactions to export.");
+                return;
+            }
+            
+            let csvContent = "Date,Amount,Source,Offer,Notes\r\n";
+            entries.forEach(e => {
+                const date = new Date(e.date).toLocaleDateString();
+                const amount = e.amount;
+                const source = (e.source || '').replace(/"/g, '""');
+                const offer = (e.offer || '').replace(/"/g, '""');
+                const notes = (e.notes || '').replace(/"/g, '""');
+                csvContent += `"${date}","${amount}","${source}","${offer}","${notes}"\r\n`;
+            });
+            
+            // Bulletproof cross-browser Blob download
+            const blob = new Blob(["\uFEFF", csvContent], { type: 'text/csv;charset=utf-8' });
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.style.display = 'none';
+            link.href = url;
+            link.download = `CEO_Revenue_Export_${new Date().toISOString().split('T')[0]}.csv`;
+            
+            document.body.appendChild(link);
+            link.click();
+            
+            setTimeout(() => {
+                document.body.removeChild(link);
+                window.URL.revokeObjectURL(url);
+            }, 500);
         });
     }
 

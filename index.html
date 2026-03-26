@@ -33,8 +33,11 @@
             document.body.innerHTML += '<div style="color:red; background:white; position:absolute; top:0; left:0; z-index:9999; padding:20px; border:2px solid red;"><h1>Global Error Caught</h1><p>' + e.message + '</p><p>Line: ' + e.lineno + '</p><p>Col: ' + e.colno + '</p><pre>' + (e.error ? e.error.stack : '') + '</pre></div>';
         });
     </script>
-    <!-- JS Entry Point -->
-    <script src="./js/bundle.js"></script>
+    <!-- Supabase SDK -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+    <!-- Main App Logic -->
+    <script src="./js/bundle.js" defer></script>
 </body>
 
 </html>

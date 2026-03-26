@@ -1,5 +1,5 @@
-// mondayPlan.js
 import { getStore, addWeeklyPlan, getRevenueInsights } from '../store.js';
+import { updateDailyLog } from '../store.js';
 
 let mondayStep = 1;
 const MONDAY_TOTAL_STEPS = 5;
@@ -309,6 +309,11 @@ function mondayPlanAttachEvents() {
 
             // 2. Save it
             addWeeklyPlan(newPlan);
+
+            // 2.5 Save the specific tasks for Monday immediately into the daily log
+            const todayStr = new Date().toISOString().split('T')[0];
+            const cleanTasks = mondayPlanData.daily3.map(t => ({ text: t, done: false }));
+            updateDailyLog(todayStr, cleanTasks);
 
             // 3. Reset internal state for next week
             mondayStep = 1;

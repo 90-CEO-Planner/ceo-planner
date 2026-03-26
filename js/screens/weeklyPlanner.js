@@ -15,9 +15,9 @@ export function renderPlanner() {
     }
 
     const win = activePlan ? activePlan.winCondition : '';
-    const p1 = activePlan && activePlan.topActions ? activePlan.topActions[0] : '';
-    const p2 = activePlan && activePlan.topActions ? activePlan.topActions[1] : '';
-    const p3 = activePlan && activePlan.topActions ? activePlan.topActions[2] : '';
+    const p1 = activePlan && activePlan.topActions ? (activePlan.topActions[0] || '') : (store.goals?.priorities?.[0] || '');
+    const p2 = activePlan && activePlan.topActions ? (activePlan.topActions[1] || '') : (store.goals?.priorities?.[1] || '');
+    const p3 = activePlan && activePlan.topActions ? (activePlan.topActions[2] || '') : (store.goals?.priorities?.[2] || '');
     const rev = activePlan ? activePlan.revenueAction : '';
     const vis = activePlan ? activePlan.visibilityAction : '';
     const fol = activePlan ? activePlan.followUps : '';
@@ -121,17 +121,26 @@ function plannerAttachEvents() {
             else if (type.includes('visibility')) targetId = 'plan-visibility';
             else if (type.includes('follow')) targetId = 'plan-followup';
             else {
-                // Find the next empty action box (pa-1, pa-2, pa-3)
+                // Find the next empty action box (pa-1, pa-2, pa-3) OR one that just has the default 90-day priority text
                 const actionBoxes = ['pa-1', 'pa-2', 'pa-3'];
-                for (const id of actionBoxes) {
+                const store = getStore();
+                const defaultPriorities = store.goals?.priorities || [];
+                
+                for (let i = 0; i < actionBoxes.length; i++) {
+                    const id = actionBoxes[i];
                     const el = document.getElementById(id);
-                    if (el && el.value.trim() === '') {
-                        targetId = id;
-                        break;
+                    if (el) {
+                        const val = el.value.trim();
+                        // Overwrite if it's empty OR if it matches the generic 90-day placeholder
+                        if (val === '' || val === (defaultPriorities[i] || '').trim()) {
+                            targetId = id;
+                            break;
+                        }
                     }
                 }
+                
                 if (!targetId) {
-                    alert("Your Top 3 Priority slots are all full! Please clear one to apply an AI Action suggestion.");
+                    alert("Your Top 3 Priority slots are all full with custom tasks! Please clear one of the boxes to apply an AI Action suggestion.");
                     return;
                 }
             }
@@ -139,7 +148,11 @@ function plannerAttachEvents() {
             if (targetId) {
                 const el = document.getElementById(targetId);
                 if (el) {
-                    if (el.value.trim() !== '') {
+                    if (targetId.startsWith('pa-')) {
+                        // For inputs, just overwrite (since appending a newline breaks input fields)
+                        el.value = actionText;
+                    } else if (el.value.trim() !== '') {
+                        // For textareas (Revenue, Visibility, Follow-up), append
                         el.value += '\n' + actionText;
                     } else {
                         el.value = actionText;

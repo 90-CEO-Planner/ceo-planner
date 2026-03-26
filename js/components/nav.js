@@ -22,6 +22,10 @@ export function renderNav() {
                 <a href="#/coach" class="nav-link" id="nav-coach">AI Coach</a>
                 <a href="#/monthly-review" class="nav-link" id="nav-monthly-review">Monthly Review</a>
                 <a href="#/progress" class="nav-link" id="nav-progress">Wins & Progress</a>
+                <div style="margin-top: 2rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.1);">
+                    <a href="#/settings" class="nav-link" id="nav-settings" style="display: flex; gap: 0.5rem; align-items: center;">⚙️ Settings</a>
+                    <a href="#" class="nav-link" onclick="localStorage.removeItem('ceo_auth'); localStorage.removeItem('ceoPlanner_store'); window.location.hash='#/login'; window.location.reload(); return false;" style="color: #FCA5A5; display: flex; gap: 0.5rem; align-items: center;">🚪 Log Out</a>
+                </div>
             </nav>
         </header>
     `;

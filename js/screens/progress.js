@@ -105,6 +105,36 @@ export function renderProgress() {
                     </div>
                 `).join('')}
             </div>
+
+            <div class="flex items-center justify-between mb-4 mt-8">
+                <h3 style="margin: 0;">Daily Actions History</h3>
+                <button id="btn-export-csv" class="btn btn-ghost btn-sm" style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: var(--color-primary-dark); cursor: pointer;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                    Export to Excel (CSV)
+                </button>
+            </div>
+            <p style="color: var(--color-text-muted); margin-bottom: var(--spacing-lg); font-size: 0.9rem;">Review what tasks you completed each day.</p>
+            <div id="history-list">
+                ${!store.dailyLogs || Object.keys(store.dailyLogs).length === 0 ? `
+                    <div class="card text-center" style="padding: 3rem 1rem; border: 1px dashed var(--color-border); background: transparent; box-shadow: none;">
+                        <p style="color: var(--color-text-muted);">No daily tasks logged yet.</p>
+                    </div>
+                ` : Object.keys(store.dailyLogs).sort().reverse().slice(0, 90).map(dateStr => `
+                    <div class="card mb-4" style="border-top: 3px solid #00C2CB;">
+                        <p style="font-size: 0.85rem; color: var(--color-text-muted); font-weight: 600; text-transform: uppercase; margin-bottom: 0.5rem; border-bottom: 1px solid var(--color-border); padding-bottom: 0.5rem;">
+                            ${new Date(dateStr).toLocaleDateString(undefined, {weekday: 'long', month: 'short', day: 'numeric'})}
+                        </p>
+                        <ul style="list-style: none; padding-left: 0; margin-top: 0.5rem; margin-bottom: 0;">
+                            ${store.dailyLogs[dateStr].map(t => `
+                                <li style="display: flex; align-items: flex-start; gap: 0.5rem; margin-bottom: 0.25rem;">
+                                    <span style="color: ${t.done ? 'var(--color-primary)' : '#ccc'};">${t.done ? '☑' : '☐'}</span>
+                                    <span style="font-size: 0.95rem; ${t.done ? 'text-decoration: line-through; color: var(--color-text-muted);' : ''}">${t.text}</span>
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                `).join('')}
+            </div>
         </div>
     `;
 }
@@ -113,4 +143,41 @@ function progressAttachEvents() {
     // Nav
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
     document.getElementById('nav-progress')?.classList.add('active');
+
+    // Export functionality
+    const btnExport = document.getElementById('btn-export-csv');
+    if (btnExport) {
+        btnExport.addEventListener('click', () => {
+            const store = getStore();
+            if (!store.dailyLogs || Object.keys(store.dailyLogs).length === 0) {
+                alert("No daily actions to export.");
+                return;
+            }
+            
+            let csvContent = "Date,Task,Status\r\n";
+            Object.keys(store.dailyLogs).sort().reverse().forEach(date => {
+                store.dailyLogs[date].forEach(task => {
+                    const taskText = task.text.replace(/"/g, '""'); // escape quotes
+                    const status = task.done ? "Completed" : "Pending";
+                    csvContent += `"${date}","${taskText}","${status}"\r\n`;
+                });
+            });
+            
+            // Bulletproof cross-browser Blob download
+            const blob = new Blob(["\uFEFF", csvContent], { type: 'text/csv;charset=utf-8' });
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.style.display = 'none';
+            link.href = url;
+            link.download = `CEO_Actions_History_${new Date().toISOString().split('T')[0]}.csv`;
+            
+            document.body.appendChild(link);
+            link.click();
+            
+            setTimeout(() => {
+                document.body.removeChild(link);
+                window.URL.revokeObjectURL(url);
+            }, 500);
+        });
+    }
 }

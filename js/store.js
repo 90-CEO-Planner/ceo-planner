@@ -33,6 +33,7 @@ const defaultState = {
     weeklyPlans: [], // Array of plan objects
     reviews: [], // Array of review objects
     monthlyReviews: [], // Array of monthly review objects
+    dailyLogs: {}, // Dict of { "2023-11-20": [{text: "Task 1", done: false}, ...] }
     streak: 0, // Friday Review Streak
     planningStreak: 0 // Monday Plan Streak
 };
@@ -42,7 +43,7 @@ export function getStore() {
         const data = localStorage.getItem(STORE_KEY);
         if (data) {
             const parsed = JSON.parse(data);
-            return {
+            const finalStore = {
                 ...defaultState,
                 ...parsed,
                 profile: { ...defaultState.profile, ...(parsed.profile || {}) },
@@ -50,8 +51,25 @@ export function getStore() {
                 revenue: { ...defaultState.revenue, ...(parsed.revenue || {}) },
                 weeklyPlans: parsed.weeklyPlans || [],
                 reviews: parsed.reviews || [],
-                monthlyReviews: parsed.monthlyReviews || []
+                monthlyReviews: parsed.monthlyReviews || [],
+                dailyLogs: parsed.dailyLogs || {}
             };
+            
+            // Retroactively assign IDs to legacy revenue entries so they can be securely deleted
+            let needsReSave = false;
+            if (finalStore.revenue && finalStore.revenue.entries) {
+                finalStore.revenue.entries.forEach((entry, idx) => {
+                    if (!entry.id) {
+                        entry.id = 'legacy_' + Date.now() + '_' + idx;
+                        needsReSave = true;
+                    }
+                });
+            }
+            if (needsReSave) {
+                localStorage.setItem(STORE_KEY, JSON.stringify(finalStore));
+            }
+
+            return finalStore;
         }
     } catch (e) {
         console.error("Failed to load store from LocalStorage", e);
@@ -62,6 +80,21 @@ export function getStore() {
 export function saveStore(state) {
     try {
         localStorage.setItem(STORE_KEY, JSON.stringify(state));
+        
+        // Fire-and-forget background cloud sync
+        if (localStorage.getItem('ceo_auth') === 'true') {
+            db.auth.getSession().then(({ data: sessionData }) => {
+                if (sessionData && sessionData.session) {
+                    const user = sessionData.session.user;
+                    db.from('user_data').upsert({
+                        user_id: user.id,
+                        data: state
+                    }).then(({ error }) => {
+                        if (error) console.error("Background cloud sync failed", error);
+                    });
+                }
+            });
+        }
     } catch (e) {
         console.error("Failed to save store to LocalStorage", e);
     }
@@ -93,6 +126,14 @@ export function addRevenueEntry(entry) {
     saveStore(store);
 }
 
+export function deleteRevenueEntry(id) {
+    const store = getStore();
+    const initialLen = store.revenue.entries.length;
+    store.revenue.entries = store.revenue.entries.filter(e => String(e.id) !== String(id));
+    saveStore(store);
+    return store.revenue.entries.length < initialLen;
+}
+
 export function getRevenueInsights() {
     const store = getStore();
     const rev = store.revenue;
@@ -102,13 +143,22 @@ export function getRevenueInsights() {
     const entries = rev.entries || [];
     const totalRevenue = entries.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
 
-    const ONE_WEEK = 7 * 24 * 60 * 60 * 1000;
     const now = new Date();
     const currentMonth = now.getMonth();
     const currentYear = now.getFullYear();
 
+    // Calculate the start of the current week (Monday at 00:00:00)
+    const dayOfWeek = now.getDay(); // 0 is Sunday, 1 is Monday
+    const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+    const startOfWeek = new Date(now);
+    startOfWeek.setDate(now.getDate() - diffToMonday);
+    startOfWeek.setHours(0, 0, 0, 0);
+
     const revenueThisWeek = entries
-        .filter(e => now.getTime() - new Date(e.date).getTime() <= ONE_WEEK)
+        .filter(e => {
+            const d = new Date(e.date);
+            return d.getTime() >= startOfWeek.getTime();
+        })
         .reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
 
     const revenueThisMonth = entries
@@ -273,6 +323,12 @@ export function updateWeeklyPlan(planId, updatedFields) {
     }
 }
 
+export function updateDailyLog(dateStr, tasks) {
+    const store = getStore();
+    store.dailyLogs[dateStr] = tasks;
+    saveStore(store);
+}
+
 export function addReview(review) {
     const store = getStore();
     review.id = Date.now().toString();
@@ -344,7 +400,8 @@ export function resetQuarter() {
             dateArchived: new Date().toISOString(),
             goals: { ...store.goals },
             reviewsCount: store.reviews.length,
-            plansCount: store.weeklyPlans.length
+            plansCount: store.weeklyPlans.length,
+            dailyLogs: store.dailyLogs ? { ...store.dailyLogs } : {}
         });
     }
 
@@ -364,6 +421,9 @@ export function resetQuarter() {
 
     // Clear weekly plans for the new quarter start, keep reviews for wins history
     store.weeklyPlans = [];
+
+    // Clear daily action history active log
+    store.dailyLogs = {};
 
     saveStore(store);
 }

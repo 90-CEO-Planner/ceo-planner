@@ -1,6 +1,16 @@
 window.addEventListener('error', function(e) {
     document.body.innerHTML += '<div style="color:red; background:white; position:absolute; top:0; left:0; z-index:9999; padding:20px; border:2px solid red;"><h1>Global Error Caught</h1><p>' + e.message + '</p><p>Line: ' + e.lineno + '</p><p>Col: ' + e.colno + '</p><pre>' + (e.error ? e.error.stack : '') + '</pre></div>';
 });
+// --- js\supabaseClient.js ---
+// supabaseClient.js
+
+const SUPABASE_URL = 'https://ekzpbpoadiktlflcrrwm.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_9wfISELg1l53KvwhNlZ6Iw_BeGy7QS5';
+
+// Initialize the Supabase client attached to the global window
+window.db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+
 // --- js\store.js ---
 // store.js
 
@@ -37,6 +47,7 @@ const defaultState = {
     weeklyPlans: [], // Array of plan objects
     reviews: [], // Array of review objects
     monthlyReviews: [], // Array of monthly review objects
+    dailyLogs: {}, // Dict of { "2023-11-20": [{text: "Task 1", done: false}, ...] }
     streak: 0, // Friday Review Streak
     planningStreak: 0 // Monday Plan Streak
 };
@@ -46,7 +57,7 @@ function getStore() {
         const data = localStorage.getItem(STORE_KEY);
         if (data) {
             const parsed = JSON.parse(data);
-            return {
+            const finalStore = {
                 ...defaultState,
                 ...parsed,
                 profile: { ...defaultState.profile, ...(parsed.profile || {}) },
@@ -54,8 +65,25 @@ function getStore() {
                 revenue: { ...defaultState.revenue, ...(parsed.revenue || {}) },
                 weeklyPlans: parsed.weeklyPlans || [],
                 reviews: parsed.reviews || [],
-                monthlyReviews: parsed.monthlyReviews || []
+                monthlyReviews: parsed.monthlyReviews || [],
+                dailyLogs: parsed.dailyLogs || {}
             };
+            
+            // Retroactively assign IDs to legacy revenue entries so they can be securely deleted
+            let needsReSave = false;
+            if (finalStore.revenue && finalStore.revenue.entries) {
+                finalStore.revenue.entries.forEach((entry, idx) => {
+                    if (!entry.id) {
+                        entry.id = 'legacy_' + Date.now() + '_' + idx;
+                        needsReSave = true;
+                    }
+                });
+            }
+            if (needsReSave) {
+                localStorage.setItem(STORE_KEY, JSON.stringify(finalStore));
+            }
+
+            return finalStore;
         }
     } catch (e) {
         console.error("Failed to load store from LocalStorage", e);
@@ -66,6 +94,21 @@ function getStore() {
 function saveStore(state) {
     try {
         localStorage.setItem(STORE_KEY, JSON.stringify(state));
+        
+        // Fire-and-forget background cloud sync
+        if (localStorage.getItem('ceo_auth') === 'true') {
+            db.auth.getSession().then(({ data: sessionData }) => {
+                if (sessionData && sessionData.session) {
+                    const user = sessionData.session.user;
+                    db.from('user_data').upsert({
+                        user_id: user.id,
+                        data: state
+                    }).then(({ error }) => {
+                        if (error) console.error("Background cloud sync failed", error);
+                    });
+                }
+            });
+        }
     } catch (e) {
         console.error("Failed to save store to LocalStorage", e);
     }
@@ -97,6 +140,14 @@ function addRevenueEntry(entry) {
     saveStore(store);
 }
 
+function deleteRevenueEntry(id) {
+    const store = getStore();
+    const initialLen = store.revenue.entries.length;
+    store.revenue.entries = store.revenue.entries.filter(e => String(e.id) !== String(id));
+    saveStore(store);
+    return store.revenue.entries.length < initialLen;
+}
+
 function getRevenueInsights() {
     const store = getStore();
     const rev = store.revenue;
@@ -106,13 +157,22 @@ function getRevenueInsights() {
     const entries = rev.entries || [];
     const totalRevenue = entries.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
 
-    const ONE_WEEK = 7 * 24 * 60 * 60 * 1000;
     const now = new Date();
     const currentMonth = now.getMonth();
     const currentYear = now.getFullYear();
 
+    // Calculate the start of the current week (Monday at 00:00:00)
+    const dayOfWeek = now.getDay(); // 0 is Sunday, 1 is Monday
+    const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+    const startOfWeek = new Date(now);
+    startOfWeek.setDate(now.getDate() - diffToMonday);
+    startOfWeek.setHours(0, 0, 0, 0);
+
     const revenueThisWeek = entries
-        .filter(e => now.getTime() - new Date(e.date).getTime() <= ONE_WEEK)
+        .filter(e => {
+            const d = new Date(e.date);
+            return d.getTime() >= startOfWeek.getTime();
+        })
         .reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
 
     const revenueThisMonth = entries
@@ -277,6 +337,12 @@ function updateWeeklyPlan(planId, updatedFields) {
     }
 }
 
+function updateDailyLog(dateStr, tasks) {
+    const store = getStore();
+    store.dailyLogs[dateStr] = tasks;
+    saveStore(store);
+}
+
 function addReview(review) {
     const store = getStore();
     review.id = Date.now().toString();
@@ -348,7 +414,8 @@ function resetQuarter() {
             dateArchived: new Date().toISOString(),
             goals: { ...store.goals },
             reviewsCount: store.reviews.length,
-            plansCount: store.weeklyPlans.length
+            plansCount: store.weeklyPlans.length,
+            dailyLogs: store.dailyLogs ? { ...store.dailyLogs } : {}
         });
     }
 
@@ -368,6 +435,9 @@ function resetQuarter() {
 
     // Clear weekly plans for the new quarter start, keep reviews for wins history
     store.weeklyPlans = [];
+
+    // Clear daily action history active log
+    store.dailyLogs = {};
 
     saveStore(store);
 }
@@ -472,6 +542,10 @@ function renderNav() {
                 <a href="#/coach" class="nav-link" id="nav-coach">AI Coach</a>
                 <a href="#/monthly-review" class="nav-link" id="nav-monthly-review">Monthly Review</a>
                 <a href="#/progress" class="nav-link" id="nav-progress">Wins & Progress</a>
+                <div style="margin-top: 2rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.1);">
+                    <a href="#/settings" class="nav-link" id="nav-settings" style="display: flex; gap: 0.5rem; align-items: center;">⚙️ Settings</a>
+                    <a href="#" class="nav-link" onclick="localStorage.removeItem('ceo_auth'); localStorage.removeItem('ceoPlanner_store'); window.location.hash='#/login'; window.location.reload(); return false;" style="color: #FCA5A5; display: flex; gap: 0.5rem; align-items: center;">🚪 Log Out</a>
+                </div>
             </nav>
         </header>
     `;
@@ -1138,21 +1212,22 @@ function renderDashboard() {
         return genericOptions[Math.floor(Math.random() * genericOptions.length)];
     }
 
-    // Use the explicit Daily 3 from the Monday Plan if available, otherwise fallback to AI generated tasks based on priorities & weekly plan.
-    let displayTasks = generateDaily3([0, 1, 2].map(i => g.priorities[i] || 'Color'), activePlan);
+    // Use the explicit Daily 3 from the actual day if available, otherwise fallback to AI generated tasks based on priorities & weekly plan.
+    const todayStrDash = new Date().toISOString().split('T')[0];
+    let todaysLog = store.dailyLogs[todayStrDash];
 
-    if (activePlan && activePlan.daily3 && activePlan.daily3.length === 3) {
-        displayTasks = activePlan.daily3;
-        // If they left it blank, fallback to generated priority step
-        const fallbacks = generateDaily3([0, 1, 2].map(i => g.priorities[i] || ''), activePlan);
-        displayTasks = displayTasks.map((t, i) => t.trim() ? t : fallbacks[i]);
+    if (!todaysLog) {
+        const currentPriorities = activePlan && activePlan.topActions ? activePlan.topActions : g.priorities;
+        let generatedTasks = generateDaily3([0, 1, 2].map(i => currentPriorities[i] || ''), activePlan);
+        todaysLog = generatedTasks.map(t => ({ text: t, done: false }));
+        window._tempGeneratedTodaysLog = todaysLog; // to be saved on attachEvents
     }
 
-    displayTasks.forEach((taskText, i) => {
+    todaysLog.forEach((taskObj, i) => {
         dailyTasksHtml += `
             <label style="display: flex; align-items: center; gap: 0.75rem; cursor: pointer; padding: 0.5rem; border-radius: var(--radius-sm); transition: background-color var(--transition-fast);" class="dailyhover">
-                <input type="checkbox" id="daily-task-${i}" style="width: 18px; height: 18px; accent-color: var(--color-primary);">
-                <span style="font-size: 0.95rem; font-weight: 500;">${taskText}</span>
+                <input type="checkbox" id="daily-task-${i}" ${taskObj.done ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: var(--color-primary);">
+                <span style="font-size: 0.95rem; font-weight: 500; ${taskObj.done ? 'text-decoration: line-through; color: var(--color-text-muted);' : ''}">${taskObj.text}</span>
             </label>
         `;
     });
@@ -1170,13 +1245,13 @@ function renderDashboard() {
                  </div>
             </div>
 
-            <!--CEO Commitment-- >
+            <!--CEO Commitment-->
             <div class="card" style="background-color: var(--color-primary-light); border-color: var(--color-primary-light); text-align: center;">
                 <p style="font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-primary-dark); font-weight: 600; margin-bottom: var(--spacing-sm);">${store.profile?.name ? store.profile.name + "'s" : "Your"} Commitment</p>
                 <p style="font-size: 1.125rem; font-family: var(--font-heading); font-style: italic; color: var(--color-black);">"${g.statement || "I commit to leading with confidence."}"</p>
             </div>
 
-            <!--Quick Actions-- >
+            <!--Quick Actions-->
             <div class="mt-8 flex justify-center gap-4">
                 <a href="#/review" class="btn btn-secondary">Do Friday Review</a>
             </div>
@@ -1186,10 +1261,10 @@ function renderDashboard() {
             </div>
         </div >
 
-        < !--Quick Sale Modal-- >
-            <div id="quick-sale-modal" class="modal-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 100; align-items: center; justify-content: center;">
-                <div class="card" style="width: 100%; max-width: 400px; padding: 2rem; position: relative;">
-                    <button id="btn-close-quick-sale" style="position: absolute; top: 1rem; right: 1rem; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--color-text-muted);">&times;</button>
+        <!--Quick Sale Modal-->
+        <div id="quick-sale-modal" class="modal-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 100; align-items: center; justify-content: center;">
+            <div class="card" style="width: 100%; max-width: 400px; padding: 2rem; position: relative;">
+                <button id="btn-close-quick-sale" style="position: absolute; top: 1rem; right: 1rem; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--color-text-muted);">&times;</button>
                     <h3 style="margin-bottom: 1.5rem;">Log a Sale</h3>
                     <form id="quick-sale-form">
                         <div class="form-group">
@@ -1236,13 +1311,60 @@ function getCoachingEngineData(store, activePlan, revInsights) {
     // Check Daily Tasks completion
     const todayStr = new Date().toISOString().split('T')[0];
     let allDailyChecked = true;
-    for (let i = 0; i < 3; i++) {
-        if (localStorage.getItem(`ceoPlanner_daily_${todayStr}_${i} `) !== 'true') {
-            allDailyChecked = false;
-        }
+    const todaysLog = store.dailyLogs[todayStr];
+    if (!todaysLog || todaysLog.length < 3) {
+        allDailyChecked = false;
+    } else {
+        todaysLog.forEach(t => { if (!t.done) allDailyChecked = false; });
     }
 
     // --- State Priority Evaluation ---
+
+    // 0. Quarter Reset Needed (90 days elapsed)
+    if (store.weeklyPlans && store.weeklyPlans.length > 0) {
+        const firstPlanDate = new Date(store.weeklyPlans[0].date);
+        const daysElapsed = Math.floor((Date.now() - firstPlanDate.getTime()) / (1000 * 60 * 60 * 24));
+        if (daysElapsed >= 90) {
+            return {
+                title: "Quarter Complete",
+                message: `You've been executing this plan for ${daysElapsed} days! It's time to run your Quarter Reset, safely archive this data, and set your next 90-day focus.`,
+                actionLabel: "Run Quarter Reset",
+                actionHash: "#/quarter-reset",
+                color: "#111111", // Black
+                icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>`
+            };
+        }
+    }
+
+    // 0.5 Monthly Review Needed
+    // Rule: Prompt during the last 3 days of the month, or the 1st day of the new month
+    const currentDate = new Date();
+    const daysInMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0).getDate();
+    const currentDay = currentDate.getDate();
+    
+    let needsMonthlyReview = false;
+    if (currentDay >= daysInMonth - 2 || currentDay === 1) {
+        const monthlyReviews = store.monthlyReviews || [];
+        const lastMonthly = monthlyReviews.length > 0 
+            ? new Date(monthlyReviews[monthlyReviews.length - 1].date || 0)
+            : null;
+        
+        // If never done or the last one was over 15 days ago (to prevent prompting again)
+        if (!lastMonthly || (currentDate.getTime() - lastMonthly.getTime()) > (15 * 24 * 60 * 60 * 1000)) {
+            needsMonthlyReview = true;
+        }
+    }
+
+    if (needsMonthlyReview) {
+        return {
+            title: "Monthly Strategy Audit",
+            message: `It's the end of the month, ${userName}. Before you sprint into next week, take 10 minutes to run your Monthly CEO Review to identify your bottlenecks and set your strategy.`,
+            actionLabel: "Do Monthly Review",
+            actionHash: "#/monthly-review",
+            color: "#6941C6", // Purple
+            icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>`
+        };
+    }
 
     // 1. Missing weekly plan (Highest Priority early week)
     if (!activePlan && day >= 1 && day <= 3) {
@@ -1367,17 +1489,25 @@ function dashboardAttachEvents() {
         scoreValEl.textContent = 'No Plan';
     }
 
-    // Daily 3 state persistence using UI-level local storage (keys reset daily)
+    // Daily 3 state persistence using the store logic
     const todayStr = new Date().toISOString().split('T')[0];
+    if (window._tempGeneratedTodaysLog) {
+        updateDailyLog(todayStr, window._tempGeneratedTodaysLog);
+        delete window._tempGeneratedTodaysLog;
+    }
+
     [0, 1, 2].forEach(i => {
         const checkbox = document.getElementById(`daily-task-${i}`);
         if (checkbox) {
-            const key = `ceoPlanner_daily_${todayStr}_${i}`;
-            if (localStorage.getItem(key) === 'true') {
-                checkbox.checked = true;
-            }
             checkbox.addEventListener('change', (e) => {
-                localStorage.setItem(key, e.target.checked);
+                const updatedStore = getStore();
+                let log = updatedStore.dailyLogs[todayStr] || [];
+                if (log[i]) {
+                    log[i].done = e.target.checked;
+                    updateDailyLog(todayStr, log);
+                    // Rerender dashboard to apply strikethrough styling and coach engine updates safely
+                    window.dispatchEvent(new Event('hashchange'));
+                }
             });
         }
     });
@@ -1401,7 +1531,8 @@ function dashboardAttachEvents() {
         openBtns.forEach(btn => {
             btn.addEventListener('click', () => {
                 modal.style.display = 'flex';
-                document.getElementById('qs-amount').focus();
+                const input = document.getElementById('qs-amount');
+                if (input) input.focus();
             });
         });
 
@@ -1412,23 +1543,25 @@ function dashboardAttachEvents() {
             if (e.target === modal) closeModal();
         });
 
-        form.addEventListener('submit', (e) => {
-            e.preventDefault();
-            const amount = parseFloat(document.getElementById('qs-amount').value);
-            const source = document.getElementById('qs-source').value;
-            const offer = document.getElementById('qs-offer').value;
-            const dateStr = document.getElementById('qs-date').value;
+        if (form) {
+            form.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const amount = parseFloat(document.getElementById('qs-amount').value);
+                const source = document.getElementById('qs-source').value;
+                const offer = document.getElementById('qs-offer').value;
+                const dateStr = document.getElementById('qs-date').value;
 
-            addRevenueEntry({
-                amount,
-                source,
-                offer,
-                date: new Date(dateStr).toISOString(),
-                notes: ''
+                addRevenueEntry({
+                    amount,
+                    source,
+                    offer,
+                    date: new Date(dateStr).toISOString(),
+                    notes: ''
+                });
+                closeModal();
+                window.location.reload();
             });
-            closeModal();
-            window.location.reload();
-        });
+        }
     }
 }
 
@@ -1449,9 +1582,9 @@ function renderPlanner() {
     }
 
     const win = activePlan ? activePlan.winCondition : '';
-    const p1 = activePlan && activePlan.topActions ? activePlan.topActions[0] : '';
-    const p2 = activePlan && activePlan.topActions ? activePlan.topActions[1] : '';
-    const p3 = activePlan && activePlan.topActions ? activePlan.topActions[2] : '';
+    const p1 = activePlan && activePlan.topActions ? (activePlan.topActions[0] || '') : (store.goals?.priorities?.[0] || '');
+    const p2 = activePlan && activePlan.topActions ? (activePlan.topActions[1] || '') : (store.goals?.priorities?.[1] || '');
+    const p3 = activePlan && activePlan.topActions ? (activePlan.topActions[2] || '') : (store.goals?.priorities?.[2] || '');
     const rev = activePlan ? activePlan.revenueAction : '';
     const vis = activePlan ? activePlan.visibilityAction : '';
     const fol = activePlan ? activePlan.followUps : '';
@@ -1555,17 +1688,26 @@ function plannerAttachEvents() {
             else if (type.includes('visibility')) targetId = 'plan-visibility';
             else if (type.includes('follow')) targetId = 'plan-followup';
             else {
-                // Find the next empty action box (pa-1, pa-2, pa-3)
+                // Find the next empty action box (pa-1, pa-2, pa-3) OR one that just has the default 90-day priority text
                 const actionBoxes = ['pa-1', 'pa-2', 'pa-3'];
-                for (const id of actionBoxes) {
+                const store = getStore();
+                const defaultPriorities = store.goals?.priorities || [];
+                
+                for (let i = 0; i < actionBoxes.length; i++) {
+                    const id = actionBoxes[i];
                     const el = document.getElementById(id);
-                    if (el && el.value.trim() === '') {
-                        targetId = id;
-                        break;
+                    if (el) {
+                        const val = el.value.trim();
+                        // Overwrite if it's empty OR if it matches the generic 90-day placeholder
+                        if (val === '' || val === (defaultPriorities[i] || '').trim()) {
+                            targetId = id;
+                            break;
+                        }
                     }
                 }
+                
                 if (!targetId) {
-                    alert("Your Top 3 Priority slots are all full! Please clear one to apply an AI Action suggestion.");
+                    alert("Your Top 3 Priority slots are all full with custom tasks! Please clear one of the boxes to apply an AI Action suggestion.");
                     return;
                 }
             }
@@ -1573,7 +1715,11 @@ function plannerAttachEvents() {
             if (targetId) {
                 const el = document.getElementById(targetId);
                 if (el) {
-                    if (el.value.trim() !== '') {
+                    if (targetId.startsWith('pa-')) {
+                        // For inputs, just overwrite (since appending a newline breaks input fields)
+                        el.value = actionText;
+                    } else if (el.value.trim() !== '') {
+                        // For textareas (Revenue, Visibility, Follow-up), append
                         el.value += '\n' + actionText;
                     } else {
                         el.value = actionText;
@@ -2218,6 +2364,8 @@ function renderRevenue() {
                                    <option value="TikTok">TikTok</option>
                                    <option value="YouTube">YouTube</option>
                                    <option value="Skool Community">Skool Community</option>
+                                   <option value="Refund">Refund</option>
+                                   <option value="Adjustment">Adjustment</option>
                                    <option value="Other">Other</option>
                                </select>
                            </div>
@@ -2231,6 +2379,27 @@ function renderRevenue() {
                            </div>
                            <button type="submit" class="btn btn-primary" style="width: 100%;">Log Entry</button>
                        </form>
+                   </div>
+
+                   <!-- Recent Transactions -->
+                   <div class="card mt-6">
+                       <div class="flex justify-between items-center mb-4">
+                           <h3 class="mb-0">Recent Transactions</h3>
+                           <button id="btn-export-revenue" class="btn btn-outline btn-sm" style="font-size: 0.8rem; padding: 0.25rem 0.75rem;">Export to Excel (CSV)</button>
+                       </div>
+                       ${insights.entries.length === 0 ? '<p style="color: var(--color-text-muted); font-size: 0.9rem;">No transactions logged yet.</p>' : `
+                       <div style="display: flex; flex-direction: column; gap: 0.75rem; max-height: 400px; overflow-y: auto; padding-right: 0.5rem;" class="custom-scroll">
+                           ${insights.entries.map(e => `
+                               <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.75rem; border-bottom: 1px solid var(--color-border);">
+                                   <div>
+                                       <span style="font-weight: 600; color: ${parseFloat(e.amount) < 0 ? '#D92D20' : 'var(--color-black)'}; display: block;">$${parseFloat(e.amount).toLocaleString()}</span>
+                                       <span style="font-size: 0.8rem; color: var(--color-text-muted);">${new Date(e.date).toLocaleDateString()} • ${e.source}</span>
+                                   </div>
+                                   <button type="button" class="btn btn-ghost btn-sm btn-delete-revenue" data-id="${e.id}" style="padding: 0.25rem 0.5rem; color: var(--color-text-muted);" title="Delete Entry">🗑️</button>
+                               </div>
+                           `).join('')}
+                       </div>
+                       `}
                    </div>
                 </div>
 
@@ -2285,6 +2454,62 @@ function revenueAttachEvents() {
                 date: new Date(dateStr).toISOString()
             });
             window.location.reload();
+        });
+    }
+
+    document.querySelectorAll('.btn-delete-revenue').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            if (confirm("Are you sure you want to delete this revenue entry?")) {
+                const id = e.currentTarget.getAttribute('data-id');
+                if (!id || id === 'undefined') {
+                    alert("Error: The exact database ID for this entry is missing.");
+                    return;
+                }
+                const success = deleteRevenueEntry(id);
+                if (success) {
+                    window.location.reload();
+                } else {
+                    alert("Error: Could not find the database entry matching this ID to delete it.");
+                }
+            }
+        });
+    });
+
+    const exportBtn = document.getElementById('btn-export-revenue');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', () => {
+            const insights = getRevenueInsights();
+            const entries = insights.entries || [];
+            if (entries.length === 0) {
+                alert("No revenue transactions to export.");
+                return;
+            }
+            
+            let csvContent = "Date,Amount,Source,Offer,Notes\r\n";
+            entries.forEach(e => {
+                const date = new Date(e.date).toLocaleDateString();
+                const amount = e.amount;
+                const source = (e.source || '').replace(/"/g, '""');
+                const offer = (e.offer || '').replace(/"/g, '""');
+                const notes = (e.notes || '').replace(/"/g, '""');
+                csvContent += `"${date}","${amount}","${source}","${offer}","${notes}"\r\n`;
+            });
+            
+            // Bulletproof cross-browser Blob download
+            const blob = new Blob(["\uFEFF", csvContent], { type: 'text/csv;charset=utf-8' });
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.style.display = 'none';
+            link.href = url;
+            link.download = `CEO_Revenue_Export_${new Date().toISOString().split('T')[0]}.csv`;
+            
+            document.body.appendChild(link);
+            link.click();
+            
+            setTimeout(() => {
+                document.body.removeChild(link);
+                window.URL.revokeObjectURL(url);
+            }, 500);
         });
     }
 
@@ -2680,6 +2905,36 @@ function renderProgress() {
                     </div>
                 `).join('')}
             </div>
+
+            <div class="flex items-center justify-between mb-4 mt-8">
+                <h3 style="margin: 0;">Daily Actions History</h3>
+                <button id="btn-export-csv" class="btn btn-ghost btn-sm" style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: var(--color-primary-dark); cursor: pointer;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                    Export to Excel (CSV)
+                </button>
+            </div>
+            <p style="color: var(--color-text-muted); margin-bottom: var(--spacing-lg); font-size: 0.9rem;">Review what tasks you completed each day.</p>
+            <div id="history-list">
+                ${!store.dailyLogs || Object.keys(store.dailyLogs).length === 0 ? `
+                    <div class="card text-center" style="padding: 3rem 1rem; border: 1px dashed var(--color-border); background: transparent; box-shadow: none;">
+                        <p style="color: var(--color-text-muted);">No daily tasks logged yet.</p>
+                    </div>
+                ` : Object.keys(store.dailyLogs).sort().reverse().slice(0, 90).map(dateStr => `
+                    <div class="card mb-4" style="border-top: 3px solid #00C2CB;">
+                        <p style="font-size: 0.85rem; color: var(--color-text-muted); font-weight: 600; text-transform: uppercase; margin-bottom: 0.5rem; border-bottom: 1px solid var(--color-border); padding-bottom: 0.5rem;">
+                            ${new Date(dateStr).toLocaleDateString(undefined, {weekday: 'long', month: 'short', day: 'numeric'})}
+                        </p>
+                        <ul style="list-style: none; padding-left: 0; margin-top: 0.5rem; margin-bottom: 0;">
+                            ${store.dailyLogs[dateStr].map(t => `
+                                <li style="display: flex; align-items: flex-start; gap: 0.5rem; margin-bottom: 0.25rem;">
+                                    <span style="color: ${t.done ? 'var(--color-primary)' : '#ccc'};">${t.done ? '☑' : '☐'}</span>
+                                    <span style="font-size: 0.95rem; ${t.done ? 'text-decoration: line-through; color: var(--color-text-muted);' : ''}">${t.text}</span>
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                `).join('')}
+            </div>
         </div>
     `;
 }
@@ -2688,6 +2943,43 @@ function progressAttachEvents() {
     // Nav
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
     document.getElementById('nav-progress')?.classList.add('active');
+
+    // Export functionality
+    const btnExport = document.getElementById('btn-export-csv');
+    if (btnExport) {
+        btnExport.addEventListener('click', () => {
+            const store = getStore();
+            if (!store.dailyLogs || Object.keys(store.dailyLogs).length === 0) {
+                alert("No daily actions to export.");
+                return;
+            }
+            
+            let csvContent = "Date,Task,Status\r\n";
+            Object.keys(store.dailyLogs).sort().reverse().forEach(date => {
+                store.dailyLogs[date].forEach(task => {
+                    const taskText = task.text.replace(/"/g, '""'); // escape quotes
+                    const status = task.done ? "Completed" : "Pending";
+                    csvContent += `"${date}","${taskText}","${status}"\r\n`;
+                });
+            });
+            
+            // Bulletproof cross-browser Blob download
+            const blob = new Blob(["\uFEFF", csvContent], { type: 'text/csv;charset=utf-8' });
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.style.display = 'none';
+            link.href = url;
+            link.download = `CEO_Actions_History_${new Date().toISOString().split('T')[0]}.csv`;
+            
+            document.body.appendChild(link);
+            link.click();
+            
+            setTimeout(() => {
+                document.body.removeChild(link);
+                window.URL.revokeObjectURL(url);
+            }, 500);
+        });
+    }
 }
 
 
@@ -2737,6 +3029,29 @@ function renderSettings() {
                         <input type="hidden" id="set-logo-base64" value="${store.profile.logo && store.profile.logo.startsWith('data:image') ? store.profile.logo : ''}">
                     </div>
                 </div>
+            </div>
+
+            <!-- CEO Profiling -->
+            <h4 class="mb-4 pt-4" style="border-top: 1px solid var(--color-border); color: var(--color-primary-dark);">CEO Business Profile</h4>
+            <div class="form-group mb-4">
+                <label class="form-label" style="font-weight: 600;">Top Business Bottleneck</label>
+                <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">The AI Coach uses this to prioritize its Friday Advice.</p>
+                <select id="set-bottleneck" class="form-input" style="padding: 0.75rem;">
+                    <option value="Sales Conversion" ${store.profile.bottleneck === 'Sales Conversion' ? 'selected' : ''}>Sales Conversion (Traffic is high, Sales are low)</option>
+                    <option value="Audience Size" ${store.profile.bottleneck === 'Audience Size' ? 'selected' : ''}>Audience Size (Offers are great, Visibility is low)</option>
+                    <option value="Time & Delivery" ${store.profile.bottleneck === 'Time & Delivery' || !store.profile.bottleneck ? 'selected' : ''}>Time / Delivery (Overworked & Burnt out)</option>
+                </select>
+            </div>
+
+            <div class="form-group mb-6">
+                <label class="form-label" style="font-weight: 600;">CEO Strategy Mode</label>
+                <p style="color: #6941C6; font-size: 0.85rem; margin-bottom: 0.5rem;"><strong>Important:</strong> Changing this completely rewrites the AI Planning Assistant and Smart Prompts to focus on this strict trajectory.</p>
+                <select id="set-strategy" class="form-input" style="padding: 0.75rem;">
+                    <option value="First Sale Sprint" ${store.profile.strategyMode === 'First Sale Sprint' ? 'selected' : ''}>First Sale Sprint (Focus: Direct Outreach & Fast Cash)</option>
+                    <option value="Offer Launch Quarter" ${store.profile.strategyMode === 'Offer Launch Quarter' ? 'selected' : ''}>Offer Launch Quarter (Focus: Build Hype & Open Cart)</option>
+                    <option value="Audience Growth" ${store.profile.strategyMode === 'Audience Growth' ? 'selected' : ''}>Audience Growth (Focus: Massive Lead Generation)</option>
+                    <option value="CEO Reset" ${store.profile.strategyMode === 'CEO Reset' || !store.profile.strategyMode ? 'selected' : ''}>CEO Reset (Focus: Systems, Automating & Hiring)</option>
+                </select>
             </div>
 
             <!-- 90 Day Goals -->
@@ -2895,11 +3210,15 @@ function settingsAttachEvents() {
             const p2 = document.getElementById('set-p2').value;
             const p3 = document.getElementById('set-p3').value;
             const planningDay = document.getElementById('planning-day-select').value;
+            const bottleneck = document.getElementById('set-bottleneck').value;
+            const strategyMode = document.getElementById('set-strategy').value;
 
             updateProfile({
                 name: name,
                 businessName: biz,
                 logo: finalLogo,
+                bottleneck: bottleneck,
+                strategyMode: strategyMode,
                 reminderTimes: newReminders,
                 planningDay: planningDay
             });
@@ -3470,7 +3789,6 @@ function generateReflectionSummary(store) {
 
 
 // --- js\screens\mondayPlan.js ---
-// mondayPlan.js
 
 let mondayStep = 1;
 const MONDAY_TOTAL_STEPS = 5;
@@ -3781,6 +4099,11 @@ function mondayPlanAttachEvents() {
             // 2. Save it
             addWeeklyPlan(newPlan);
 
+            // 2.5 Save the specific tasks for Monday immediately into the daily log
+            const todayStr = new Date().toISOString().split('T')[0];
+            const cleanTasks = mondayPlanData.daily3.map(t => ({ text: t, done: false }));
+            updateDailyLog(todayStr, cleanTasks);
+
             // 3. Reset internal state for next week
             mondayStep = 1;
             mondayPlanData = { weeklyFocus: '', priorities: ['', '', ''], revenueAction: '', daily3: ['', '', ''] };
@@ -3874,6 +4197,134 @@ function breakdownTask(taskText, fallback) {
 }
 
 
+// --- js\screens\auth.js ---
+// auth.js
+
+function renderAuth(isSignup = false) {
+    window.setScreenModule({ attachEvents: authAttachEvents });
+
+    const title = isSignup ? "Create your account" : "Log in to your account";
+    const subtitle = isSignup ? "Start your 90-day CEO journey today." : "Welcome back! Please enter your details.";
+    const btnText = isSignup ? "Create Account" : "Sign In";
+    const switchText = isSignup ? "Already have an account? <a href='#/login' style='color: var(--color-primary-dark); text-decoration: none; font-weight: 600;'>Log in</a>" : "Don't have an account? <a href='#/signup' style='color: var(--color-primary-dark); text-decoration: none; font-weight: 600;'>Sign up</a>";
+
+    return `
+        <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--color-primary-light) 0%, var(--color-bg-main) 100%); padding: 1.5rem;">
+            <div class="card" style="width: 100%; max-width: 440px; padding: 2.5rem; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04); border: 1px solid rgba(255,255,255,0.5); backdrop-filter: blur(10px);">
+                
+                <div style="text-align: center; margin-bottom: 2rem;">
+                    <div style="display: inline-flex; align-items: center; justify-content: center; width: 48px; height: 48px; background: var(--color-primary); color: white; border-radius: 12px; margin-bottom: 1.5rem; box-shadow: 0 4px 6px -1px rgba(78, 14, 255, 0.3);">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>
+                    </div>
+                    <h2 style="font-size: 1.75rem; color: var(--color-black); margin-bottom: 0.5rem; letter-spacing: -0.02em;">${title}</h2>
+                    <p style="color: var(--color-text-muted); font-size: 0.95rem;">${subtitle}</p>
+                </div>
+
+                <form id="auth-form" style="display: flex; flex-direction: column; gap: 1.25rem;">
+                    ${isSignup ? `
+                    <div class="form-group" style="margin: 0;">
+                        <label style="font-size: 0.875rem; font-weight: 500; color: var(--color-text-main); margin-bottom: 0.4rem;">Full Name</label>
+                        <input type="text" id="auth-name" class="form-input" placeholder="Enter your name" required style="border-radius: 8px;">
+                    </div>
+                    ` : ''}
+
+                    <div class="form-group" style="margin: 0;">
+                        <label style="font-size: 0.875rem; font-weight: 500; color: var(--color-text-main); margin-bottom: 0.4rem;">Email</label>
+                        <input type="email" id="auth-email" class="form-input" placeholder="Enter your email" required style="border-radius: 8px;">
+                    </div>
+
+                    <div class="form-group" style="margin: 0;">
+                        <label style="font-size: 0.875rem; font-weight: 500; color: var(--color-text-main); margin-bottom: 0.4rem; display: flex; justify-content: space-between;">
+                            Password
+                            ${!isSignup ? `<a href="#" style="color: var(--color-primary); text-decoration: none; font-size: 0.8rem;">Forgot password?</a>` : ''}
+                        </label>
+                        <input type="password" id="auth-password" class="form-input" placeholder="••••••••" required style="border-radius: 8px;" minlength="6">
+                    </div>
+
+                    <button type="submit" class="btn btn-primary" style="width: 100%; padding: 0.75rem; font-size: 1rem; border-radius: 8px; margin-top: 0.5rem; box-shadow: 0 4px 6px -1px rgba(78, 14, 255, 0.2);">${btnText}</button>
+                </form>
+
+                <div style="text-align: center; margin-top: 2rem; font-size: 0.9rem; color: var(--color-text-muted);">
+                    ${switchText}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function authAttachEvents() {
+    const form = document.getElementById('auth-form');
+    if (form) {
+        form.addEventListener('submit', (e) => {
+            e.preventDefault();
+            
+            // In a real app, this would hit an API via fetch().
+            // For MVP, we simply authenticate the user via local storage security state.
+            const email = document.getElementById('auth-email').value;
+            const password = document.getElementById('auth-password').value;
+            
+            if (email && password) {
+                const btn = form.querySelector('button[type="submit"]');
+                const originalText = btn.innerText;
+                btn.innerText = "Authenticating...";
+                btn.style.opacity = '0.8';
+                
+                if (isSignup) {
+                    const name = document.getElementById('auth-name').value;
+                    // Real Supabase Signup
+                    db.auth.signUp({
+                        email: email,
+                        password: password,
+                        options: { data: { name: name } }
+                    }).then(async ({ data, error }) => {
+                        if (error) {
+                            alert("Sign up failed: " + error.message);
+                            btn.innerText = originalText;
+                            btn.style.opacity = '1';
+                        } else {
+                            localStorage.setItem('ceo_auth', 'true');
+                            window.location.hash = '#/';
+                            window.location.reload();
+                        }
+                    });
+                } else {
+                    // Real Supabase Login
+                    db.auth.signInWithPassword({
+                        email: email,
+                        password: password
+                    }).then(async ({ data, error }) => {
+                        if (error) {
+                            alert("Login failed: " + error.message);
+                            btn.innerText = originalText;
+                            btn.style.opacity = '1';
+                        } else {
+                            // Fetch user's cloud data and populate local storage BEFORE reloading the app
+                            try {
+                                const { data: dbData, error: dbError } = await db
+                                    .from('user_data')
+                                    .select('data')
+                                    .eq('user_id', data.user.id)
+                                    .single();
+                                
+                                if (dbData && dbData.data) {
+                                    localStorage.setItem('ceoPlanner_store', JSON.stringify(dbData.data));
+                                }
+                            } catch (err) {
+                                console.log("No cloud profile found or error fetching. Starting fresh.", err);
+                            }
+
+                            localStorage.setItem('ceo_auth', 'true');
+                            window.location.hash = '#/';
+                            window.location.reload();
+                        }
+                    });
+                }
+            }
+        });
+    }
+}
+
+
 // --- js\app.js ---
 // app.js
 
@@ -3886,6 +4337,17 @@ const appContainer = document.getElementById('app-container');
 function router() {
     const hash = window.location.hash || '#/';
     
+    // Auth Intercept
+    const isAuthenticated = localStorage.getItem('ceo_auth') === 'true';
+    if (!isAuthenticated && hash !== '#/login' && hash !== '#/signup') {
+        window.location.hash = '#/login';
+        return;
+    }
+    if (isAuthenticated && (hash === '#/login' || hash === '#/signup')) {
+        window.location.hash = '#/';
+        return;
+    }
+
     appContainer.innerHTML = ''; // Clear current content
     
     // Check if user has completed setup
@@ -3898,6 +4360,12 @@ function router() {
     }
 
     switch(hash) {
+        case '#/login':
+            appContainer.innerHTML = renderAuth(false);
+            break;
+        case '#/signup':
+            appContainer.innerHTML = renderAuth(true);
+            break;
         case '#/':
             if (isSetupComplete) {
                 window.location.hash = '#/dashboard';

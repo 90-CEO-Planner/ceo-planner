@@ -15,6 +15,7 @@ import { renderQuarterReset } from './screens/quarterReset.js';
 import { renderCoach } from './screens/coach.js';
 import { renderMonthlyReview } from './screens/monthlyReview.js';
 import { renderMondayPlan } from './screens/mondayPlan.js';
+import { renderAuth } from './screens/auth.js';
 
 const appContainer = document.getElementById('app-container');
 
@@ -22,6 +23,17 @@ const appContainer = document.getElementById('app-container');
 function router() {
     const hash = window.location.hash || '#/';
     
+    // Auth Intercept
+    const isAuthenticated = localStorage.getItem('ceo_auth') === 'true';
+    if (!isAuthenticated && hash !== '#/login' && hash !== '#/signup') {
+        window.location.hash = '#/login';
+        return;
+    }
+    if (isAuthenticated && (hash === '#/login' || hash === '#/signup')) {
+        window.location.hash = '#/';
+        return;
+    }
+
     appContainer.innerHTML = ''; // Clear current content
     
     // Check if user has completed setup
@@ -34,6 +46,12 @@ function router() {
     }
 
     switch(hash) {
+        case '#/login':
+            appContainer.innerHTML = renderAuth(false);
+            break;
+        case '#/signup':
+            appContainer.innerHTML = renderAuth(true);
+            break;
         case '#/':
             if (isSetupComplete) {
                 window.location.hash = '#/dashboard';
