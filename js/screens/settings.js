@@ -136,17 +136,28 @@ export function renderSettings() {
 
             </div>
 
-            <h3 class="mb-4 pt-4" style="border-top: 1px solid var(--color-border); color: #10a37f; display: flex; align-items: center; gap: 0.5rem;">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-                Generative AI Integration
-            </h3>
-            <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1rem;">
-                Connect your OpenAI API key to unlock the Level 3 AI Coach. Your key is stored <b>exclusively locally</b> in this browser and never sent to our database.
-            </p>
-            <div class="form-group">
-                <label>ChatGPT API Key</label>
-                <input type="password" id="set-openai-key" class="form-input" placeholder="sk-..." value="${localStorage.getItem('ceo_openai_key') || ''}">
-            </div>
+            ${(() => {
+                const sessionData = JSON.parse(localStorage.getItem('ceo_auth') || '{}');
+                const userEmail = sessionData?.user?.email || '';
+                const isAdmin = userEmail.toLowerCase() === 'jeanette_spencer@yahoo.com';
+                
+                if (isAdmin) {
+                    return `
+                        <h3 class="mb-4 pt-4" style="border-top: 1px solid var(--color-border); color: #10a37f; display: flex; align-items: center; gap: 0.5rem;">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                            Generative AI Integration
+                        </h3>
+                        <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1rem;">
+                            Connect your OpenAI API key to unlock the Level 3 AI Coach. Your key is stored <b>exclusively locally</b> in this browser and never sent to our database.
+                        </p>
+                        <div class="form-group">
+                            <label>ChatGPT API Key</label>
+                            <input type="password" id="set-openai-key" class="form-input" placeholder="sk-..." value="${localStorage.getItem('ceo_openai_key') || ''}">
+                        </div>
+                    `;
+                }
+                return '';
+            })()}
 
             <div class="mt-8 flex justify-end">
                 <button type="submit" class="btn btn-primary">Save Preferences</button>
@@ -252,8 +263,10 @@ function settingsAttachEvents() {
                 planningDay: planningDay
             });
 
-            const openaiKey = document.getElementById('set-openai-key').value;
-            localStorage.setItem('ceo_openai_key', openaiKey);
+            const openaiKeyEl = document.getElementById('set-openai-key');
+            if (openaiKeyEl) {
+                localStorage.setItem('ceo_openai_key', openaiKeyEl.value);
+            }
 
             updateGoals({
                 focus: focus,
