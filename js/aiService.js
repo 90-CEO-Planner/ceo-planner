@@ -41,12 +41,6 @@ Instructions:
 }
 
 export async function generateAIResponse(messageHistory) {
-    const apiKey = localStorage.getItem('ceo_openai_key');
-    
-    if (!apiKey) {
-        throw new Error("API_KEY_MISSING");
-    }
-
     // Inject the dynamic system prompt as the absolute baseline truth
     const messages = [
         { role: 'system', content: buildSystemPrompt() },
@@ -54,25 +48,18 @@ export async function generateAIResponse(messageHistory) {
     ];
 
     try {
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`
-            },
-            body: JSON.stringify({
-                model: 'gpt-4o-mini',
-                messages: messages,
-                temperature: 0.7,
-                max_tokens: 500
-            })
+        const { data, error } = await window.supabase.functions.invoke('chat', {
+            body: { messages: messages }
         });
 
-        const data = await response.json();
+        if (error) {
+            console.error("Edge Function Invocation Error:", error);
+            throw new Error(error.message);
+        }
 
         if (data.error) {
             console.error("OpenAI API Error:", data.error);
-            throw new Error(data.error.message);
+            throw new Error(data.error.message || data.error);
         }
 
         return data.choices[0].message.content;

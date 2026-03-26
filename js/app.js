@@ -159,7 +159,14 @@ function checkPushNotifications() {
 // Initialize
 window.addEventListener('hashchange', router);
 window.addEventListener('load', () => {
-    // Optionally seed data for testing
-    // seedMockData(); 
     router();
+    
+    // Start background notification polling engine
+    setInterval(checkPushNotifications, 60000);
+    checkPushNotifications();
+
+    // Initialize Generative AI global widget (checks for admin internally)
+    if (typeof initChatWidget === 'function') {
+        initChatWidget();
+    }
 });
