@@ -3601,11 +3601,11 @@ function coachAttachEvents() {
 
         // Add loading skeleton
         const loadingId = 'loading-' + Date.now();
-        messagesContainer.innerHTML += \`
-            <div id="\${loadingId}" style="align-self: flex-start; background: white; padding: 1rem 1.25rem; border-radius: 16px 16px 16px 4px; border: 1px solid var(--color-border); color: var(--color-text-muted);">
+        messagesContainer.innerHTML += `
+            <div id="${loadingId}" style="align-self: flex-start; background: white; padding: 1rem 1.25rem; border-radius: 16px 16px 16px 4px; border: 1px solid var(--color-border); color: var(--color-text-muted);">
                 <i>Thinking...</i>
             </div>
-        \`;
+        `;
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
 
         try {
@@ -3622,7 +3622,7 @@ function coachAttachEvents() {
         } catch (err) {
             const loader = document.getElementById(loadingId);
             if(loader) loader.remove();
-            messagesContainer.innerHTML += renderMessage('assistant', \`**Network Protocol Error:** \${err.message}. Please verify your API key in Settings.\`);
+            messagesContainer.innerHTML += renderMessage('assistant', `**Network Protocol Error:** ${err.message}. Please verify your API key in Settings.`);
             // Pop the failed user message off history to prevent corrupted conversations
             window.ceoChatHistory.pop();
         } finally {
