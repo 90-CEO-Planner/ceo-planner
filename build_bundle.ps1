@@ -4,6 +4,7 @@ $files = @(
     "js\aiService.js",
     "js\components\nav.js",
     "js\components\tooltip.js",
+    "js\components\chatWidget.js",
     "js\screens\welcome.js",
     "js\screens\wizard.js",
     "js\screens\dashboard.js",
