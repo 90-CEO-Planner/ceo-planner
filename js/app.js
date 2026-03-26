@@ -25,6 +25,9 @@ function router() {
     
     // Auth Intercept
     const isAuthenticated = localStorage.getItem('ceo_auth') === 'true';
+    
+    // Boot up the localized notification engine
+    if (isAuthenticated) checkPushNotifications();
     if (!isAuthenticated && hash !== '#/login' && hash !== '#/signup') {
         window.location.hash = '#/login';
         return;
@@ -110,6 +113,48 @@ function attachEventListeners(hash) {
 window.setScreenModule = function(module) {
     window.currentScreen = module;
 };
+
+// Local Notification Engine (Active Tab Only for MVP)
+function checkPushNotifications() {
+    const store = getStore();
+    if (!store.profile || !store.profile.reminderTimes) return;
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+
+    const now = new Date();
+    const todayName = now.toLocaleDateString('en-US', { weekday: 'long' });
+    const hour = now.getHours();
+    
+    const lastFiredStore = JSON.parse(localStorage.getItem('ceo_notif_last') || '{}');
+    const todayStr = now.toISOString().split('T')[0];
+    
+    const fireLocalNotification = (key, title, body) => {
+        if (lastFiredStore[key] !== todayStr) {
+            if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+                navigator.serviceWorker.ready.then(reg => {
+                    reg.showNotification(title, { body, icon: "https://cdn-icons-png.flaticon.com/512/864/864685.png" });
+                });
+            } else {
+                new Notification(title, { body });
+            }
+            lastFiredStore[key] = todayStr;
+            localStorage.setItem('ceo_notif_last', JSON.stringify(lastFiredStore));
+        }
+    };
+
+    const planningDay = store.profile.planningDay || 'Monday';
+    
+    if (store.profile.reminderTimes.includes('Weekly Prompt') && todayName === planningDay && hour >= 8) {
+        fireLocalNotification('weekly_prompt', 'Weekly CEO Planning', 'Time to plan your week and stay focused on your 90-day trajectory.');
+    }
+
+    if (store.profile.reminderTimes.includes('Daily Priority Check') && hour >= 12) {
+        fireLocalNotification('daily_priority', 'Daily Check-in', 'Have you finalized your primary priority block for today?');
+    }
+
+    if (store.profile.reminderTimes.includes('Friday Review Prompt') && todayName === 'Friday' && hour >= 14) {
+        fireLocalNotification('friday_review', 'Friday Review', 'Time to log your wins and track your revenue for the week!');
+    }
+}
 
 // Initialize
 window.addEventListener('hashchange', router);

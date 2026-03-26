@@ -225,19 +225,6 @@ function settingsAttachEvents() {
             const p1 = document.getElementById('set-p1').value;
             const p2 = document.getElementById('set-p2').value;
             const p3 = document.getElementById('set-p3').value;
-            const planningDay = document.getElementById('planning-day-select').value;
-            const bottleneck = document.getElementById('set-bottleneck').value;
-            const strategyMode = document.getElementById('set-strategy').value;
-
-            updateProfile({
-                name: name,
-                businessName: biz,
-                logo: finalLogo,
-                bottleneck: bottleneck,
-                strategyMode: strategyMode,
-                reminderTimes: newReminders,
-                planningDay: planningDay
-            });
 
             updateGoals({
                 focus: focus,
@@ -249,6 +236,33 @@ function settingsAttachEvents() {
             window.location.reload();
         });
     }
+
+    // Bind Notification Permission Request to Checkboxes
+    ['remind-weekly', 'remind-daily', 'remind-friday'].forEach(id => {
+        const checkbox = document.getElementById(id);
+        if (checkbox) {
+            checkbox.addEventListener('change', async (e) => {
+                if (e.target.checked && 'Notification' in window) {
+                    if (Notification.permission !== 'granted' && Notification.permission !== 'denied') {
+                        const permission = await Notification.requestPermission();
+                        if (permission !== 'granted') {
+                            e.target.checked = false; // Revert if denied
+                            alert("You must allow notifications in your browser settings to enable reminders.");
+                        } else {
+                            if ('serviceWorker' in navigator) {
+                                navigator.serviceWorker.ready.then(registration => {
+                                    registration.showNotification("CEO Planner", {
+                                        body: "Notifications successfully linked!",
+                                        icon: "https://cdn-icons-png.flaticon.com/512/864/864685.png"
+                                    });
+                                });
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
 
     // Handle Factory Reset
     const resetBtn = document.getElementById('btn-reset-data');

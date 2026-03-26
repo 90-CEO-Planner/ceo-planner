@@ -3209,19 +3209,6 @@ function settingsAttachEvents() {
             const p1 = document.getElementById('set-p1').value;
             const p2 = document.getElementById('set-p2').value;
             const p3 = document.getElementById('set-p3').value;
-            const planningDay = document.getElementById('planning-day-select').value;
-            const bottleneck = document.getElementById('set-bottleneck').value;
-            const strategyMode = document.getElementById('set-strategy').value;
-
-            updateProfile({
-                name: name,
-                businessName: biz,
-                logo: finalLogo,
-                bottleneck: bottleneck,
-                strategyMode: strategyMode,
-                reminderTimes: newReminders,
-                planningDay: planningDay
-            });
 
             updateGoals({
                 focus: focus,
@@ -3233,6 +3220,33 @@ function settingsAttachEvents() {
             window.location.reload();
         });
     }
+
+    // Bind Notification Permission Request to Checkboxes
+    ['remind-weekly', 'remind-daily', 'remind-friday'].forEach(id => {
+        const checkbox = document.getElementById(id);
+        if (checkbox) {
+            checkbox.addEventListener('change', async (e) => {
+                if (e.target.checked && 'Notification' in window) {
+                    if (Notification.permission !== 'granted' && Notification.permission !== 'denied') {
+                        const permission = await Notification.requestPermission();
+                        if (permission !== 'granted') {
+                            e.target.checked = false; // Revert if denied
+                            alert("You must allow notifications in your browser settings to enable reminders.");
+                        } else {
+                            if ('serviceWorker' in navigator) {
+                                navigator.serviceWorker.ready.then(registration => {
+                                    registration.showNotification("CEO Planner", {
+                                        body: "Notifications successfully linked!",
+                                        icon: "https://cdn-icons-png.flaticon.com/512/864/864685.png"
+                                    });
+                                });
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
 
     // Handle Factory Reset
     const resetBtn = document.getElementById('btn-reset-data');
@@ -4342,6 +4356,9 @@ function router() {
     
     // Auth Intercept
     const isAuthenticated = localStorage.getItem('ceo_auth') === 'true';
+    
+    // Boot up the localized notification engine
+    if (isAuthenticated) checkPushNotifications();
     if (!isAuthenticated && hash !== '#/login' && hash !== '#/signup') {
         window.location.hash = '#/login';
         return;
@@ -4427,6 +4444,48 @@ function attachEventListeners(hash) {
 window.setScreenModule = function(module) {
     window.currentScreen = module;
 };
+
+// Local Notification Engine (Active Tab Only for MVP)
+function checkPushNotifications() {
+    const store = getStore();
+    if (!store.profile || !store.profile.reminderTimes) return;
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+
+    const now = new Date();
+    const todayName = now.toLocaleDateString('en-US', { weekday: 'long' });
+    const hour = now.getHours();
+    
+    const lastFiredStore = JSON.parse(localStorage.getItem('ceo_notif_last') || '{}');
+    const todayStr = now.toISOString().split('T')[0];
+    
+    const fireLocalNotification = (key, title, body) => {
+        if (lastFiredStore[key] !== todayStr) {
+            if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+                navigator.serviceWorker.ready.then(reg => {
+                    reg.showNotification(title, { body, icon: "https://cdn-icons-png.flaticon.com/512/864/864685.png" });
+                });
+            } else {
+                new Notification(title, { body });
+            }
+            lastFiredStore[key] = todayStr;
+            localStorage.setItem('ceo_notif_last', JSON.stringify(lastFiredStore));
+        }
+    };
+
+    const planningDay = store.profile.planningDay || 'Monday';
+    
+    if (store.profile.reminderTimes.includes('Weekly Prompt') && todayName === planningDay && hour >= 8) {
+        fireLocalNotification('weekly_prompt', 'Weekly CEO Planning', 'Time to plan your week and stay focused on your 90-day trajectory.');
+    }
+
+    if (store.profile.reminderTimes.includes('Daily Priority Check') && hour >= 12) {
+        fireLocalNotification('daily_priority', 'Daily Check-in', 'Have you finalized your primary priority block for today?');
+    }
+
+    if (store.profile.reminderTimes.includes('Friday Review Prompt') && todayName === 'Friday' && hour >= 14) {
+        fireLocalNotification('friday_review', 'Friday Review', 'Time to log your wins and track your revenue for the week!');
+    }
+}
 
 // Initialize
 window.addEventListener('hashchange', router);

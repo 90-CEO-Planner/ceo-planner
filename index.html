@@ -4,7 +4,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>The 90-Day CEO Planning Framework</title>
+    <link rel="icon" type="image/x-icon" href="favicon.ico" />
+    <link rel="manifest" href="manifest.json">
+    <title>CEO Planner Framework</title>
 
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -38,6 +40,16 @@
 
     <!-- Main App Logic -->
     <script src="./js/bundle.js" defer></script>
+    
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('sw.js')
+            .then(reg => console.log('Service Worker installed securely.', reg))
+            .catch(err => console.error('Service Worker installation failed: ', err));
+        });
+      }
+    </script>
 </body>
 
 </html>
