@@ -742,9 +742,29 @@ function initChatWidget() {
     const loadMemory = () => {
         if (!window.ceoChatHistory || window.ceoChatHistory.length === 0) {
             window.ceoChatHistory = [];
-            messagesEl.innerHTML = renderWidgetMessage('assistant', "Hello. I have your database loaded in context. What is your primary bottleneck right now?");
+            const greeting = `Hello! I am your Executive AI Advisor. I have your 90-day goals, active bottleneck, and recent task history fully loaded in my context. How can I accelerate your productivity today?`;
+            
+            messagesEl.innerHTML = renderWidgetMessage('assistant', greeting);
+            
+            // Inject Quick Prompt Chips
+            messagesEl.innerHTML += `
+                <div style="display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.25rem;">
+                    <button onclick="document.getElementById('ai-widget-input').value='Critique my latest weekly plan: are there too many distractions?'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-primary); color: var(--color-primary); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
+                        🎯 <b>Plan Alignment:</b> Critique my weekly priorities.
+                    </button>
+                    <button onclick="document.getElementById('ai-widget-input').value='Give me 3 specific, fast actions I can take this week to overcome my main bottleneck.'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-primary); color: var(--color-primary); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
+                        🚧 <b>Bottleneck Resolution:</b> Give me 3 fast actions to unblock me.
+                    </button>
+                    <button onclick="document.getElementById('ai-widget-input').value='Based on my current business stage and goals, what is the #1 revenue-generating action I should focus on today?'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-primary); color: var(--color-primary); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
+                        💰 <b>Revenue Focus:</b> What is the #1 action I should take today?
+                    </button>
+                </div>
+            `;
+            
         } else {
-            messagesEl.innerHTML = window.ceoChatHistory.map(m => renderWidgetMessage(m.role, m.content)).join('');
+            // Render from history, removing any old structural HTML
+            const displayHistory = window.ceoChatHistory.filter(m => m.role !== 'system');
+            messagesEl.innerHTML = displayHistory.map(m => renderWidgetMessage(m.role, m.content)).join('');
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
     };
@@ -3642,8 +3662,8 @@ function renderCoach() {
         <div class="main-content" style="max-width: 800px; padding-top: 2rem;">
             
             <div style="margin-bottom: 2rem; text-align: center;">
-                <h2>CEO Command Center</h2>
-                <p style="color: var(--color-text-muted);">Your personalized strategy dashboard.</p>
+                <h2>AI Coach</h2>
+                <p style="color: var(--color-text-muted);">Your personalized strategic advisor.</p>
             </div>
 
             <div style="display: flex; flex-direction: column; gap: 2rem;">
@@ -3696,35 +3716,27 @@ function renderCoach() {
 function generateInsights(store) {
     const reviews = store.reviews || [];
     const plans = store.weeklyPlans || [];
-    const name = store.profile?.name || 'CEO';
-    const bottleneck = store.profile?.bottleneck || '';
-
-    let baseGreeting = `Hey ${name}, let's look at your momentum. `;
-
+    
+    // Check if we have enough data
     if (reviews.length < 2 && plans.length < 2) {
-        return baseGreeting + "Complete a few more weekly plans and Friday reviews so I can start learning your working patterns and generating personalized insights.";
+        return "Not enough data yet. Complete a few more weekly plans and Friday reviews so your Coach can spot patterns and generate personalized insights.";
     }
 
     const recentPlans = plans.slice(-3);
     let visibilityCount = 0; let followUpCount = 0; let revActionCount = 0;
 
     recentPlans.forEach(p => {
-        if (p.visibilityAction?.length > 5) visibilityCount++;
-        if (p.followUps?.length > 5 && !p.followUps.toLowerCase().includes('none')) followUpCount++;
-        if (p.revenueAction?.length > 5) revActionCount++;
+        if (p.visibilityAction && p.visibilityAction.length > 5) visibilityCount++;
+        if (p.followUps && p.followUps.length > 5 && !p.followUps.toLowerCase().includes('none')) followUpCount++;
+        if (p.revenueAction && p.revenueAction.length > 5) revActionCount++;
     });
 
-    if (visibilityCount >= 2 && followUpCount === 0) {
-        let msg = baseGreeting + "I'm noticing you've had strong visibility over the last few weeks! However, I don't see many follow-ups planned. ";
-        if (bottleneck.includes('Sales')) msg += "Since sales conversion is a bottleneck for you right now, I highly recommend scheduling two follow-up conversations this week.";
-        else msg += "Consider scheduling follow-up conversations this week to turn that visibility into revenue.";
-        return msg;
+    // 1. Sales/Conversion Check
+    if (visibilityCount >= 2 && (followUpCount === 0 || revActionCount === 0)) {
+        return "<strong>Sales/Conversion Alert:</strong> You have been doing a lot of 'Visibility' and marketing actions recently, but you are failing to log 'Follow-up' or direct 'Revenue' actions. Stop marketing immediately and start scheduling sales conversations to convert your generated interest into revenue.";
     }
 
-    if (revActionCount < 2 && recentPlans.length >= 3) {
-        return baseGreeting + "Revenue-generating actions haven't been your main focus lately. Let's make direct sales conversations your top priority this week.";
-    }
-
+    // 2. Time/Energy Check
     const recentReviews = reviews.slice(-3);
     let difficultContent = false;
     recentReviews.forEach(r => {
@@ -3735,13 +3747,10 @@ function generateInsights(store) {
     });
 
     if (difficultContent) {
-        let msg = baseGreeting + "You've mentioned content creation as a drain in your recent Friday reviews. ";
-        if (bottleneck.includes('Time')) msg += "Since time is tight, dedicate a specific 90-minute block early in the week to get it out of the way.";
-        else msg += "Consider lowering the volume or batching your content so it doesn't leak energy across your week.";
-        return msg;
+        return "<strong>Energy Drain Alert:</strong> You consistently mention that writing, emails, or content creation was difficult or draining. Consider lowering your content volume or immediately start batch-creating it on Mondays so it stops dragging down your energy all week.";
     }
 
-    return baseGreeting + "You are consistently logging your plans and protecting your CEO time—well done! Keep focusing closely on your revenue-generating actions.";
+    return "Your momentum looks clean. You are protecting your CEO time and focusing on revenue-generating actions. Keep executing your 90-day plan.";
 }
 
 function coachAttachEvents() {
@@ -3755,32 +3764,36 @@ function coachAttachEvents() {
             e.preventDefault();
             const idea = document.getElementById('idea-input').value.toLowerCase();
             const store = getStore();
+            
             const focus = (store.goals?.focus || '').toLowerCase();
             const priorities = (store.goals?.priorities || []).join(' ').toLowerCase();
+            const strategyMode = (store.profile?.stage || '').toLowerCase(); // Approximating Strategy Mode from stage
 
             let score = "Busy Work";
             let color = "#B42318";
             let bg = "#FEE4E2";
-            let explanation = "This idea does not strongly align with your current 90-day focus or priorities. It may be a distraction. Put it in an idea parking lot for the next quarter.";
+            let explanation = "This idea represents a tangent, distraction, or simply doesn't share DNA with your current Top 3 priorities. Put it in an idea parking lot for the next quarter.";
 
             const ideaWords = idea.split(' ').filter(w => w.length > 3);
             let matchCount = 0;
+            
             ideaWords.forEach(word => {
-                if (focus.includes(word) || priorities.includes(word)) matchCount++;
+                if (focus.includes(word) || priorities.includes(word) || strategyMode.includes(word)) {
+                    matchCount++;
+                }
             });
 
-            if (matchCount >= 2 || idea.includes('sales') || idea.includes('revenue')) {
+            // "If the idea directly aligns with your stated 90-day focus or heavily supports your active Strategy Mode"
+            if (matchCount >= 2 || (idea.includes('sales') || idea.includes('revenue') || idea.includes('offer'))) {
                 score = "Strategic";
                 color = "#027A48"; bg = "#E1FDF4";
-                explanation = "This idea strongly supports your current 90-day focus. It's a solid action to add to your weekly plan.";
-            } else if (matchCount === 1) {
-                score = "Busy Work";
-                color = "#B54708"; bg = "#FEF0C7";
-                explanation = "This idea has some alignment with your goals, but might be secondary. Only proceed if you have extra capacity.";
+                explanation = "This idea directly aligns with your stated 90-day focus and supports your active Strategy Mode. Add it to your weekly plan.";
             }
 
             const scoreEl = document.getElementById('alignment-score');
-            scoreEl.textContent = score; scoreEl.style.color = color; scoreEl.style.backgroundColor = bg;
+            scoreEl.textContent = score; 
+            scoreEl.style.color = color; 
+            scoreEl.style.backgroundColor = bg;
             document.getElementById('alignment-explanation').textContent = explanation;
             document.getElementById('decision-result').style.display = 'block';
         });

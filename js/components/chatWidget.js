@@ -87,9 +87,29 @@ function initChatWidget() {
     const loadMemory = () => {
         if (!window.ceoChatHistory || window.ceoChatHistory.length === 0) {
             window.ceoChatHistory = [];
-            messagesEl.innerHTML = renderWidgetMessage('assistant', "Hello. I have your database loaded in context. What is your primary bottleneck right now?");
+            const greeting = `Hello! I am your Executive AI Advisor. I have your 90-day goals, active bottleneck, and recent task history fully loaded in my context. How can I accelerate your productivity today?`;
+            
+            messagesEl.innerHTML = renderWidgetMessage('assistant', greeting);
+            
+            // Inject Quick Prompt Chips
+            messagesEl.innerHTML += `
+                <div style="display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.25rem;">
+                    <button onclick="document.getElementById('ai-widget-input').value='Critique my latest weekly plan: are there too many distractions?'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-primary); color: var(--color-primary); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
+                        🎯 <b>Plan Alignment:</b> Critique my weekly priorities.
+                    </button>
+                    <button onclick="document.getElementById('ai-widget-input').value='Give me 3 specific, fast actions I can take this week to overcome my main bottleneck.'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-primary); color: var(--color-primary); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
+                        🚧 <b>Bottleneck Resolution:</b> Give me 3 fast actions to unblock me.
+                    </button>
+                    <button onclick="document.getElementById('ai-widget-input').value='Based on my current business stage and goals, what is the #1 revenue-generating action I should focus on today?'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-primary); color: var(--color-primary); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
+                        💰 <b>Revenue Focus:</b> What is the #1 action I should take today?
+                    </button>
+                </div>
+            `;
+            
         } else {
-            messagesEl.innerHTML = window.ceoChatHistory.map(m => renderWidgetMessage(m.role, m.content)).join('');
+            // Render from history, removing any old structural HTML
+            const displayHistory = window.ceoChatHistory.filter(m => m.role !== 'system');
+            messagesEl.innerHTML = displayHistory.map(m => renderWidgetMessage(m.role, m.content)).join('');
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
     };
