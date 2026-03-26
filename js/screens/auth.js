@@ -54,6 +54,9 @@ export function renderAuth(isSignup = false) {
 
 function authAttachEvents() {
     const form = document.getElementById('auth-form');
+    // Determine if we are on the signup screen by looking for the explicit signup field
+    const isSignup = document.getElementById('auth-name') !== null;
+
     if (form) {
         form.addEventListener('submit', (e) => {
             e.preventDefault();
