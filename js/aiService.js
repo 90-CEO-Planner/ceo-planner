@@ -48,7 +48,7 @@ export async function generateAIResponse(messageHistory) {
     ];
 
     try {
-        const { data, error } = await window.supabase.functions.invoke('chat', {
+        const { data, error } = await window.db.functions.invoke('chat', {
             body: { messages: messages }
         });
 
