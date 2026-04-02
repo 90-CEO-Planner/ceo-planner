@@ -83,10 +83,10 @@ export function saveStore(state) {
         
         // Fire-and-forget background cloud sync
         if (localStorage.getItem('ceo_auth') === 'true') {
-            db.auth.getSession().then(({ data: sessionData }) => {
+            window.db.auth.getSession().then(({ data: sessionData }) => {
                 if (sessionData && sessionData.session) {
                     const user = sessionData.session.user;
-                    db.from('user_data').upsert({
+                    window.db.from('user_data').upsert({
                         user_id: user.id,
                         data: state
                     }).then(({ error }) => {
