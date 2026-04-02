@@ -90,7 +90,13 @@ export function saveStore(state) {
                         user_id: user.id,
                         data: state
                     }).then(({ error }) => {
-                        if (error) console.error("Background cloud sync failed", error);
+                        if (error) {
+                            console.error("Background cloud sync failed", error);
+                            if (!window._syncErrorAlerted) {
+                                alert("Warning: Cloud sync failed. Your data is only saved locally. Please check your Supabase RLS policies on the user_data table. Error: " + error.message);
+                                window._syncErrorAlerted = true;
+                            }
+                        }
                     });
                 }
             });

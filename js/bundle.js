@@ -104,7 +104,13 @@ function saveStore(state) {
                         user_id: user.id,
                         data: state
                     }).then(({ error }) => {
-                        if (error) console.error("Background cloud sync failed", error);
+                        if (error) {
+                            console.error("Background cloud sync failed", error);
+                            if (!window._syncErrorAlerted) {
+                                alert("Warning: Cloud sync failed. Your data is only saved locally. Please check your Supabase RLS policies on the user_data table. Error: " + error.message);
+                                window._syncErrorAlerted = true;
+                            }
+                        }
                     });
                 }
             });
@@ -843,6 +849,14 @@ function renderWelcome() {
     // We bind the event listeners after HTML is rendered using setScreenModule
     window.setScreenModule({ attachEvents: welcomeAttachEvents });
 
+    const isAuthenticated = localStorage.getItem('ceo_auth') === 'true';
+    const skipButton = isAuthenticated ? `
+        <div style="margin-top: 1rem; text-align: center;">
+            <button type="button" onclick="localStorage.removeItem('ceo_auth'); localStorage.removeItem('ceoPlanner_store'); window.db.auth.signOut().then(() => { window.location.hash='#/login'; window.location.reload(); });" class="btn" style="background: transparent; border: 1px solid var(--color-primary); color: var(--color-primary); width: 100%;">Log Out to Reset Session</button>
+            <p style="color: var(--color-text-muted); font-size: 0.8rem; margin-top: 0.5rem;">Clicking "Log Out" will let you log in to sync your data again.</p>
+        </div>
+    ` : '';
+
     return `
         <div class="main-content" style="max-width: 600px; padding-top: 10vh;">
             <div class="card text-center">
@@ -880,6 +894,7 @@ function renderWelcome() {
                     <div class="flex justify-center mt-8">
                         <button type="submit" class="btn btn-primary" style="width: 100%;">Start Planning Like a CEO</button>
                     </div>
+                    ${skipButton}
                 </form>
             </div>
         </div>
@@ -4578,6 +4593,10 @@ function authAttachEvents() {
                                     .eq('user_id', data.user.id)
                                     .single();
                                 
+                                if (dbError && dbError.code !== 'PGRST116') {
+                                    alert("Error fetching cloud profile: " + dbError.message);
+                                }
+
                                 if (dbData && dbData.data) {
                                     localStorage.setItem('ceoPlanner_store', JSON.stringify(dbData.data));
                                 }

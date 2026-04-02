@@ -109,6 +109,10 @@ function authAttachEvents() {
                                     .eq('user_id', data.user.id)
                                     .single();
                                 
+                                if (dbError && dbError.code !== 'PGRST116') {
+                                    alert("Error fetching cloud profile: " + dbError.message);
+                                }
+
                                 if (dbData && dbData.data) {
                                     localStorage.setItem('ceoPlanner_store', JSON.stringify(dbData.data));
                                 }

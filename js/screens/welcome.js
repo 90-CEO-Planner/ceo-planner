@@ -5,6 +5,14 @@ export function renderWelcome() {
     // We bind the event listeners after HTML is rendered using setScreenModule
     window.setScreenModule({ attachEvents: welcomeAttachEvents });
 
+    const isAuthenticated = localStorage.getItem('ceo_auth') === 'true';
+    const skipButton = isAuthenticated ? `
+        <div style="margin-top: 1rem; text-align: center;">
+            <button type="button" onclick="localStorage.removeItem('ceo_auth'); localStorage.removeItem('ceoPlanner_store'); window.db.auth.signOut().then(() => { window.location.hash='#/login'; window.location.reload(); });" class="btn" style="background: transparent; border: 1px solid var(--color-primary); color: var(--color-primary); width: 100%;">Log Out to Reset Session</button>
+            <p style="color: var(--color-text-muted); font-size: 0.8rem; margin-top: 0.5rem;">Clicking "Log Out" will let you log in to sync your data again.</p>
+        </div>
+    ` : '';
+
     return `
         <div class="main-content" style="max-width: 600px; padding-top: 10vh;">
             <div class="card text-center">
@@ -42,6 +50,7 @@ export function renderWelcome() {
                     <div class="flex justify-center mt-8">
                         <button type="submit" class="btn btn-primary" style="width: 100%;">Start Planning Like a CEO</button>
                     </div>
+                    ${skipButton}
                 </form>
             </div>
         </div>
