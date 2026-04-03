@@ -30,6 +30,14 @@ const defaultState = {
         averageOfferPrice: 0,
         entries: [] // Array of { id, date, weekStart, amount, notes }
     },
+    leads: {
+        quarterlyGoal: 0,
+        entries: [] // Array of { id, date, amount, source }
+    },
+    metrics: [], // Array of { id, date, traffic, calls, social }
+    settings: {
+        currency: '$'
+    },
     weeklyPlans: [], // Array of plan objects
     reviews: [], // Array of review objects
     monthlyReviews: [], // Array of monthly review objects
@@ -49,6 +57,9 @@ export function getStore() {
                 profile: { ...defaultState.profile, ...(parsed.profile || {}) },
                 goals: { ...defaultState.goals, ...(parsed.goals || {}) },
                 revenue: { ...defaultState.revenue, ...(parsed.revenue || {}) },
+                leads: { ...defaultState.leads, ...(parsed.leads || {}) },
+                settings: { ...defaultState.settings, ...(parsed.settings || {}) },
+                metrics: parsed.metrics || [],
                 weeklyPlans: parsed.weeklyPlans || [],
                 reviews: parsed.reviews || [],
                 monthlyReviews: parsed.monthlyReviews || [],
@@ -138,6 +149,50 @@ export function deleteRevenueEntry(id) {
     store.revenue.entries = store.revenue.entries.filter(e => String(e.id) !== String(id));
     saveStore(store);
     return store.revenue.entries.length < initialLen;
+}
+
+export function updateSettings(settings) {
+    const store = getStore();
+    store.settings = { ...store.settings, ...settings };
+    saveStore(store);
+}
+
+export function updateLeadGoal(goal) {
+    const store = getStore();
+    store.leads.quarterlyGoal = goal;
+    saveStore(store);
+}
+
+export function addLeadEntry(entry) {
+    const store = getStore();
+    entry.id = Date.now().toString();
+    entry.date = entry.date || new Date().toISOString();
+    store.leads.entries.push(entry);
+    saveStore(store);
+}
+
+export function deleteLeadEntry(id) {
+    const store = getStore();
+    const initialLen = store.leads.entries.length;
+    store.leads.entries = store.leads.entries.filter(e => String(e.id) !== String(id));
+    saveStore(store);
+    return store.leads.entries.length < initialLen;
+}
+
+export function addMetricSnapshot(snapshot) {
+    const store = getStore();
+    snapshot.id = Date.now().toString();
+    snapshot.date = snapshot.date || new Date().toISOString();
+    store.metrics.push(snapshot);
+    saveStore(store);
+}
+
+export function deleteMetricSnapshot(id) {
+    const store = getStore();
+    const initialLen = store.metrics.length;
+    store.metrics = store.metrics.filter(m => String(m.id) !== String(id));
+    saveStore(store);
+    return store.metrics.length < initialLen;
 }
 
 export function getRevenueInsights() {

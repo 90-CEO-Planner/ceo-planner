@@ -148,18 +148,33 @@ function renderStepContent() {
 
     if (currentStep === 5) {
         return `
-            <h3 class="mb-2">Set Your Revenue Target</h3>
-            <p class="form-helper mb-6" style="font-size: 0.9rem;">What is your quarterly revenue goal, and what is the average price of your offer?</p>
+            <h3 class="mb-2">The Analytics Pipeline</h3>
+            <p class="form-helper mb-6" style="font-size: 0.9rem;">Set your targets for revenue and leads so we can track your conversion rate.</p>
             
             <form id="wizard-form-5">
                 <div class="form-group">
-                    <label class="form-label" style="color: var(--color-primary-dark);">Quarterly Revenue Goal ($)</label>
-                    <input type="number" class="form-input" id="rev-goal" value="${store.revenue?.quarterlyGoal || ''}" min="0" step="100" placeholder="e.g. 15000" required />
+                    <label class="form-label" style="color: var(--color-primary-dark);">Currency Symbol</label>
+                    <select class="form-input" id="currency-symbol" required style="padding: 0.75rem;">
+                        <option value="$" ${store.settings?.currency === '$' ? 'selected' : ''}>$ USD/CAD/AUD</option>
+                        <option value="£" ${store.settings?.currency === '£' ? 'selected' : ''}>£ GBP</option>
+                        <option value="€" ${store.settings?.currency === '€' ? 'selected' : ''}>€ EUR</option>
+                        <option value="¥" ${store.settings?.currency === '¥' ? 'selected' : ''}>¥ JPY/CNY</option>
+                        <option value="₹" ${store.settings?.currency === '₹' ? 'selected' : ''}>₹ INR</option>
+                    </select>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">Average Offer Price ($)</label>
+                <div class="form-group mt-6">
+                    <label class="form-label" style="color: var(--color-primary-dark);">Quarterly Revenue Goal</label>
+                    <input type="number" class="form-input" id="rev-goal" value="${store.revenue?.quarterlyGoal || ''}" min="0" step="1" placeholder="e.g. 15000" required />
+                </div>
+                <div class="form-group mt-6">
+                    <label class="form-label">Average Offer Price</label>
                     <input type="number" class="form-input" id="offer-price" value="${store.revenue?.averageOfferPrice || ''}" min="0" step="any" placeholder="e.g. 1500" required />
                     <span class="form-helper mt-1" style="display: block;">We'll use this to calculate how many sales you need.</span>
+                </div>
+                <div class="form-group mt-6">
+                    <label class="form-label" style="color: var(--color-accent-dark);">Quarterly Lead Goal</label>
+                    <input type="number" class="form-input" id="lead-goal" value="${store.leads?.quarterlyGoal || ''}" min="0" step="1" placeholder="e.g. 500" required />
+                    <span class="form-helper mt-1" style="display: block;">How many new subscribers or leads do you want to attract?</span>
                 </div>
                 <div class="flex justify-between mt-8">
                     <button type="button" class="btn btn-ghost" id="btn-back">Back</button>
@@ -273,10 +288,15 @@ function wizardAttachEvents() {
                 wizardAttachEvents();
             }
             else if (currentStep === 5) {
+                updateSettings({
+                    currency: document.getElementById('currency-symbol').value
+                });
                 updateRevenueSettings({
                     quarterlyGoal: parseFloat(document.getElementById('rev-goal').value),
                     averageOfferPrice: parseFloat(document.getElementById('offer-price').value)
                 });
+                updateLeadGoal(parseFloat(document.getElementById('lead-goal').value));
+
                 currentStep++;
                 document.getElementById('app-container').innerHTML = renderWizard();
                 wizardAttachEvents();

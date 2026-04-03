@@ -7,6 +7,7 @@ export function renderProgress() {
     window.setScreenModule({ attachEvents: progressAttachEvents });
     const store = getStore();
     const reviews = store.reviews;
+    const monthlyReviews = store.monthlyReviews || [];
     const plansCount = store.weeklyPlans.length;
 
     return `
@@ -83,7 +84,7 @@ export function renderProgress() {
                     <div class="card text-center" style="padding: 3rem 1rem; border: 1px dashed var(--color-border); background: transparent; box-shadow: none;">
                         <p style="color: var(--color-text-muted);">No reviews complete yet. Do your first Friday Review to see your wins here.</p>
                     </div>
-                ` : reviews.reverse().map(r => `
+                ` : reviews.slice().reverse().map(r => `
                     <div class="card mb-4" style="border-left: 4px solid var(--color-secondary);">
                         <div class="flex justify-between items-center mb-2">
                             <span style="font-size: 0.75rem; color: var(--color-text-muted); font-weight: 600; text-transform: uppercase;">
@@ -105,6 +106,29 @@ export function renderProgress() {
                     </div>
                 `).join('')}
             </div>
+
+            ${monthlyReviews.length > 0 ? `
+                <div class="flex items-center justify-between mb-4 mt-8">
+                    <h3 style="margin: 0;">Monthly Strategic Reviews</h3>
+                    <span style="font-size: 0.9rem; color: var(--color-text-muted);">${monthlyReviews.length} months logged</span>
+                </div>
+                <div id="monthly-wins-list">
+                    ${monthlyReviews.slice().reverse().map(mr => `
+                        <div class="card mb-4" style="border-left: 4px solid var(--color-accent);">
+                            <div class="mb-2">
+                                <span style="font-size: 0.75rem; color: var(--color-text-muted); font-weight: 600; text-transform: uppercase;">
+                                    Month ending ${new Date(mr.date).toLocaleDateString()}
+                                </span>
+                            </div>
+                            <p style="font-size: 0.875rem; color: var(--color-text-muted); margin-bottom: 0.5rem;"><span style="font-weight: 600;">Biggest Lead Generator:</span> ${mr.leads}</p>
+                            <p style="font-size: 0.875rem; color: var(--color-text-muted); margin-bottom: 0.5rem;"><span style="font-weight: 600;">Sales Driver:</span> ${mr.sales}</p>
+                            <p style="font-size: 0.875rem; color: var(--color-text-muted); margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--color-border);">
+                                <span style="font-weight: 600;">Elimination Directive:</span> Stop doing ${mr.eliminate} (draining: ${mr.drain})
+                            </p>
+                        </div>
+                    `).join('')}
+                </div>
+            ` : ''}
 
             <div class="flex items-center justify-between mb-4 mt-8">
                 <h3 style="margin: 0;">Daily Actions History</h3>

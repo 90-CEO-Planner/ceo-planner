@@ -19,6 +19,28 @@ function buildSystemPrompt() {
         totalRev = store.revenue.entries.reduce((sum, entry) => sum + (parseFloat(entry.amount) || 0), 0);
     }
     const revGoal = store.revenue?.quarterlyGoal || 0;
+    const currency = store.settings?.currency || '$';
+
+    // Pipeline & Conversion Metrics
+    let totalLeads = 0;
+    if (store.leads && store.leads.entries) {
+        totalLeads = store.leads.entries.reduce((sum, l) => sum + (parseFloat(l.amount) || 0), 0);
+    }
+    const leadGoal = store.leads?.quarterlyGoal || 0;
+    
+    let metricsContext = "No monthly snapshot metrics available.";
+    let callCloseRate = "Unknown";
+    if (store.metrics && store.metrics.length > 0) {
+        const lastSnapshot = store.metrics[store.metrics.length - 1];
+        metricsContext = `Recent Snapshot: ${lastSnapshot.traffic} traffic, ${lastSnapshot.calls} calls booked, ${lastSnapshot.social} total social audience.`;
+        const totalCalls = store.metrics.reduce((sum, m) => sum + (parseFloat(m.calls) || 0), 0);
+        const salesCount = store.revenue?.entries ? store.revenue.entries.length : 0;
+        if (totalCalls > 0) {
+            callCloseRate = ((salesCount / totalCalls) * 100).toFixed(1) + "%";
+        } else if (salesCount > 0) {
+            callCloseRate = "100%";
+        }
+    }
 
     // 1. Weekly Plan Data
     const recentPlan = store.weeklyPlans && store.weeklyPlans.length > 0 
@@ -34,7 +56,7 @@ function buildSystemPrompt() {
         .slice()
         .sort((a, b) => new Date(b.date) - new Date(a.date))
         .slice(0, 3)
-        .map(e => `$${e.amount} from ${e.source || 'Unknown'}`)
+        .map(e => `${currency}${e.amount} from ${e.source || 'Unknown'}`)
         .join(', ');
     const recentSalesContext = recentSales || "No recent sales logged.";
 
@@ -54,7 +76,9 @@ Here is their exact, real-time business context:
 - #1 Current Bottleneck: ${bottleneck}
 - Primary 90-Day Goal: ${focus}
 - Desired 90-Day Outcome: ${outcome}
-- Quarterly Revenue: $${totalRev.toLocaleString()} out of $${revGoal.toLocaleString()} goal.
+- Quarterly Revenue: ${currency}${totalRev.toLocaleString()} out of ${currency}${revGoal.toLocaleString()} goal.
+- Quarterly Leads: ${totalLeads.toLocaleString()} out of ${leadGoal.toLocaleString()} goal.
+- Pipeline Overview: ${metricsContext} | Call Close Rate: ${callCloseRate}
 - Recent Sales: ${recentSalesContext}
 - Current Active Priorities: ${priorities.join(', ') || 'None set'}.
 - This Week's Plan: ${weeklyPlanContext}
@@ -62,9 +86,11 @@ Here is their exact, real-time business context:
 
 Instructions:
 1. Base all of your advice strictly on the exact context provided above.
-2. If they are behind on revenue, aggressively pivot them to sales/marketing actions.
-3. If they complain about being overwhelmed, tell them to delete tasks that do not serve their primary 90-Day Goal.
-4. Keep all responses under 3 paragraphs. Use bullet points if necessary. NEVER provide generic business advice; always tie it back to their specific bottleneck or revenue target.`;
+2. Be an active, inquisitive coach: Rather than just giving answers, ask them WHY they chose specific tasks to understand their logic and scope before giving a final verdict.
+3. Highly Actionable: When providing tactical advice, don't just tell them what to do. Break the task down into specific, step-by-step MICRO-TASKS showing exactly HOW to execute it.
+4. Explain Your Rationale: If you disagree with their weekly actions because they don't align with the primary 90-Day Goal or #1 Bottleneck, forcefully but professionally challenge them. Explain exactly WHY you disagree and suggest what makes more sense based on their data.
+5. If they are behind on revenue, aggressively pivot them to direct sales/marketing actions.
+6. Avoid repetition. Be concise. Use bullet points for micro-tasks. NEVER provide generic business advice; always tie your critiques back to their specific bottleneck or revenue target.`;
 
     return prompt;
 }

@@ -8,6 +8,7 @@ export function renderDashboard() {
     const g = store.goals;
     const streak = store.streak;
     const revInsights = getRevenueInsights();
+    const currency = store.settings?.currency || '$';
 
     // Check if there is an active weekly plan
     let activePlan = store.weeklyPlans.length > 0 ? store.weeklyPlans[store.weeklyPlans.length - 1] : null;
@@ -161,12 +162,12 @@ export function renderDashboard() {
                             ${renderTooltip("The total amount of sales logged in the current calendar week.", "Tracking your weekly cash flow keeps your finger on the pulse of the business and prevents end-of-quarter surprises.")}
                         </h3>
                         <div style="font-size: 1.75rem; font-weight: 700; color: var(--color-accent-dark); line-height: 1;">
-                            $${revInsights.revenueThisWeek.toLocaleString()}
+                            ${currency}${revInsights.revenueThisWeek.toLocaleString()}
                         </div>
                     </div>
                     <div style="text-align: right;">
                         <span style="font-size: 0.8rem; color: var(--color-text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Weekly Target</span>
-                        <div style="font-size: 1rem; color: var(--color-text-main); font-weight: 600;">$${revInsights.weeklyTargetLength.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                        <div style="font-size: 1rem; color: var(--color-text-main); font-weight: 600;">${currency}${revInsights.weeklyTargetLength.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
                     </div>
                 </div>
                 
@@ -180,7 +181,7 @@ export function renderDashboard() {
                     <div class="progress-bar" style="height: 100%; width: ${revInsights.progressPercent}%; background: linear-gradient(90deg, var(--color-primary) 0%, var(--color-primary-dark) 100%); transition: width 0.5s ease-out;"></div>
                 </div>
                 <div class="flex justify-between" style="font-size: 0.8rem; color: var(--color-text-muted);">
-                    <span>$${revInsights.totalRevenue.toLocaleString()} / $${revInsights.goal.toLocaleString()}</span>
+                    <span>${currency}${revInsights.totalRevenue.toLocaleString()} / ${currency}${revInsights.goal.toLocaleString()}</span>
                     <span>${revInsights.salesRemaining} sales left</span>
                 </div>
             </div>

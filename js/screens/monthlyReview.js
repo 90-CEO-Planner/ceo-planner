@@ -163,7 +163,7 @@ function monthlyReviewAttachEvents() {
 
     const form = document.getElementById('monthly-review-form');
     if (form) {
-        form.addEventListener('submit', (e) => {
+        form.addEventListener('submit', async (e) => {
             e.preventDefault();
             if (isRecording) stopRecording();
 
@@ -180,36 +180,80 @@ function monthlyReviewAttachEvents() {
             // Generate Summary Output
             const resultDiv = document.getElementById('monthly-summary-result');
             form.style.display = 'none'; // Hide the form
-
-            // Basic AI logic summary synthesis
-            let primaryDriver = review.leads.split(' ')[0] || "Your marketing"; // Crude extraction
-            if (review.leads.length > 20) {
-                const words = review.leads.split(' ');
-                primaryDriver = words.slice(0, 3).join(' ');
-            }
-
             resultDiv.style.display = 'block';
             resultDiv.innerHTML = `
-                <div class="card" style="border-top: 4px solid var(--color-primary); background-color: #f9f9ff;">
-                    <h3 class="mb-4">Your Monthly CEO Summary is Ready</h3>
-                    
-                    <div style="margin-bottom: 1.5rem;">
-                        <p style="font-weight: 600; color: var(--color-primary-dark); margin-bottom: 0.5rem;">The High-Impact Action</p>
-                        <p style="font-size: 1rem; line-height: 1.5;">Your highest-impact activity this month was <strong>"${primaryDriver}..."</strong>. Weeks where you prioritize this tend to yield significantly better results. Double down on this next month.</p>
-                    </div>
-
-                    <div style="margin-bottom: 1.5rem;">
-                        <p style="font-weight: 600; color: #B42318; margin-bottom: 0.5rem;">The Elimination Directive</p>
-                        <p style="font-size: 1rem; line-height: 1.5;">You noted a drain regarding: <em>"${review.drain}"</em>. Your CEO directive for next month is to ruthlessly eliminate, automate, or delegate: <strong>${review.eliminate}</strong>.</p>
-                    </div>
-                    
-                    <div class="flex justify-center mt-6">
-                        <a href="#/progress" class="btn btn-secondary">Go to Progress Dashboard</a>
-                    </div>
+                <div class="card" style="border-top: 4px solid var(--color-primary); background-color: #f9f9ff; text-align: center;">
+                    <div class="spinner" style="margin: 2rem auto;"></div>
+                    <p style="font-weight: 500; font-size: 0.95rem; color: var(--color-primary-dark); margin-bottom: 2rem;">Analyzing your ${new Date().toLocaleString('default', { month: 'long' })} execution data...</p>
                 </div>
             `;
-
             window.scrollTo({ top: 0, behavior: 'smooth' });
+
+            const store = getStore();
+            const recentReviews = (store.reviews || []).slice(-4).map(r => `
+- Week of ${new Date(r.date).toLocaleDateString()}:
+  Worked Well: ${r.workedWell}
+  Difficult: ${r.difficult}
+  Moved Forward: ${r.movedForward}
+            `.trim()).join('\n\n');
+
+            const promptText = `I am submitting my CEO Monthly Review. 
+Here are my answers to the 4 core questions:
+1. Activity that generated the most leads: ${review.leads}
+2. Specific action that generated actual sales: ${review.sales}
+3. What drained my energy/felt misaligned: ${review.drain}
+4. What I am eliminating/delegating next month: ${review.eliminate}
+
+Here is my data from the weekly Friday Reviews this past month:
+${recentReviews ? recentReviews : 'No weekly reviews filled out this month.'}
+
+Based on this data, please write a hyper-personalized Monthly CEO Summary.
+Do not use generic language. Be extremely direct.
+Format it using Markdown with two sections:
+### 📈 The High-Impact Action
+Analyze what actually worked for me based on my real data. Give me a clear directive on what to double down on next month.
+
+### ✂️ The Elimination Directive
+Analyze what drained me. Be ruthless. Tell me exactly what I need to stop doing, automate, or delegate to protect my CEO focus.`;
+
+            try {
+                const { data, error } = await window.db.functions.invoke('chat', {
+                    body: { messages: [{ role: 'user', content: promptText }] }
+                });
+
+                if (error) throw new Error(error.message);
+                if (data.error) throw new Error(data.error.message || data.error);
+
+                // For simple markdown bolding and line breaks since we aren't using a markdown parser library
+                let aiOutput = data.choices[0].message.content
+                    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                    .replace(/### (.*?)\n/g, '<h4 style="margin-top: 1.5rem; color: var(--color-primary-dark);">$1</h4>')
+                    .replace(/\n/g, '<br>');
+
+                resultDiv.innerHTML = `
+                    <div class="card" style="border-top: 4px solid var(--color-primary); background-color: #f9f9ff;">
+                        <h3 class="mb-4">Your Monthly CEO Summary is Ready</h3>
+                        <div style="font-size: 1rem; line-height: 1.6; color: var(--color-text-main);">
+                            ${aiOutput}
+                        </div>
+                        <div class="flex justify-center mt-6">
+                            <a href="#/progress" class="btn btn-secondary">Go to Progress Dashboard</a>
+                        </div>
+                    </div>
+                `;
+            } catch (err) {
+                console.error("AI Generation Failed:", err);
+                resultDiv.innerHTML = `
+                    <div class="card" style="border-top: 4px solid #B42318; background-color: #fcf0f0;">
+                        <h3 class="mb-4">Oops!</h3>
+                        <p>We couldn't generate your AI summary right now. Your review has been saved successfully.</p>
+                        <p style="font-size: 0.8rem; color: #B42318;">Error: ${err.message}</p>
+                        <div class="flex justify-center mt-6">
+                            <a href="#/progress" class="btn btn-secondary">Go to Progress Dashboard</a>
+                        </div>
+                    </div>
+                `;
+            }
         });
     }
 }
