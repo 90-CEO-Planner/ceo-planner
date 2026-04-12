@@ -164,19 +164,32 @@ export function renderRevenue() {
                         </div>
                         ${metrics.length === 0 ? '<p style="color: var(--color-text-muted); font-size: 0.9rem;">No monthly snapshots logged yet.</p>' : `
                         <div style="display: flex; flex-direction: column; gap: 0.75rem;">
-                            ${metrics.slice().reverse().map(m => `
-                                <div style="display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 0.75rem; border-bottom: 1px solid var(--color-border);">
-                                    <div style="flex: 1;">
-                                        <span style="font-weight: 600; color: var(--color-black); display: block;">${new Date(m.date).toLocaleDateString(undefined, {month:'long', year:'numeric'})}</span>
-                                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem; margin-top: 0.5rem;">
-                                            <span style="font-size: 0.8rem; color: var(--color-text-muted);"><strong>Traffic:</strong> ${m.traffic.toLocaleString()}</span>
-                                            <span style="font-size: 0.8rem; color: var(--color-text-muted);"><strong>Calls:</strong> ${m.calls}</span>
-                                            <span style="font-size: 0.8rem; color: var(--color-text-muted);"><strong>Social:</strong> ${m.social.toLocaleString()}</span>
+                            ${(() => {
+                                const sortedMetrics = metrics.slice().sort((a,b) => new Date(a.date) - new Date(b.date));
+                                return sortedMetrics.slice().reverse().map((m, index) => {
+                                    const prev = sortedMetrics.slice().reverse()[index + 1];
+                                    const getDiffHtml = (current, previous) => {
+                                        if (previous === undefined || previous === null) return '';
+                                        const diff = current - previous;
+                                        if (diff > 0) return \`<span style="color: var(--color-primary-dark); font-size: 0.7rem;">(↑ \${diff.toLocaleString()})</span>\`;
+                                        if (diff < 0) return \`<span style="color: var(--color-error); font-size: 0.7rem;">(↓ \${Math.abs(diff).toLocaleString()})</span>\`;
+                                        return \`<span style="color: var(--color-text-muted); font-size: 0.7rem;">(-)</span>\`;
+                                    };
+                                    return \`
+                                    <div style="display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 0.75rem; border-bottom: 1px solid var(--color-border);">
+                                        <div style="flex: 1;">
+                                            <span style="font-weight: 600; color: var(--color-black); display: block;">\${new Date(m.date).toLocaleDateString(undefined, {month:'long', year:'numeric'})}</span>
+                                            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem; margin-top: 0.5rem;">
+                                                <span style="font-size: 0.8rem; color: var(--color-text-muted);"><strong>Traffic:</strong> \${m.traffic.toLocaleString()} \${getDiffHtml(m.traffic, prev?.traffic)}</span>
+                                                <span style="font-size: 0.8rem; color: var(--color-text-muted);"><strong>Calls:</strong> \${m.calls} \${getDiffHtml(m.calls, prev?.calls)}</span>
+                                                <span style="font-size: 0.8rem; color: var(--color-text-muted);"><strong>Social:</strong> \${m.social.toLocaleString()} \${getDiffHtml(m.social, prev?.social)}</span>
+                                            </div>
                                         </div>
+                                        <button type="button" class="btn btn-ghost btn-sm btn-delete-metric" data-id="\${m.id}" style="padding: 0.25rem 0.5rem; color: var(--color-text-muted);" title="Delete Entry">🗑️</button>
                                     </div>
-                                    <button type="button" class="btn btn-ghost btn-sm btn-delete-metric" data-id="${m.id}" style="padding: 0.25rem 0.5rem; color: var(--color-text-muted);" title="Delete Entry">🗑️</button>
-                                </div>
-                            `).join('')}
+                                    \`;
+                                }).join('');
+                            })()}
                         </div>
                         `}
                    </div>
@@ -214,6 +227,8 @@ export function renderRevenue() {
                                <label>Source</label>
                                <select id="log-source" class="form-control" required>
                                    <option value="Instagram">Instagram</option>
+                                   <option value="Facebook">Facebook</option>
+                                   <option value="X">X</option>
                                    <option value="Email">Email</option>
                                    <option value="Live Session">Live Session</option>
                                    <option value="DM Conversation">DM Conversation</option>
@@ -236,6 +251,16 @@ export function renderRevenue() {
                            <div class="form-group">
                                <label>Total Leads Generated</label>
                                <input type="number" id="lead-amount" min="1" step="1" class="form-control" required placeholder="e.g. 50">
+                           </div>
+                           <div class="form-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                               <div>
+                                   <label>Calls Booked</label>
+                                   <input type="number" id="lead-calls" min="0" step="1" class="form-control" value="0" placeholder="0">
+                               </div>
+                               <div>
+                                   <label>Closes (Sales)</label>
+                                   <input type="number" id="lead-closes" min="0" step="1" class="form-control" value="0" placeholder="0">
+                               </div>
                            </div>
                            <div class="form-group">
                                <label>Date</label>
@@ -294,6 +319,7 @@ export function renderRevenue() {
                                         <div>
                                             <span style="font-weight: 600; color: var(--color-secondary-dark); display: block;">+${parseFloat(e.amount).toLocaleString()} Leads</span>
                                             <span style="font-size: 0.8rem; color: var(--color-text-muted);">LEADS • ${new Date(e.date).toLocaleDateString()} • ${e.source}</span>
+                                            ${(e.calls > 0 || e.closes > 0) ? `<div style="font-size: 0.8rem; color: var(--color-text-muted); margin-top: 0.25rem;">📞 ${e.calls || 0} Calls &nbsp;&nbsp; 💰 ${e.closes || 0} Closes</div>` : ''}
                                         </div>
                                         <button type="button" class="btn btn-ghost btn-sm btn-delete-lead" data-id="${e.id}" style="padding: 0.25rem; color: var(--color-text-muted);">🗑️</button>
                                     </div>
@@ -420,6 +446,8 @@ function revenueAttachEvents() {
             e.preventDefault();
             addLeadEntry({
                 amount: parseFloat(document.getElementById('lead-amount').value),
+                calls: parseFloat(document.getElementById('lead-calls').value) || 0,
+                closes: parseFloat(document.getElementById('lead-closes').value) || 0,
                 source: document.getElementById('lead-source').value,
                 date: new Date(document.getElementById('lead-date').value).toISOString()
             });

@@ -333,6 +333,8 @@ export function renderDashboard() {
                             <label>Source</label>
                             <select id="qs-source" class="form-control" required>
                                 <option value="Instagram">Instagram</option>
+                                <option value="Facebook">Facebook</option>
+                                <option value="X">X</option>
                                 <option value="Email">Email</option>
                                 <option value="Live Session">Live Session</option>
                                 <option value="DM Conversation">DM Conversation</option>
