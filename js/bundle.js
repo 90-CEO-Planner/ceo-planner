@@ -2625,23 +2625,23 @@ function renderRevenue() {
                                     const getDiffHtml = (current, previous) => {
                                         if (previous === undefined || previous === null) return '';
                                         const diff = current - previous;
-                                        if (diff > 0) return \`<span style="color: var(--color-primary-dark); font-size: 0.7rem;">(↑ \${diff.toLocaleString()})</span>\`;
-                                        if (diff < 0) return \`<span style="color: var(--color-error); font-size: 0.7rem;">(↓ \${Math.abs(diff).toLocaleString()})</span>\`;
-                                        return \`<span style="color: var(--color-text-muted); font-size: 0.7rem;">(-)</span>\`;
+                                        if (diff > 0) return `<span style="color: var(--color-primary-dark); font-size: 0.7rem;">(↑ ${diff.toLocaleString()})</span>`;
+                                        if (diff < 0) return `<span style="color: var(--color-error); font-size: 0.7rem;">(↓ ${Math.abs(diff).toLocaleString()})</span>`;
+                                        return `<span style="color: var(--color-text-muted); font-size: 0.7rem;">(-)</span>`;
                                     };
-                                    return \`
+                                    return `
                                     <div style="display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 0.75rem; border-bottom: 1px solid var(--color-border);">
                                         <div style="flex: 1;">
-                                            <span style="font-weight: 600; color: var(--color-black); display: block;">\${new Date(m.date).toLocaleDateString(undefined, {month:'long', year:'numeric'})}</span>
+                                            <span style="font-weight: 600; color: var(--color-black); display: block;">${new Date(m.date).toLocaleDateString(undefined, {month:'long', year:'numeric'})}</span>
                                             <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem; margin-top: 0.5rem;">
-                                                <span style="font-size: 0.8rem; color: var(--color-text-muted);"><strong>Traffic:</strong> \${m.traffic.toLocaleString()} \${getDiffHtml(m.traffic, prev?.traffic)}</span>
-                                                <span style="font-size: 0.8rem; color: var(--color-text-muted);"><strong>Calls:</strong> \${m.calls} \${getDiffHtml(m.calls, prev?.calls)}</span>
-                                                <span style="font-size: 0.8rem; color: var(--color-text-muted);"><strong>Social:</strong> \${m.social.toLocaleString()} \${getDiffHtml(m.social, prev?.social)}</span>
+                                                <span style="font-size: 0.8rem; color: var(--color-text-muted);"><strong>Traffic:</strong> ${m.traffic.toLocaleString()} ${getDiffHtml(m.traffic, prev?.traffic)}</span>
+                                                <span style="font-size: 0.8rem; color: var(--color-text-muted);"><strong>Calls:</strong> ${m.calls} ${getDiffHtml(m.calls, prev?.calls)}</span>
+                                                <span style="font-size: 0.8rem; color: var(--color-text-muted);"><strong>Social:</strong> ${m.social.toLocaleString()} ${getDiffHtml(m.social, prev?.social)}</span>
                                             </div>
                                         </div>
-                                        <button type="button" class="btn btn-ghost btn-sm btn-delete-metric" data-id="\${m.id}" style="padding: 0.25rem 0.5rem; color: var(--color-text-muted);" title="Delete Entry">🗑️</button>
+                                        <button type="button" class="btn btn-ghost btn-sm btn-delete-metric" data-id="${m.id}" style="padding: 0.25rem 0.5rem; color: var(--color-text-muted);" title="Delete Entry">🗑️</button>
                                     </div>
-                                    \`;
+                                    `;
                                 }).join('');
                             })()}
                         </div>
