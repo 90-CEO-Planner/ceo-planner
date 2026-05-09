@@ -18,6 +18,8 @@ $files = @(
     "js\screens\monthlyReview.js",
     "js\screens\mondayPlan.js",
     "js\screens\auth.js",
+    "js\screens\roadmap.js",
+    "js\screens\billing.js",
     "js\app.js"
 )
 

@@ -56,13 +56,18 @@ function authAttachEvents() {
     const form = document.getElementById('auth-form');
     // Determine if we are on the signup screen by looking for the explicit signup field
     const isSignup = document.getElementById('auth-name') !== null;
+    
+    // Auto-fill email if they came from Stripe Checkout (Option A Flow)
+    const urlParams = new URLSearchParams(window.location.search);
+    const stripeEmail = urlParams.get('email');
+    if (stripeEmail && document.getElementById('auth-email')) {
+        document.getElementById('auth-email').value = stripeEmail;
+    }
 
     if (form) {
         form.addEventListener('submit', (e) => {
             e.preventDefault();
             
-            // In a real app, this would hit an API via fetch().
-            // For MVP, we simply authenticate the user via local storage security state.
             const email = document.getElementById('auth-email').value;
             const password = document.getElementById('auth-password').value;
             
@@ -86,6 +91,7 @@ function authAttachEvents() {
                             btn.style.opacity = '1';
                         } else {
                             localStorage.setItem('ceo_auth', 'true');
+                            localStorage.setItem('ceo_sub_status', 'trialing'); // Assume trialing on fresh signup
                             window.location.hash = '#/';
                             window.location.reload();
                         }
@@ -101,7 +107,7 @@ function authAttachEvents() {
                             btn.innerText = originalText;
                             btn.style.opacity = '1';
                         } else {
-                            // Fetch user's cloud data and populate local storage BEFORE reloading the app
+                            // Fetch user's cloud data and populate local storage
                             try {
                                 const { data: dbData, error: dbError } = await db
                                     .from('user_data')
@@ -109,15 +115,29 @@ function authAttachEvents() {
                                     .eq('user_id', data.user.id)
                                     .single();
                                 
-                                if (dbError && dbError.code !== 'PGRST116') {
-                                    alert("Error fetching cloud profile: " + dbError.message);
-                                }
-
                                 if (dbData && dbData.data) {
                                     localStorage.setItem('ceoPlanner_store', JSON.stringify(dbData.data));
                                 }
                             } catch (err) {
                                 console.log("No cloud profile found or error fetching. Starting fresh.", err);
+                            }
+
+                            // Fetch Subscription Status separately
+                            try {
+                                const { data: profile } = await db
+                                    .from('profiles')
+                                    .select('subscription_status')
+                                    .eq('id', data.user.id)
+                                    .single();
+                                
+                                if (profile && profile.subscription_status) {
+                                    localStorage.setItem('ceo_sub_status', profile.subscription_status);
+                                } else {
+                                    localStorage.setItem('ceo_sub_status', 'active'); // Fallback
+                                }
+                            } catch (err) {
+                                console.log("Error fetching subscription status.", err);
+                                localStorage.setItem('ceo_sub_status', 'active'); // Fallback
                             }
 
                             localStorage.setItem('ceo_auth', 'true');

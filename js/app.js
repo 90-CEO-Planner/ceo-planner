@@ -17,6 +17,7 @@ import { renderMonthlyReview } from './screens/monthlyReview.js';
 import { renderMondayPlan } from './screens/mondayPlan.js';
 import { renderAuth } from './screens/auth.js';
 import { renderRoadmap } from './screens/roadmap.js';
+import { renderBilling } from './screens/billing.js';
 
 const appContainer = document.getElementById('app-container');
 
@@ -38,13 +39,26 @@ function router() {
         return;
     }
 
+    // Paywall Intercept
+    if (isAuthenticated) {
+        const subStatus = localStorage.getItem('ceo_sub_status');
+        if ((subStatus === 'past_due' || subStatus === 'canceled' || subStatus === 'unpaid') && hash !== '#/billing') {
+            window.location.hash = '#/billing';
+            return;
+        }
+        if (subStatus !== 'past_due' && subStatus !== 'canceled' && subStatus !== 'unpaid' && hash === '#/billing') {
+            window.location.hash = '#/';
+            return;
+        }
+    }
+
     appContainer.innerHTML = ''; // Clear current content
     
     // Check if user has completed setup (only if authenticated)
     const store = getStore();
     const isSetupComplete = store.goals && store.goals.focus !== '';
 
-    if (!isSetupComplete && hash !== '#/' && hash !== '#/wizard' && hash !== '#/login' && hash !== '#/signup') {
+    if (!isSetupComplete && hash !== '#/' && hash !== '#/wizard' && hash !== '#/login' && hash !== '#/signup' && hash !== '#/billing') {
         window.location.hash = '#/';
         return;
     }
@@ -55,6 +69,9 @@ function router() {
             break;
         case '#/signup':
             appContainer.innerHTML = renderAuth(true);
+            break;
+        case '#/billing':
+            appContainer.innerHTML = renderBilling();
             break;
         case '#/':
             if (isSetupComplete) {

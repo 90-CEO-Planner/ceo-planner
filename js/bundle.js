@@ -983,6 +983,9 @@ function renderNav() {
                     : `<div class="logo-icon"></div>`}
                 <span>${bName}</span>
             </div>
+            <button class="mobile-menu-btn" onclick="document.querySelector('.nav-links').classList.toggle('active')" aria-label="Toggle menu">
+                ☰
+            </button>
             <nav class="nav-links">
                 <a href="#/dashboard" class="nav-link" id="nav-dashboard">Dashboard</a>
                 <a href="#/roadmap" class="nav-link" id="nav-roadmap">90-Day Plan</a>
@@ -998,6 +1001,7 @@ function renderNav() {
         </header>
     `;
 }
+
 
 
 // --- js\components\tooltip.js ---
@@ -5723,13 +5727,18 @@ function authAttachEvents() {
     const form = document.getElementById('auth-form');
     // Determine if we are on the signup screen by looking for the explicit signup field
     const isSignup = document.getElementById('auth-name') !== null;
+    
+    // Auto-fill email if they came from Stripe Checkout (Option A Flow)
+    const urlParams = new URLSearchParams(window.location.search);
+    const stripeEmail = urlParams.get('email');
+    if (stripeEmail && document.getElementById('auth-email')) {
+        document.getElementById('auth-email').value = stripeEmail;
+    }
 
     if (form) {
         form.addEventListener('submit', (e) => {
             e.preventDefault();
             
-            // In a real app, this would hit an API via fetch().
-            // For MVP, we simply authenticate the user via local storage security state.
             const email = document.getElementById('auth-email').value;
             const password = document.getElementById('auth-password').value;
             
@@ -5753,6 +5762,7 @@ function authAttachEvents() {
                             btn.style.opacity = '1';
                         } else {
                             localStorage.setItem('ceo_auth', 'true');
+                            localStorage.setItem('ceo_sub_status', 'trialing'); // Assume trialing on fresh signup
                             window.location.hash = '#/';
                             window.location.reload();
                         }
@@ -5768,7 +5778,7 @@ function authAttachEvents() {
                             btn.innerText = originalText;
                             btn.style.opacity = '1';
                         } else {
-                            // Fetch user's cloud data and populate local storage BEFORE reloading the app
+                            // Fetch user's cloud data and populate local storage
                             try {
                                 const { data: dbData, error: dbError } = await db
                                     .from('user_data')
@@ -5776,15 +5786,29 @@ function authAttachEvents() {
                                     .eq('user_id', data.user.id)
                                     .single();
                                 
-                                if (dbError && dbError.code !== 'PGRST116') {
-                                    alert("Error fetching cloud profile: " + dbError.message);
-                                }
-
                                 if (dbData && dbData.data) {
                                     localStorage.setItem('ceoPlanner_store', JSON.stringify(dbData.data));
                                 }
                             } catch (err) {
                                 console.log("No cloud profile found or error fetching. Starting fresh.", err);
+                            }
+
+                            // Fetch Subscription Status separately
+                            try {
+                                const { data: profile } = await db
+                                    .from('profiles')
+                                    .select('subscription_status')
+                                    .eq('id', data.user.id)
+                                    .single();
+                                
+                                if (profile && profile.subscription_status) {
+                                    localStorage.setItem('ceo_sub_status', profile.subscription_status);
+                                } else {
+                                    localStorage.setItem('ceo_sub_status', 'active'); // Fallback
+                                }
+                            } catch (err) {
+                                console.log("Error fetching subscription status.", err);
+                                localStorage.setItem('ceo_sub_status', 'active'); // Fallback
                             }
 
                             localStorage.setItem('ceo_auth', 'true');
@@ -5975,6 +5999,50 @@ function roadmapAttachEvents() {
 }
 
 
+// --- js\screens\billing.js ---
+// billing.js
+
+function renderBilling() {
+    window.setScreenModule({ attachEvents: billingAttachEvents });
+
+    return `
+        <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--color-primary-light) 0%, var(--color-bg-main) 100%); padding: 1.5rem;">
+            <div class="card fade-up" style="width: 100%; max-width: 480px; padding: 3rem 2.5rem; text-align: center; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); border: 1px solid rgba(255,255,255,0.5); backdrop-filter: blur(10px);">
+                
+                <div style="display: inline-flex; align-items: center; justify-content: center; width: 64px; height: 64px; background: rgba(252, 165, 165, 0.2); color: #DC2626; border-radius: 16px; margin-bottom: 1.5rem;">
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                </div>
+                
+                <h2 style="font-size: 1.75rem; color: var(--color-black); margin-bottom: 1rem; letter-spacing: -0.02em;">Command Center Locked</h2>
+                
+                <p style="color: var(--color-text-muted); font-size: 1.05rem; margin-bottom: 2rem; line-height: 1.6;">
+                    Your trial has ended or your payment method failed. Please update your billing information to regain access to your dashboard and 90-day plan.
+                </p>
+
+                <!-- This will be dynamically replaced with the Stripe Customer Portal link -->
+                <button id="btn-portal" class="btn btn-primary" style="width: 100%; padding: 1rem; font-size: 1.1rem; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(78, 14, 255, 0.2); margin-bottom: 1rem;">
+                    Update Payment Method
+                </button>
+                
+                <a href="#" onclick="localStorage.removeItem('ceo_auth'); localStorage.removeItem('ceoPlanner_store'); window.location.hash='#/login'; window.location.reload(); return false;" style="color: var(--color-text-muted); font-size: 0.875rem; text-decoration: underline;">Sign out</a>
+            </div>
+        </div>
+    `;
+}
+
+function billingAttachEvents() {
+    const btnPortal = document.getElementById('btn-portal');
+    if (btnPortal) {
+        btnPortal.addEventListener('click', () => {
+            // In a real app, you would hit your Supabase Edge Function to generate a Stripe Customer Portal session URL.
+            // For now, this is where the user puts their hardcoded Stripe Customer Portal link from the Stripe Dashboard.
+            // Example: https://billing.stripe.com/p/session/test_12345
+            alert("This will redirect to the Stripe Customer Portal where the user can update their card.");
+        });
+    }
+}
+
+
 // --- js\app.js ---
 // app.js
 
@@ -6001,13 +6069,26 @@ function router() {
         return;
     }
 
+    // Paywall Intercept
+    if (isAuthenticated) {
+        const subStatus = localStorage.getItem('ceo_sub_status');
+        if ((subStatus === 'past_due' || subStatus === 'canceled' || subStatus === 'unpaid') && hash !== '#/billing') {
+            window.location.hash = '#/billing';
+            return;
+        }
+        if (subStatus !== 'past_due' && subStatus !== 'canceled' && subStatus !== 'unpaid' && hash === '#/billing') {
+            window.location.hash = '#/';
+            return;
+        }
+    }
+
     appContainer.innerHTML = ''; // Clear current content
     
     // Check if user has completed setup (only if authenticated)
     const store = getStore();
     const isSetupComplete = store.goals && store.goals.focus !== '';
 
-    if (!isSetupComplete && hash !== '#/' && hash !== '#/wizard' && hash !== '#/login' && hash !== '#/signup') {
+    if (!isSetupComplete && hash !== '#/' && hash !== '#/wizard' && hash !== '#/login' && hash !== '#/signup' && hash !== '#/billing') {
         window.location.hash = '#/';
         return;
     }
@@ -6018,6 +6099,9 @@ function router() {
             break;
         case '#/signup':
             appContainer.innerHTML = renderAuth(true);
+            break;
+        case '#/billing':
+            appContainer.innerHTML = renderBilling();
             break;
         case '#/':
             if (isSetupComplete) {
