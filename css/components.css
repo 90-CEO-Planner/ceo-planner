@@ -1,15 +1,19 @@
 /* Cards */
 .card {
-    background: var(--color-bg-card);
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
     border-radius: var(--radius-lg);
     padding: var(--spacing-xl);
-    box-shadow: var(--shadow-sm);
-    border: 1px solid var(--color-border);
-    transition: box-shadow var(--transition-normal);
+    box-shadow: var(--shadow-md);
+    border: var(--glass-border);
+    transition: box-shadow var(--transition-normal), transform var(--transition-normal), background var(--transition-normal);
 }
 
 .card:hover {
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-hover);
+    transform: translateY(-2px);
+    background: var(--glass-bg-hover);
 }
 
 /* Buttons */
@@ -49,22 +53,27 @@
 }
 
 .btn-outline {
-    background-color: transparent;
+    background-color: rgba(255, 255, 255, 0.4);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
     border: 1px solid var(--color-primary);
-    color: var(--color-primary);
+    color: var(--color-primary-dark);
 }
 
 .btn-outline:hover {
     background-color: var(--color-primary-light);
+    color: var(--color-primary-dark);
 }
 
 .btn-ghost {
-    background-color: transparent;
+    background-color: rgba(255, 255, 255, 0.2);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
     color: var(--color-text-main);
 }
 
 .btn-ghost:hover {
-    background-color: var(--color-border);
+    background-color: rgba(255, 255, 255, 0.5);
 }
 
 .btn:disabled {
@@ -92,13 +101,15 @@
 .form-select {
     width: 100%;
     padding: 0.75rem 1rem;
-    border: 1px solid var(--color-border);
+    border: var(--glass-border);
     border-radius: var(--radius-md);
     font-family: var(--font-body);
     font-size: 1rem;
     color: var(--color-text-main);
-    background-color: var(--color-white);
-    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
 }
 
 .form-input:focus,
@@ -106,7 +117,8 @@
 .form-select:focus {
     outline: none;
     border-color: var(--color-primary);
-    box-shadow: 0 0 0 3px var(--color-primary-light);
+    background: var(--color-white);
+    box-shadow: 0 0 0 3px var(--color-primary-light), var(--shadow-sm);
 }
 
 .form-textarea {
@@ -123,15 +135,18 @@
 
 /* Header/Nav */
 .app-header {
-    background: var(--color-white);
-    border-bottom: 1px solid var(--color-border);
-    padding: var(--spacing-md) var(--spacing-xl);
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border-bottom: var(--glass-border-light);
+    padding: var(--spacing-sm) var(--spacing-lg);
     display: flex;
     justify-content: space-between;
     align-items: center;
     position: sticky;
     top: 0;
-    z-index: 10;
+    z-index: 50;
+    box-shadow: var(--shadow-sm);
 }
 
 .logo {
@@ -246,10 +261,11 @@
     visibility: hidden;
     opacity: 0;
     position: absolute;
-    bottom: calc(100% + 8px);
+    bottom: calc(100% + 12px);
     left: 50%;
-    transform: translateX(-50%) translateY(5px);
+    transform: translateX(-50%) translateY(10px);
     background-color: var(--color-black);
+    backdrop-filter: blur(8px);
     color: var(--color-white);
     padding: 1rem;
     border-radius: var(--radius-md);
@@ -259,11 +275,12 @@
     font-family: var(--font-body);
     font-weight: 400;
     font-size: 0.85rem;
-    line-height: 1.4;
-    transition: all var(--transition-fast);
+    line-height: 1.5;
+    transition: all var(--transition-normal) cubic-bezier(0.16, 1, 0.3, 1);
     box-shadow: var(--shadow-lg);
     pointer-events: none;
     text-align: left;
+    border: 1px solid rgba(255,255,255,0.1);
 }
 
 .tooltip-content::after {

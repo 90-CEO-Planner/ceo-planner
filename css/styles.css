@@ -7,7 +7,14 @@
 body {
     font-family: var(--font-body);
     color: var(--color-text-main);
-    background-color: var(--color-bg-main);
+    background-color: var(--mesh-3);
+    background-image: 
+        radial-gradient(at 0% 0%, var(--mesh-1) 0px, transparent 50%),
+        radial-gradient(at 100% 0%, var(--mesh-2) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, var(--mesh-3) 0px, transparent 50%),
+        radial-gradient(at 0% 100%, var(--mesh-4) 0px, transparent 50%);
+    background-size: 100% 100%;
+    min-height: 100vh;
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
 }
@@ -92,9 +99,53 @@ a:hover {
     to { transform: rotate(360deg); }
 }
 
+@keyframes fadeUp {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.fade-up {
+    animation: fadeUp 0.4s ease-out forwards;
+}
+
+/* Base card animation (apply fade up everywhere) */
+.card {
+    animation: fadeUp 0.4s ease-out forwards;
+}
+
+/* Responsive Grids */
+.grid-cols-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--spacing-md); }
+.grid-cols-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--spacing-md); }
+.grid-cols-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--spacing-md); }
+.grid-sidebar { display: grid; grid-template-columns: 2fr 1fr; gap: var(--spacing-lg); }
+.grid-sidebar-right { display: grid; grid-template-columns: 1fr 2fr; gap: var(--spacing-lg); }
+
 /* Responsive */
 @media (max-width: 768px) {
     .main-content {
         padding: var(--spacing-md);
+    }
+    
+    .grid-cols-2, 
+    .grid-cols-3, 
+    .grid-cols-4, 
+    .grid-sidebar,
+    .grid-sidebar-right {
+        grid-template-columns: 1fr;
+    }
+    
+    .flex-mobile-col {
+        flex-direction: column !important;
+        align-items: stretch !important;
+    }
+    
+    .flex-mobile-col > * {
+        width: 100% !important;
     }
 }

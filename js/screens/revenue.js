@@ -1,6 +1,6 @@
 // revenue.js
 import { renderNav } from '../components/nav.js';
-import { getStore, updateRevenueSettings, addRevenueEntry, deleteRevenueEntry, getRevenueInsights, updateLeadGoal, addLeadEntry, deleteLeadEntry, addMetricSnapshot, deleteMetricSnapshot } from '../store.js';
+import { getStore, updateRevenueSettings, updateQuickOffers, addRevenueEntry, deleteRevenueEntry, getRevenueInsights, updateLeadGoal, addLeadEntry, deleteLeadEntry, addMetricSnapshot, deleteMetricSnapshot } from '../store.js';
 import { renderTooltip } from '../components/tooltip.js';
 
 export function renderRevenue() {
@@ -19,12 +19,16 @@ export function renderRevenue() {
     const salesCount = insights.entries ? insights.entries.length : 0;
     const metrics = store.metrics || [];
     
-    const totalCalls = metrics.reduce((sum, m) => sum + (parseFloat(m.calls) || 0), 0);
+    const snapshotCalls = metrics.reduce((sum, m) => sum + (parseFloat(m.calls) || 0), 0);
+    const leadCalls = leads.reduce((sum, l) => sum + (parseFloat(l.calls) || 0), 0);
+    const leadCloses = leads.reduce((sum, l) => sum + (parseFloat(l.closes) || 0), 0);
+    const totalCalls = snapshotCalls + leadCalls;
+    const effectiveCloses = Math.max(salesCount, leadCloses);
     
     // Conversion Rates
-    const leadToSaleConversion = totalLeads > 0 ? ((salesCount / totalLeads) * 100).toFixed(1) : 0;
+    const leadToSaleConversion = totalLeads > 0 ? ((effectiveCloses / totalLeads) * 100).toFixed(1) : 0;
     const callBookingRate = totalLeads > 0 ? ((totalCalls / totalLeads) * 100).toFixed(1) : 0;
-    const callCloseRate = totalCalls > 0 ? ((salesCount / totalCalls) * 100).toFixed(1) : (salesCount > 0 ? 100 : 0);
+    const callCloseRate = totalCalls > 0 ? ((effectiveCloses / totalCalls) * 100).toFixed(1) : (effectiveCloses > 0 ? 100 : 0);
 
     return `
         ${renderNav()}
@@ -35,19 +39,13 @@ export function renderRevenue() {
                     <p style="color: var(--color-text-muted);">Monitor your pipeline, conversions, and growth metrics.</p>
                 </div>
                 <div style="display: flex; gap: 1rem; align-items: center;">
-                    <div style="position: relative;" id="report-dropdown-wrapper">
-                        <button class="btn btn-primary btn-sm" id="btn-toggle-report" style="display: flex; align-items: center; gap: 0.5rem;">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-                            Generate Report
+                    <div style="display: flex; gap: 0.5rem;">
+                        <button id="btn-report-csv" class="btn btn-outline btn-sm" style="display: flex; align-items: center; gap: 0.5rem;">
+                            📊 Export CSV
                         </button>
-                        <div id="report-dropdown-menu" style="display: none; position: absolute; top: 100%; right: 0; margin-top: 0.5rem; background: white; border: 1px solid var(--color-border); border-radius: var(--radius-md); box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); z-index: 100; min-width: 200px; overflow: hidden;">
-                            <button id="btn-report-csv" style="display: block; width: 100%; text-align: left; padding: 0.75rem 1rem; border: none; background: none; font-size: 0.9rem; color: var(--color-black); cursor: pointer; border-bottom: 1px solid var(--color-bg-light);" onmouseover="this.style.background='var(--color-bg-light)'" onmouseout="this.style.background='none'">
-                                📊 Raw Data Export (.csv)
-                            </button>
-                            <button id="btn-report-ai" style="display: block; width: 100%; text-align: left; padding: 0.75rem 1rem; border: none; background: none; font-size: 0.9rem; color: var(--color-primary-dark); cursor: pointer; font-weight: 500;" onmouseover="this.style.background='var(--color-bg-light)'" onmouseout="this.style.background='none'">
-                                🤖 AI Executive Report
-                            </button>
-                        </div>
+                        <button id="btn-report-ai" class="btn btn-primary btn-sm" style="display: flex; align-items: center; gap: 0.5rem; background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark)); border: none; box-shadow: var(--shadow-sm);">
+                            🤖 AI Executive Report
+                        </button>
                     </div>
                     <div style="background: var(--color-secondary-light); padding: 0.5rem 1rem; border-radius: var(--radius-full); display: flex; align-items: center; gap: 0.5rem; font-weight: 600; color: var(--color-secondary-dark);">
                         Quarter: ${insights.momentum}
@@ -56,7 +54,7 @@ export function renderRevenue() {
             </div>
 
             <!-- Top Cards -->
-            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--spacing-md); margin-bottom: var(--spacing-lg);">
+            <div class="grid-cols-4 mb-6">
                 <div class="card" style="padding: 1.5rem; text-align: center;">
                     <p style="display: flex; align-items: center; justify-content: center; font-size: 0.8rem; color: var(--color-text-muted); font-weight: 600; margin-bottom: 0.5rem; text-transform: uppercase;">
                         Quarter Revenue Goal
@@ -83,7 +81,7 @@ export function renderRevenue() {
                 </div>
             </div>
 
-            <div style="display: grid; grid-template-columns: 2fr 1fr; gap: var(--spacing-lg); margin-bottom: var(--spacing-lg);">
+            <div class="grid-sidebar mb-6">
                 
                 <!-- Main Content Left -->
                 <div>
@@ -207,16 +205,37 @@ export function renderRevenue() {
                 <div>
                    <!-- Multi-Form Tabs -->
                    <div class="card" style="border-top: 4px solid var(--color-accent); padding: 1.5rem;">
-                       <div class="flex gap-2 mb-4" style="border-bottom: 1px solid var(--color-border); padding-bottom: 0.5rem;">
+                       <div class="flex gap-2 mb-4" style="border-bottom: 1px solid var(--color-border); padding-bottom: 0.5rem; flex-wrap: wrap;">
                            <button class="btn btn-ghost btn-sm active" id="tab-rev" style="color: var(--color-primary-dark); font-weight: 600;">💰 Sale</button>
                            <button class="btn btn-ghost btn-sm" id="tab-lead" style="color: var(--color-text-muted);">👥 Leads</button>
                            <button class="btn btn-ghost btn-sm" id="tab-metric" style="color: var(--color-text-muted);">📊 Snapshot</button>
+                           <button class="btn btn-ghost btn-sm" id="tab-quick-settings" style="color: var(--color-text-muted);">⚡ 1-Tap</button>
                        </div>
 
                        <!-- Log Revenue Form -->
-                       <form id="log-revenue-form" class="log-form active">
-                           <div class="form-group">
-                               <label>Amount Made (${currency})</label>
+                       <div id="rev-tab-wrapper" class="log-form active">
+                           ${(store.revenue?.quickOffers && store.revenue.quickOffers.length > 0) ? `
+                           <div style="margin-bottom: 1.5rem;">
+                               <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+                                   <p style="font-size: 0.75rem; text-transform: uppercase; font-weight: 600; color: var(--color-text-muted); margin: 0;">⚡ 1-Tap Log Sale</p>
+                                   ${renderTooltip("Select your product from the dropdown and click '+ Log' to instantly record a sale without filling the manual form.", "What is this?")}
+                               </div>
+                               <div style="display: flex; gap: 0.4rem; flex-wrap: nowrap; align-items: stretch;">
+                                   <select id="rev-1tap-select" class="form-control" style="flex-grow: 1; font-size: 0.8rem; padding: 0.35rem 0.5rem; height: auto; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background-color: var(--color-bg-light); cursor: pointer; min-width: 0;">
+                                       ${store.revenue.quickOffers.map((o, idx) => `<option value="${idx}">${o.name} (${o.price > 0 ? currency + parseFloat(o.price).toLocaleString() : 'Free'})</option>`).join('')}
+                                   </select>
+                                   <button type="button" class="btn btn-outline btn-1tap-sale-rev-dropdown" style="padding: 0.35rem 0.75rem; font-size: 0.85rem; border-color: var(--color-primary-light); color: var(--color-primary-dark); font-weight: 600; white-space: nowrap; flex-shrink: 0; outline: none; box-shadow: none;">
+                                       + Log
+                                   </button>
+                               </div>
+                               <div style="margin: 1rem 0; border-top: 1px dashed var(--color-border); text-align: center; position: relative;">
+                                   <span style="background: white; padding: 0 0.5rem; color: var(--color-text-muted); font-size: 0.8rem; position: relative; top: -0.6rem;">OR MANUAL ENTRY</span>
+                               </div>
+                           </div>
+                           ` : ''}
+                           <form id="log-revenue-form">
+                               <div class="form-group">
+                                   <label>Amount Made (${currency})</label>
                                <input type="number" id="log-amount" min="0" step="any" class="form-control" required placeholder="0.00">
                            </div>
                            <div class="form-group">
@@ -244,7 +263,8 @@ export function renderRevenue() {
                                <input type="text" id="log-offer" class="form-control" placeholder="e.g. Digital Product Toolkit">
                            </div>
                            <button type="submit" class="btn btn-primary" style="width: 100%;">Log Sale</button>
-                       </form>
+                           </form>
+                       </div>
 
                        <!-- Log Leads Form -->
                        <form id="log-leads-form" class="log-form" style="display: none;">
@@ -294,6 +314,25 @@ export function renderRevenue() {
                            </div>
                            <button type="submit" class="btn btn-outline" style="width: 100%;">Save Snapshot</button>
                        </form>
+
+                       <!-- Quick Offers Settings Form -->
+                       <form id="quick-offers-form" class="log-form" style="display: none;">
+                          <p style="font-size: 0.8rem; color: var(--color-text-muted); margin-bottom: 1rem;">Setup your core products for 1-Tap entry on the Dashboard.</p>
+                          ${[0,1,2].map(i => {
+                              const o = (store.revenue?.quickOffers || [])[i] || {name: '', price: '', source: 'Instagram'};
+                              return `
+                              <div style="background: var(--color-bg-light); padding: 0.75rem; border-radius: var(--radius-sm); margin-bottom: 0.75rem;">
+                                  <label style="font-size: 0.75rem; font-weight: 600; color: var(--color-text-main); display: block; margin-bottom: 0.25rem;">Slot ${i+1}</label>
+                                  <input type="text" id="qo-name-${i}" placeholder="Offer Name (e.g. Mastermind)" value="${o.name}" class="form-control" style="margin-bottom: 0.25rem; font-size: 0.8rem;">
+                                  <div style="display: flex; gap: 0.5rem;">
+                                      <input type="number" id="qo-price-${i}" placeholder="Price" value="${o.price}" class="form-control" style="font-size: 0.8rem;" step="any">
+                                      <input type="text" id="qo-source-${i}" placeholder="Default Source" value="${o.source}" class="form-control" style="font-size: 0.8rem;">
+                                  </div>
+                              </div>
+                              `;
+                          }).join('')}
+                          <button type="submit" class="btn btn-outline" style="width: 100%; border-color: var(--color-accent); color: var(--color-accent-dark);">Save Quick Actions</button>
+                       </form>
                    </div>
                    
                    <!-- Pipeline Visuals / Recent Entities -->
@@ -338,7 +377,10 @@ export function renderRevenue() {
                 <div class="card" style="width: 100%; max-width: 800px; max-height: 90vh; overflow-y: auto; display: flex; flex-direction: column; position: relative;">
                     <div class="flex justify-between items-center mb-4 pb-4" style="border-bottom: 1px solid var(--color-border);">
                         <h2 style="margin:0;">Executive Summary</h2>
-                        <button id="btn-close-modal" style="background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--color-text-muted);">&times;</button>
+                        <div style="display: flex; gap: 1rem; align-items: center;">
+                            <button id="btn-download-ai-report" class="btn btn-outline btn-sm" style="display: none; align-items: center; gap: 0.5rem;">⬇️ Download (.txt)</button>
+                            <button id="btn-close-modal" style="background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--color-text-muted);">&times;</button>
+                        </div>
                     </div>
                     <div id="ai-report-content" class="custom-scroll" style="padding: 1rem; min-height: 200px;">
                         <div style="text-align: center; padding: 3rem 0;">
@@ -401,14 +443,107 @@ function renderPieChart(sources, currency) {
     `;
 }
 
+window.generateAiReport = async function() {
+    const aiModal = document.getElementById('ai-report-modal');
+    const aiContent = document.getElementById('ai-report-content');
+    if (!aiModal || !aiContent) return;
+
+    // Close the dropdown menu
+    const menu = document.getElementById('report-dropdown-menu');
+    if (menu) menu.style.display = 'none';
+
+    const btnDownload = document.getElementById('btn-download-ai-report');
+    if (btnDownload) btnDownload.style.display = 'none';
+
+    aiModal.style.display = 'flex';
+    aiContent.innerHTML = `
+        <div style="text-align: center; padding: 3rem 0;">
+            <div class="spinner" style="margin: 0 auto 1rem auto; width: 40px; height: 40px; border: 4px solid var(--color-bg-light); border-top: 4px solid var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite;"></div>
+            <h3 style="color: var(--color-text-main);">Evaluating Pipeline Data...</h3>
+            <p style="color: var(--color-text-muted);">The AI Coach is drafting your strategic briefing.</p>
+        </div>
+    `;
+
+    try {
+        const store = window.currentScreenModuleStore || JSON.parse(localStorage.getItem('ceoPlanner_store') || '{}');
+        const insights = getRevenueInsights();
+        const leads = store.leads?.entries || [];
+        const metrics = store.metrics || [];
+        
+        let prompt = `Analyze this exact SaaS / Business revenue data and provide a brutally honest Executive Summary.
+        
+        Formatting: Use markdown. Break the report into 3 sections:
+        1. 📊 The Data Snapshot (Summarize the numbers clearly)
+        2. 🔍 The Funnel Diagnosis (Where is the bottleneck? Are they failing to capture leads, book calls, or close sales?)
+        3. ⚡ Immediate Directive (Exactly what they must do this week to fix the primary bottleneck)
+        
+        Data:
+        Current Quarter Revenue Goal: ${store.revenue?.quarterlyGoal}
+        Total Revenue Generated: ${insights.totalRevenue}
+        Total Core Sales Made: ${insights.entries?.length || 0}
+        
+        Current Quarter Lead Goal: ${store.leads?.quarterlyGoal}
+        Total Leads Generated: ${leads.reduce((sum, l) => sum + (parseFloat(l.amount) || 0), 0)}
+        
+        Recent Monthly Snapshots (Traffic / Calls / Socials):
+        ${metrics.slice(-3).map(m => `Date: ${new Date(m.date).toLocaleDateString()}, Traffic: ${m.traffic}, Calls Booked: ${m.calls}, Social Audience: ${m.social}`).join('\n')}
+        
+        Recent Revenue Sources:
+        ${insights.entries.slice(-5).map(e => `Source: ${e.source}, Amount: ${e.amount}`).join('\n')}
+        `;
+
+        const { data, error } = await window.db.functions.invoke('chat', {
+            body: { messages: [{ role: 'user', content: prompt }] },
+            headers: {
+                Authorization: `Bearer ${window.db.supabaseKey}`
+            }
+        });
+
+        if (error) throw new Error(error.message);
+        if (data.error) throw new Error(data.error.message || data.error);
+
+        const reportText = data.choices[0].message.content;
+        aiContent.innerHTML = window.marked.parse(reportText);
+        
+        // Enable download button
+        if (btnDownload) {
+            btnDownload.style.display = 'flex';
+            btnDownload.onclick = () => {
+                const blob = new Blob([reportText], { type: 'text/plain;charset=utf-8' });
+                const url = window.URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = `AI_Executive_Report_${new Date().toISOString().split('T')[0]}.txt`;
+                document.body.appendChild(link);
+                link.click();
+                setTimeout(() => {
+                    document.body.removeChild(link);
+                    window.URL.revokeObjectURL(url);
+                }, 500);
+            };
+        }
+
+    } catch(e) {
+        aiContent.innerHTML = `<p style="color: var(--color-error); text-align: center;">Warning: The AI Coach failed to analyze the data. Error: ${e.message}</p>`;
+    }
+};
+
+window.closeAiModal = function() {
+    const aiModal = document.getElementById('ai-report-modal');
+    if (aiModal) aiModal.style.display = 'none';
+};
+
+// Document click listener removed
+
 function revenueAttachEvents() {
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
     document.getElementById('nav-revenue')?.classList.add('active');
 
     const toggleTabs = [
-        { id: 'tab-rev', formId: 'log-revenue-form' },
+        { id: 'tab-rev', formId: 'rev-tab-wrapper' },
         { id: 'tab-lead', formId: 'log-leads-form' },
-        { id: 'tab-metric', formId: 'log-metric-form' }
+        { id: 'tab-metric', formId: 'log-metric-form' },
+        { id: 'tab-quick-settings', formId: 'quick-offers-form' }
     ];
 
     toggleTabs.forEach(t => {
@@ -440,6 +575,30 @@ function revenueAttachEvents() {
         });
     }
 
+    document.querySelector('.btn-1tap-sale-rev-dropdown')?.addEventListener('click', (e) => {
+        const select = document.getElementById('rev-1tap-select');
+        if (!select) return;
+        const idx = select.value;
+        const btn = e.currentTarget;
+        const store = getStore();
+        const offerConf = store.revenue?.quickOffers?.[idx];
+        
+        if (offerConf) {
+            btn.innerHTML = '✅ Logged!';
+            btn.style.backgroundColor = '#E1FDF4';
+            btn.style.color = '#027A48';
+            btn.style.borderColor = '#027A48';
+            addRevenueEntry({
+                amount: parseFloat(offerConf.price) || 0,
+                source: offerConf.source || 'Revenue Page 1-Tap',
+                offer: offerConf.name,
+                date: new Date().toISOString(),
+                notes: '1-Tap entry'
+            });
+            setTimeout(() => { window.location.reload(); }, 600);
+        }
+    });
+
     const logLeadForm = document.getElementById('log-leads-form');
     if (logLeadForm) {
         logLeadForm.addEventListener('submit', (e) => {
@@ -465,6 +624,25 @@ function revenueAttachEvents() {
                 social: parseFloat(document.getElementById('metric-social').value),
                 date: new Date(document.getElementById('metric-date').value).toISOString()
             });
+            window.location.reload();
+        });
+    }
+
+    const quickOffersForm = document.getElementById('quick-offers-form');
+    if (quickOffersForm) {
+        quickOffersForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const offers = [];
+            for (let i = 0; i < 3; i++) {
+                const name = document.getElementById(`qo-name-${i}`).value.trim();
+                const price = document.getElementById(`qo-price-${i}`).value;
+                const source = document.getElementById(`qo-source-${i}`).value.trim();
+                if (name) {
+                    offers.push({ name, price, source });
+                }
+            }
+            updateQuickOffers(offers);
+            alert("1-Tap offers saved! Head to the Dashboard to use them.");
             window.location.reload();
         });
     }
@@ -505,84 +683,23 @@ function revenueAttachEvents() {
         renderChart('week');
     }
 
-    // Report Dropdown Logic
-    const btnToggleReport = document.getElementById('btn-toggle-report');
-    const reportMenu = document.getElementById('report-dropdown-menu');
-    
-    if (btnToggleReport && reportMenu) {
-        btnToggleReport.addEventListener('click', (e) => {
-            e.stopPropagation();
-            reportMenu.style.display = reportMenu.style.display === 'none' ? 'block' : 'none';
-        });
-
-        document.addEventListener('click', () => {
-            reportMenu.style.display = 'none';
-        });
-    }
-
     // AI Report Generation
     const btnReportAi = document.getElementById('btn-report-ai');
-    const aiModal = document.getElementById('ai-report-modal');
-    const aiContent = document.getElementById('ai-report-content');
-    const btnCloseModal = document.getElementById('btn-close-modal');
-
     if (btnReportAi) {
-        btnReportAi.addEventListener('click', async () => {
-            aiModal.style.display = 'flex';
-            aiContent.innerHTML = `
-                <div style="text-align: center; padding: 3rem 0;">
-                    <div class="spinner" style="margin: 0 auto 1rem auto; width: 40px; height: 40px; border: 4px solid var(--color-bg-light); border-top: 4px solid var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite;"></div>
-                    <h3 style="color: var(--color-text-main);">Evaluating Pipeline Data...</h3>
-                    <p style="color: var(--color-text-muted);">The AI Coach is drafting your strategic briefing.</p>
-                </div>
-            `;
-
-            try {
-                const store = getStore();
-                const insights = getRevenueInsights();
-                const leads = store.leads?.entries || [];
-                const metrics = store.metrics || [];
-                
-                let prompt = `Analyze this exact SaaS / Business revenue data and provide a brutally honest Executive Summary.
-                
-                Formatting: Use markdown. Break the report into 3 sections:
-                1. 📊 The Data Snapshot (Summarize the numbers clearly)
-                2. 🔍 The Funnel Diagnosis (Where is the bottleneck? Are they failing to capture leads, book calls, or close sales?)
-                3. ⚡ Immediate Directive (Exactly what they must do this week to fix the primary bottleneck)
-                
-                Data:
-                Current Quarter Revenue Goal: ${store.revenue?.quarterlyGoal}
-                Total Revenue Generated: ${insights.totalRevenue}
-                Total Core Sales Made: ${insights.entries?.length || 0}
-                
-                Current Quarter Lead Goal: ${store.leads?.quarterlyGoal}
-                Total Leads Generated: ${leads.reduce((sum, l) => sum + (parseFloat(l.amount) || 0), 0)}
-                
-                Recent Monthly Snapshots (Traffic / Calls / Socials):
-                ${metrics.slice(-3).map(m => `Date: ${new Date(m.date).toLocaleDateString()}, Traffic: ${m.traffic}, Calls Booked: ${m.calls}, Social Audience: ${m.social}`).join('\n')}
-                
-                Recent Revenue Sources:
-                ${insights.entries.slice(-5).map(e => `Source: ${e.source}, Amount: ${e.amount}`).join('\n')}
-                `;
-
-                const { data, error } = await window.db.functions.invoke('chat', {
-                    body: { messages: [{ role: 'user', content: prompt }] }
-                });
-
-                if (error) throw new Error(error.message);
-                if (data.error) throw new Error(data.error.message || data.error);
-
-                aiContent.innerHTML = window.marked.parse(data.choices[0].message.content);
-
-            } catch(e) {
-                aiContent.innerHTML = `<p style="color: var(--color-error); text-align: center;">Warning: The AI Coach failed to analyze the data. Error: ${e.message}</p>`;
+        btnReportAi.addEventListener('click', () => {
+            if (window.generateAiReport) {
+                window.generateAiReport();
             }
         });
     }
 
+    // Close AI Modal
+    const btnCloseModal = document.getElementById('btn-close-modal');
     if (btnCloseModal) {
         btnCloseModal.addEventListener('click', () => {
-            aiModal.style.display = 'none';
+            if (window.closeAiModal) {
+                window.closeAiModal();
+            }
         });
     }
 
@@ -596,35 +713,44 @@ function revenueAttachEvents() {
             const leads = store.leads?.entries || [];
             const metrics = store.metrics || [];
             
-            let csvContent = "--- REVENUE (SALES) ---\r\nDate,Amount,Source,Offer\r\n";
+            let csvContent = `"--- REVENUE (SALES) ---",,,\r\n"Date","Amount","Source","Offer"\r\n`;
             entries.forEach(e => {
                 csvContent += `"${new Date(e.date).toLocaleDateString()}","${e.amount}","${(e.source || '').replace(/"/g, '""')}","${(e.offer || '').replace(/"/g, '""')}"\r\n`;
             });
             
-            csvContent += "\r\n--- LEADS GENERATED ---\r\nDate,Amount,Source\r\n";
+            csvContent += `\r\n"--- LEADS GENERATED ---",,\r\n"Date","Amount","Source"\r\n`;
             leads.forEach(e => {
                 csvContent += `"${new Date(e.date).toLocaleDateString()}","${e.amount}","${(e.source || '').replace(/"/g, '""')}"\r\n`;
             });
 
-            csvContent += "\r\n--- MONTHLY SNAPSHOTS ---\r\nDate,Traffic,Calls Booked,Social Audience\r\n";
+            csvContent += `\r\n"--- MONTHLY SNAPSHOTS ---",,,\r\n"Date","Traffic","Calls Booked","Social Audience"\r\n`;
             metrics.forEach(m => {
                 csvContent += `"${new Date(m.date).toLocaleDateString()}","${m.traffic}","${m.calls}","${m.social}"\r\n`;
             });
             
-            const blob = new Blob(["\uFEFF", csvContent], { type: 'text/csv;charset=utf-8' });
-            const url = window.URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.style.display = 'none';
-            link.href = url;
-            link.download = `Analytics_Export_${new Date().toISOString().split('T')[0]}.csv`;
-            
-            document.body.appendChild(link);
-            link.click();
-            
-            setTimeout(() => {
-                document.body.removeChild(link);
-                window.URL.revokeObjectURL(url);
-            }, 500);
+            try {
+                const blob = new Blob(["\uFEFF", csvContent], { type: 'text/csv;charset=utf-8' });
+                // Fallback to data URI if blob fails
+                const url = window.URL ? window.URL.createObjectURL(blob) : 'data:text/csv;charset=utf-8,' + encodeURIComponent("\uFEFF" + csvContent);
+                const link = document.createElement('a');
+                link.style.display = 'none';
+                link.href = url;
+                link.download = `Analytics_Export_${new Date().toISOString().split('T')[0]}.csv`;
+                
+                document.body.appendChild(link);
+                link.click();
+                
+                setTimeout(() => {
+                    document.body.removeChild(link);
+                    if (window.URL) window.URL.revokeObjectURL(url);
+                }, 500);
+            } catch (err) {
+                console.error("CSV Download Error:", err);
+                alert("Failed to download CSV. Error: " + err.message);
+                
+                // Absolute fallback for highly restrictive browsers
+                window.open('data:text/csv;charset=utf-8,' + encodeURIComponent("\uFEFF" + csvContent));
+            }
         });
     }
 }
@@ -673,9 +799,9 @@ function renderChart(viewMode) {
                 const heightPct = maxAmount > 0 ? (d.amount / maxAmount) * 100 : 0;
                 return `
                 <div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; group">
-                    <div style="font-size: 0.7rem; color: var(--color-text-muted); margin-bottom: 4px; opacity: 0; transition: opacity 0.2s; white-space: nowrap;" class="chart-tooltip">${currency}${d.amount.toLocaleString()}</div>
+                    <div style="font-size: 0.75rem; font-weight: 600; color: var(--color-black); margin-bottom: 4px; white-space: nowrap;">${currency}${d.amount.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
                     <div class="chart-bar" style="width: 100%; max-width: 50px; height: ${heightPct}%; background-color: var(--color-secondary); border-radius: 4px 4px 0 0; min-height: 4px; transition: height 0.5s, background-color 0.2s;"></div>
-                    <div style="font-size: 0.65rem; color: var(--color-text-muted); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">${d.label}</div>
+                    <div style="font-size: 0.65rem; font-weight: 600; color: var(--color-text-muted); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">${d.label}</div>
                 </div>
                 `;
             }).join('')}

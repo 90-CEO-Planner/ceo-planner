@@ -16,16 +16,15 @@ export function renderNav() {
             </div>
             <nav class="nav-links">
                 <a href="#/dashboard" class="nav-link" id="nav-dashboard">Dashboard</a>
+                <a href="#/roadmap" class="nav-link" id="nav-roadmap">90-Day Plan</a>
                 <a href="#/planner" class="nav-link" id="nav-planner">Weekly Plan</a>
                 <a href="#/revenue" class="nav-link" id="nav-revenue">Revenue</a>
                 <a href="#/review" class="nav-link" id="nav-review">Friday Review</a>
-                <a href="#/coach" class="nav-link" id="nav-coach">AI Coach</a>
+                <a href="#/coach" class="nav-link" id="nav-coach">Notepad</a>
                 <a href="#/monthly-review" class="nav-link" id="nav-monthly-review">Monthly Review</a>
                 <a href="#/progress" class="nav-link" id="nav-progress">Wins & Progress</a>
-                <div style="margin-top: 2rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.1);">
-                    <a href="#/settings" class="nav-link" id="nav-settings" style="display: flex; gap: 0.5rem; align-items: center;">⚙️ Settings</a>
-                    <a href="#" class="nav-link" onclick="localStorage.removeItem('ceo_auth'); localStorage.removeItem('ceoPlanner_store'); window.location.hash='#/login'; window.location.reload(); return false;" style="color: #FCA5A5; display: flex; gap: 0.5rem; align-items: center;">🚪 Log Out</a>
-                </div>
+                <a href="#/settings" class="nav-link" id="nav-settings">⚙️ Settings</a>
+                <a href="#" class="nav-link" onclick="localStorage.removeItem('ceo_auth'); localStorage.removeItem('ceoPlanner_store'); window.location.hash='#/login'; window.location.reload(); return false;" style="color: #FCA5A5;">🚪 Log Out</a>
             </nav>
         </header>
     `;

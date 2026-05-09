@@ -10,7 +10,7 @@ export function renderMonthlyReview() {
 
     return `
         ${renderNav()}
-        <div class="main-content" style="max-width: 700px;">
+        <div class="main-content dashboard-layout">
             <div style="margin-bottom: 2rem;">
                 <h2>Monthly CEO Strategy Review</h2>
                 <p style="color: var(--color-text-muted);">A deeper 30-day reflection to refine your strategy and eliminate distractions.</p>

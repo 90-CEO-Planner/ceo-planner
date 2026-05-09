@@ -1,6 +1,7 @@
-import { getStore, getRevenueInsights, addRevenueEntry, updateDailyLog } from '../store.js';
+import { getStore, getRevenueInsights, addRevenueEntry, updateDailyLog, addLeadEntry, applyGeneratedPlan } from '../store.js';
 import { renderNav } from '../components/nav.js';
 import { renderTooltip } from '../components/tooltip.js';
+import { generate90DayActionPlan } from '../aiService.js';
 
 export function renderDashboard() {
     window.setScreenModule({ attachEvents: dashboardAttachEvents });
@@ -9,6 +10,14 @@ export function renderDashboard() {
     const streak = store.streak;
     const revInsights = getRevenueInsights();
     const currency = store.settings?.currency || '$';
+    
+    // Core calculations for KPI Clarity
+    const leads = store.leads?.entries || [];
+    const totalLeads = leads.reduce((sum, l) => sum + (parseFloat(l.amount) || 0), 0);
+    const salesCount = revInsights.entries ? revInsights.entries.length : 0;
+    const leadToSaleConversion = totalLeads > 0 ? ((salesCount / totalLeads) * 100).toFixed(1) : 0;
+    
+    const quickOffers = store.revenue?.quickOffers || [];
 
     // Check if there is an active weekly plan
     let activePlan = store.weeklyPlans.length > 0 ? store.weeklyPlans[store.weeklyPlans.length - 1] : null;
@@ -41,6 +50,13 @@ export function renderDashboard() {
                     <p style="color: var(--color-text-muted);">Stay focused on your 90-day outcome.</p>
                 </div>
                 <div style="display: flex; gap: 0.75rem; align-items: center;">
+                    <div style="display: flex; flex-direction: column; align-items: center; gap: 0.25rem;">
+                        <div id="dash-regen-spinner" class="spinner" style="display: none; width: 16px; height: 16px; border: 2px solid var(--color-bg-light); border-top: 2px solid var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                        <button class="btn btn-outline btn-sm btn-regenerate-plan" style="display: flex; align-items: center; gap: 0.25rem;">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"></polyline><polyline points="23 20 23 14 17 14"></polyline><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"></path></svg>
+                            Regenerate Plan
+                        </button>
+                    </div>
                     <button class="btn btn-primary btn-sm btn-open-quick-sale" style="display: flex; align-items: center; gap: 0.25rem;">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                         Log a Sale
@@ -80,120 +96,144 @@ export function renderDashboard() {
                         </div>
                     </div>
                 </div>
-                `;
+            `;
         })()}
-
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--spacing-lg); margin-bottom: var(--spacing-lg);">
+            <div class="grid-cols-3 mb-6">
                 
-                <!-- 90 Day Focus Card -->
-                <div class="card" style="border-top: 4px solid var(--color-primary);">
-                    <p style="display: flex; align-items: center; font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-muted); font-weight: 600; margin-bottom: var(--spacing-sm);">
-                        90-Day Focus
-                        ${renderTooltip("The main overarching goal you are working towards this quarter.", "A clear 90-day focus acts as a filter. If an opportunity or task doesn't support this focus, it's a distraction.")}
-                    </p>
-                    <h3 style="margin-bottom: var(--spacing-md);">${g.focus || 'Not set'}</h3>
-                    
-                    <div style="background: var(--color-bg-main); padding: 1rem; border-radius: var(--radius-md);">
-                        <p style="font-size: 0.875rem; color: var(--color-primary-dark); font-weight: 600; margin-bottom: 0.25rem;">Measurable Outcome:</p>
-                        <p style="font-size: 0.875rem;">${g.outcome || 'Not set'}</p>
-                    </div>
-
-                    <div class="mt-4">
-                        <p style="display: flex; align-items: center; font-size: 0.875rem; font-weight: 600; margin-bottom: 0.5rem;">
-                            Top 3 Priorities
-                            ${renderTooltip("The three core projects or objectives that will make your 90-day focus a reality.", "Keeping your priorities limited to three ensures you actually finish what you start instead of having ten half-finished projects.")}
-                        </p>
-                        <ul style="list-style-position: inside; font-size: 0.875rem; color: var(--color-text-muted);">
-                            ${g.priorities.map(p => `<li>${p || 'Not set'}</li>`).join('')}
-                        </ul>
-                    </div>
-                </div>
-
-                <!-- This Week Card -->
-                <div class="card" style="border-top: 4px solid var(--color-secondary);">
-                    <div class="flex justify-between items-center mb-4">
-                        <p style="display: flex; align-items: center; font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-muted); font-weight: 600;">
-                            This Week's Plan
-                            ${renderTooltip("Your weekly strategy broken down into actionable steps.", "Planning your week in advance is the difference between leading your business and reacting to it.")}
-                        </p>
-    `;
-
-    if (activePlan) {
-        html += `
-                        <span style="background: #E1FDF4; color: #027A48; padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); font-size: 0.75rem; font-weight: 600;">Active</span>
-                    </div>
-                    <h4 style="margin-bottom: var(--spacing-sm);">${activePlan.visibilityAction || 'Visibility Action'}</h4>
-                    <p style="font-size: 0.875rem; color: var(--color-text-muted); margin-bottom: var(--spacing-md);">Revenue action: ${activePlan.revenueAction}</p>
-                    <div id="ceo-focus-score" style="margin-bottom: var(--spacing-md); font-size: 0.875rem; padding: 0.5rem; background: var(--color-bg-main); border-radius: var(--radius-sm); font-weight: 600; display: flex; justify-content: space-between; align-items: center;">
-                        <span style="display: flex; align-items: center;">
-                            CEO Focus Score:
-                            ${renderTooltip("A score from 0-100% measuring the strength of your weekly plan.", "A strong plan always includes three things: a way to get visible, a way to generate revenue, and a way to follow up. This score keeps you accountable to all three.")}
-                        </span> 
-                        <span id="score-val">Calculating...</span>
-                    </div>
-                    <a href="#/planner" class="btn btn-outline" style="width: 100%;">View Full Plan</a>
-                </div>
-            </div>
-        `;
-    } else {
-        html += `
-                        <span style="background: #FEE4E2; color: #B42318; padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); font-size: 0.75rem; font-weight: 600;">Needs Planning</span>
-                    </div>
-                    <div style="text-align: center; padding: 2rem 0;">
-                        <p style="display: flex; align-items: center; justify-content: center; color: var(--color-text-muted); margin-bottom: 1rem;">
-                            You haven't planned your week yet.
-                            ${renderTooltip("Weekly Planning", "CEOs don't wing it. By dedicating 15 minutes to plan on Monday, you save hours of busywork later in the week.")}
-                        </p>
-                        <a href="#/planner" class="btn btn-primary" style="width: 100%;">Create Weekly Plan</a>
-                    </div>
-                </div>
-            </div>
-        `;
-    }
-
-    if (revInsights.goal > 0) {
-        html += `
-            <!-- Revenue Snapshot (NEW) -->
-            <div class="card mb-6" style="border-left: 4px solid var(--color-primary-dark); cursor: pointer;" onclick="window.location.hash='#/revenue'">
-                <div class="flex justify-between items-start mb-4">
-                    <div>
-                        <h3 style="display: flex; align-items: center; margin: 0 0 0.25rem 0; font-size: 0.95rem; color: var(--color-text-main); font-weight: 500;">
-                            This Week's Revenue
-                            ${renderTooltip("The total amount of sales logged in the current calendar week.", "Tracking your weekly cash flow keeps your finger on the pulse of the business and prevents end-of-quarter surprises.")}
+                <!-- KPI 1: Revenue & Cash Flow -->
+                <div class="card" style="border-top: 4px solid var(--color-primary-dark); display: flex; flex-direction: column;">
+                    <div style="flex-grow: 1;">
+                        <h3 style="display: flex; align-items: center; margin: 0 0 0.5rem 0; font-size: 0.95rem; color: var(--color-text-main); font-weight: 500;">
+                            Quarterly Revenue
                         </h3>
-                        <div style="font-size: 1.75rem; font-weight: 700; color: var(--color-accent-dark); line-height: 1;">
-                            ${currency}${revInsights.revenueThisWeek.toLocaleString()}
+                        <div style="font-size: 2rem; font-weight: 700; color: var(--color-black); line-height: 1.2;">
+                            ${currency}${revInsights.totalRevenue.toLocaleString()}
+                        </div>
+                        <div class="flex justify-between items-center mt-2 mb-1">
+                            <span style="font-size: 0.8rem; color: var(--color-text-muted);">Progress: ${revInsights.progressPercent.toFixed(1)}%</span>
+                            <span style="font-size: 0.8rem; color: var(--color-text-muted);">${currency}${revInsights.goal.toLocaleString()}</span>
+                        </div>
+                        <div class="progress-container" style="height: 6px; background: var(--color-bg-light); border-radius: var(--radius-full); overflow: hidden;">
+                            <div class="progress-bar" style="height: 100%; width: ${revInsights.progressPercent}%; background: linear-gradient(90deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);"></div>
+                        </div>
+                        <div style="margin-top: 1rem; font-size: 0.85rem; color: var(--color-text-muted); display: flex; justify-content: space-between;">
+                            <span>Weekly Pace: <strong style="${revInsights.projectedRevenue >= revInsights.goal ? 'color: var(--color-primary-dark);' : ''}">${currency}${revInsights.revenueThisWeek.toLocaleString()}</strong></span>
+                            <span>Target: ${currency}${revInsights.weeklyTargetLength.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
                         </div>
                     </div>
-                    <div style="text-align: right;">
-                        <span style="font-size: 0.8rem; color: var(--color-text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Weekly Target</span>
-                        <div style="font-size: 1rem; color: var(--color-text-main); font-weight: 600;">${currency}${revInsights.weeklyTargetLength.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                    
+                    <!-- Quiet Advisor Pulse: Revenue -->
+                    ${(() => {
+                        const pulse = getQuietAdvisorPulses(store, revInsights, leadToSaleConversion, activePlan).revenue;
+                        if (!pulse || sessionStorage.getItem('dismissPulse_revenue') === 'true') return '';
+                        return `
+                        <div style="margin-top: 0.75rem; background: #F8FAFC; border-left: 3px solid ${pulse.color}; padding: 0.75rem; border-radius: 4px; display: flex; justify-content: space-between; align-items:flex-start;">
+                            <div>
+                                <span style="font-size: 0.7rem; text-transform: uppercase; font-weight: 700; color: ${pulse.color}; letter-spacing: 0.05em; margin-bottom: 0.15rem; display: block;">${pulse.title}</span>
+                                <p style="font-size: 0.8rem; color: var(--color-text-main); margin: 0; line-height: 1.3;">${pulse.message}</p>
+                            </div>
+                            <button class="btn-dismiss-pulse" data-pulse-id="revenue" style="background: none; border: none; color: var(--color-text-muted); font-size: 1rem; cursor: pointer; line-height: 1; padding: 0 0 0 0.5rem;">&times;</button>
+                        </div>
+                        `;
+                    })()}
+                    
+                    <!-- Quick Actions Section -->
+                    <div style="margin-top: 1.5rem; border-top: 1px solid var(--color-border); padding-top: 1rem;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+                            <p style="font-size: 0.75rem; text-transform: uppercase; font-weight: 600; color: var(--color-text-muted); margin: 0;">⚡ 1-Tap Log Sale</p>
+                            ${renderTooltip("Select your product from the dropdown and click '+ Log' to instantly record a sale and update your pipeline without leaving the dashboard.", "")}
+                        </div>
+                        ${quickOffers.length > 0 ? `
+                        <div style="display: flex; gap: 0.4rem; flex-wrap: nowrap; align-items: stretch;">
+                            <select id="dashboard-1tap-select" class="form-control" style="flex-grow: 1; font-size: 0.8rem; padding: 0.35rem 0.5rem; height: auto; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background-color: var(--color-bg-light); cursor: pointer; min-width: 0;">
+                                ${quickOffers.map((o, idx) => `<option value="${idx}">${o.name} (${o.price > 0 ? currency + parseFloat(o.price).toLocaleString() : 'Free'})</option>`).join('')}
+                            </select>
+                            <button class="btn btn-outline btn-1tap-sale-dropdown" style="padding: 0.35rem 0.75rem; font-size: 0.85rem; border-color: var(--color-primary-light); color: var(--color-primary-dark); font-weight: 600; white-space: nowrap; flex-shrink: 0; outline: none; box-shadow: none;">
+                                + Log
+                            </button>
+                        </div>
+                        ` : `
+                            <button class="btn btn-sm btn-ghost btn-add-quick-offer" style="border: 1px dashed var(--color-border); color: var(--color-text-muted); width: 100%;" onclick="window.location.hash='#/revenue'">+ Setup Quick Offers</button>
+                        `}
                     </div>
                 </div>
-                
-                <hr style="border: none; border-top: 1px solid var(--color-border); margin: 1rem 0;" />
-                
-                <div class="flex justify-between items-center mb-2">
-                    <span style="font-weight: 500; font-size: 0.875rem; color: var(--color-text-muted);">Quarterly Goal Progress</span>
-                    <span style="font-weight: 600; font-size: 0.875rem; color: var(--color-primary-dark);">${revInsights.progressPercent.toFixed(1)}%</span>
+
+                <!-- KPI 2: Pipeline & Conversion -->
+                <div class="card" style="border-top: 4px solid var(--color-secondary); display: flex; flex-direction: column;">
+                    <div style="flex-grow: 1;">
+                        <h3 style="display: flex; align-items: center; margin: 0 0 0.5rem 0; font-size: 0.95rem; color: var(--color-text-main); font-weight: 500;">
+                            Pipeline Leads & Conversion
+                        </h3>
+                        <div style="font-size: 2rem; font-weight: 700; color: var(--color-black); line-height: 1.2;">
+                            ${totalLeads.toLocaleString()} <span style="font-size: 1rem; color: var(--color-text-muted); font-weight: 500;">Leads</span>
+                        </div>
+                        
+                        <div style="margin-top: 1.5rem; display: flex; align-items: center; justify-content: space-between;">
+                             <span style="font-size: 0.85rem; color: var(--color-text-muted);">Lead-to-Sale Conversion</span>
+                             <span style="font-size: 1.25rem; font-weight: 700; color: var(--color-secondary-dark);">${leadToSaleConversion}%</span>
+                        </div>
+                        <div style="margin-top: 0.5rem; display: flex; align-items: center; justify-content: space-between;">
+                             <span style="font-size: 0.85rem; color: var(--color-text-muted);">Total Closes YTD</span>
+                             <span style="font-size: 1.1rem; font-weight: 600; color: var(--color-black);">${salesCount}</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Quiet Advisor Pulse: Pipeline -->
+                    ${(() => {
+                        const pulse = getQuietAdvisorPulses(store, revInsights, leadToSaleConversion, activePlan).pipeline;
+                        if (!pulse || sessionStorage.getItem('dismissPulse_pipeline') === 'true') return '';
+                        return `
+                        <div style="margin-top: 0.75rem; background: #F8FAFC; border-left: 3px solid ${pulse.color}; padding: 0.75rem; border-radius: 4px; display: flex; justify-content: space-between; align-items:flex-start;">
+                            <div>
+                                <span style="font-size: 0.7rem; text-transform: uppercase; font-weight: 700; color: ${pulse.color}; letter-spacing: 0.05em; margin-bottom: 0.15rem; display: block;">${pulse.title}</span>
+                                <p style="font-size: 0.8rem; color: var(--color-text-main); margin: 0; line-height: 1.3;">${pulse.message}</p>
+                            </div>
+                            <button class="btn-dismiss-pulse" data-pulse-id="pipeline" style="background: none; border: none; color: var(--color-text-muted); font-size: 1rem; cursor: pointer; line-height: 1; padding: 0 0 0 0.5rem;">&times;</button>
+                        </div>
+                        `;
+                    })()}
+                    
+                    <!-- Quick Actions Section -->
+                    <div style="margin-top: 1.5rem; border-top: 1px solid var(--color-border); padding-top: 1rem;">
+                        <p style="font-size: 0.75rem; text-transform: uppercase; font-weight: 600; color: var(--color-text-muted); margin-bottom: 0.5rem;">⚡ 1-Tap Log Leads</p>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                             <button class="btn btn-sm btn-outline btn-1tap-lead" style="color: var(--color-secondary-dark); border-color: var(--color-secondary-light);" data-amount="1">+ 1 Lead</button>
+                             <button class="btn btn-sm btn-outline btn-1tap-lead" style="color: var(--color-secondary-dark); border-color: var(--color-secondary-light);" data-amount="5">+ 5 Leads</button>
+                             <button class="btn btn-sm btn-outline btn-1tap-lead" style="color: var(--color-secondary-dark); border-color: var(--color-secondary-light); grid-column: span 2;" data-amount="10">+ 10 Leads</button>
+                        </div>
+                    </div>
                 </div>
-                <div class="progress-container" style="height: 8px; background: var(--color-bg-light); border-radius: var(--radius-full); overflow: hidden; margin-bottom: 0.5rem;">
-                    <div class="progress-bar" style="height: 100%; width: ${revInsights.progressPercent}%; background: linear-gradient(90deg, var(--color-primary) 0%, var(--color-primary-dark) 100%); transition: width 0.5s ease-out;"></div>
-                </div>
-                <div class="flex justify-between" style="font-size: 0.8rem; color: var(--color-text-muted);">
-                    <span>${currency}${revInsights.totalRevenue.toLocaleString()} / ${currency}${revInsights.goal.toLocaleString()}</span>
-                    <span>${revInsights.salesRemaining} sales left</span>
+
+                <!-- KPI 3: Status & Focus -->
+                <div class="card" style="border-top: 4px solid var(--color-accent); display: flex; flex-direction: column;">
+                    <div style="flex-grow: 1;">
+                       <p style="display: flex; align-items: center; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-muted); font-weight: 600; margin-bottom: var(--spacing-sm);">
+                           90-Day Focus Goal
+                       </p>
+                       <h3 style="margin: 0 0 1rem 0; font-size: 1.1rem;">${g.focus || 'Not set'}</h3>
+                       
+                       <p style="display: flex; align-items: center; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-muted); font-weight: 600; margin-bottom: var(--spacing-sm);">
+                           This Week's Plan
+                       </p>
+                       ${activePlan ? `
+                           <span style="background: #E1FDF4; color: #027A48; padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); font-size: 0.75rem; font-weight: 600; display: inline-block; margin-bottom: 0.5rem;">Active</span>
+                           <p style="font-size: 0.9rem; color: var(--color-text-main); margin-bottom: 0;">${activePlan.visibilityAction || 'Visibility Action'}</p>
+                           <a href="#/planner" style="font-size: 0.85rem; color: var(--color-primary-dark); font-weight: 500; display: inline-block; margin-top: 0.5rem;">View Full Plan →</a>
+                       ` : `
+                           <span style="background: #FEE4E2; color: #B42318; padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); font-size: 0.75rem; font-weight: 600; display: inline-block; margin-bottom: 0.5rem;">Needs Planning</span>
+                           <p style="font-size: 0.85rem; color: var(--color-text-muted);">You haven't planned your week yet.</p>
+                           <a href="#/planner" style="font-size: 0.85rem; color: var(--color-primary-dark); font-weight: 500; display: inline-block; margin-top: 0.5rem;">Plan Now →</a>
+                       `}
+                    </div>
+                    
+                    <div style="margin-top: 1.5rem; background: var(--color-bg-light); padding: 1rem; border-radius: var(--radius-sm); text-align: center;">
+                        <span style="display: block; font-size: 0.8rem; color: var(--color-text-muted); font-weight: 600; text-transform: uppercase;">CEO Weekly Score</span>
+                        <div id="score-val" style="font-size: 1.5rem; font-weight: 700; margin-top: 0.25rem;">Calculating...</div>
+                    </div>
                 </div>
             </div>
-        `;
-    } else {
-        html += `
-            <div class="card mb-6" style="border-left: 4px solid var(--color-primary-dark); text-align: center; cursor: pointer;" onclick="window.location.hash='#/revenue'">
-                <h3 style="margin-bottom: 0.5rem; font-size: 1.125rem;">Track Your Revenue</h3>
-                <p style="font-size: 0.875rem; color: var(--color-text-muted); margin-bottom: 0;">Set your quarterly goal to unlock insights.</p>
-            </div>
-        `;
-    }
+    `;
+    // Replaced the entire block above with the new KPI 3-column layout
 
     let dailyTasksHtml = "";
 
@@ -291,22 +331,26 @@ export function renderDashboard() {
     });
 
     html += `
-            <!-- Daily 3 Action Items -->
-            <div class="card mb-6" style="border-left: 4px solid var(--color-accent);">
-                 <div class="flex items-center gap-2 mb-4">
-                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent-dark)" stroke-width="2"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
-                     <h3 style="margin: 0;">The Daily 3</h3>
-                 </div>
-                 <p style="font-size: 0.9rem; color: var(--color-text-muted); margin-bottom: 1rem;">Move the needle today based on your top priorities.</p>
-                 <div style="display: flex; flex-direction: column; gap: 0.75rem;">
-                     ${dailyTasksHtml}
-                 </div>
-            </div>
+            <div class="grid-sidebar mb-6">
+                <!-- Daily 3 Action Items -->
+                <div class="card" style="border-left: 4px solid var(--color-accent);">
+                     <div class="flex items-center gap-2 mb-4">
+                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent-dark)" stroke-width="2"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
+                         <h3 style="margin: 0;">The Daily 3</h3>
+                     </div>
+                     <p style="font-size: 0.9rem; color: var(--color-text-muted); margin-bottom: 1rem;">Move the needle today based on your top priorities.</p>
+                     <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+                         ${dailyTasksHtml}
+                     </div>
+                </div>
 
-            <!--CEO Commitment-->
-            <div class="card" style="background-color: var(--color-primary-light); border-color: var(--color-primary-light); text-align: center;">
-                <p style="font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-primary-dark); font-weight: 600; margin-bottom: var(--spacing-sm);">${store.profile?.name ? store.profile.name + "'s" : "Your"} Commitment</p>
-                <p style="font-size: 1.125rem; font-family: var(--font-heading); font-style: italic; color: var(--color-black);">"${g.statement || "I commit to leading with confidence."}"</p>
+                <div style="display: flex; flex-direction: column; gap: var(--spacing-lg);">
+                    <!--CEO Commitment-->
+                    <div class="card" style="flex-grow: 1; background-color: var(--color-primary-light); border-color: var(--color-primary-light); display: flex; flex-direction: column; justify-content: center; text-align: center;">
+                        <p style="font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-primary-dark); font-weight: 600; margin-bottom: var(--spacing-sm);">${store.profile?.name ? store.profile.name + "'s" : "Your"} Commitment</p>
+                        <p style="font-size: 1.125rem; font-family: var(--font-heading); font-style: italic; color: var(--color-black); margin: 0;">"${g.statement || "I commit to leading with confidence."}"</p>
+                    </div>
+                </div>
             </div>
 
             <!--Quick Actions-->
@@ -361,6 +405,49 @@ export function renderDashboard() {
         `;
 
     return html;
+}
+
+// FUTURE UPGRADE NOTES (Advanced Version Ideas):
+// 1. Quiet Advisor Dynamic Prompting: Once revenue allows, swap these local static rules to hit the OpenAI Edge Function dynamically for infinite creative variance.
+// 2. Direct Data Integrations: Add Stripe/QuickBooks APIs to completely eliminate manual revenue/cash flow entry (Zero-Entry Dashboard).
+// 3. Predictive Cash Flow Forecasting: Warn the CEO of upcoming dips based on recurring renewals/historical churn.
+// 4. Team Accountability: Allow assigning 'Next Actions' directly to team 'Maker' sub-accounts.
+// 5. Custom AI Prompts: Allow uploading company SOPs so the Quiet Advisor suggests actions specific to the user's business.
+function getQuietAdvisorPulses(store, revInsights, leadsConversion, activePlan) {
+    const pulses = { revenue: null, pipeline: null };
+    const day = new Date().getDay(); // 0 is Sunday, 5 is Friday
+
+    // Revenue Pulse Logic
+    if (revInsights.projectedRevenue < revInsights.goal && revInsights.goal > 0) {
+        pulses.revenue = {
+            title: "Pace Alert",
+            message: `You are ${(100 - revInsights.progressPercent).toFixed(0)}% behind target. Suggestion: Send custom bundle to your 3 most loyal past clients.`,
+            color: "#B42318" // Red
+        };
+    } else if (revInsights.revenueThisWeek > 0 || revInsights.goal > 0) {
+        pulses.revenue = {
+            title: "Momentum",
+            message: `Pacing beautifully. You're bringing in revenue. Protect your margin.`,
+            color: "#027A48" // Green
+        };
+    }
+
+    // Pipeline Pulse Logic
+    if (leadsConversion < 10 && store.leads?.entries?.length > 0) {
+        pulses.pipeline = {
+            title: "Conversion Drop",
+            message: `Close rate is below 10%. Stop acquiring leads and tighten your follow-up script.`,
+            color: "#F2C21D" // Yellow
+        };
+    } else if (activePlan && activePlan.followUps?.length > 1) {
+        pulses.pipeline = {
+            title: "Follow-Up Audit",
+            message: `You planned to follow up heavily this week. Have you logged those wins yet?`,
+            color: "var(--color-primary)" // Purple
+        };
+    }
+
+    return pulses;
 }
 
 function getCoachingEngineData(store, activePlan, revInsights) {
@@ -549,6 +636,35 @@ function dashboardAttachEvents() {
         scoreValEl.textContent = 'No Plan';
     }
 
+    // Regenerate Plan Logic
+    const btnRegen = document.querySelector('.btn-regenerate-plan');
+    const regenSpinner = document.getElementById('dash-regen-spinner');
+    if (btnRegen) {
+        btnRegen.addEventListener('click', async (e) => {
+            const confirmed = confirm("Are you sure you want to regenerate your 90-Day Plan? This will replace your current roadmap.");
+            if (!confirmed) return;
+
+            if (regenSpinner) regenSpinner.style.display = 'block';
+            e.currentTarget.disabled = true;
+
+            try {
+                const plan = await generate90DayActionPlan();
+                if (plan) {
+                    applyGeneratedPlan(plan);
+                    window.location.reload();
+                } else {
+                    alert("Couldn't generate plan right now. Please try again.");
+                }
+            } catch (err) {
+                console.error(err);
+                alert("Couldn't generate plan right now. Please try again.");
+            } finally {
+                if (regenSpinner) regenSpinner.style.display = 'none';
+                e.currentTarget.disabled = false;
+            }
+        });
+    }
+
     // Daily 3 state persistence using the store logic
     const todayStr = new Date().toISOString().split('T')[0];
     if (window._tempGeneratedTodaysLog) {
@@ -570,6 +686,16 @@ function dashboardAttachEvents() {
                 }
             });
         }
+    });
+
+    // Dismiss AI Pulses
+    document.querySelectorAll('.btn-dismiss-pulse').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const pulseId = e.currentTarget.getAttribute('data-pulse-id');
+            sessionStorage.setItem(`dismissPulse_${pulseId}`, 'true');
+            // Hide the pulse container immediately to prevent harsh reload
+            e.currentTarget.parentElement.style.display = 'none';
+        });
     });
 
     // Seed button
@@ -623,4 +749,63 @@ function dashboardAttachEvents() {
             });
         }
     }
+    // One-Tap Add Leads
+    document.querySelectorAll('.btn-1tap-lead').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const amount = parseInt(e.target.getAttribute('data-amount'), 10);
+            const originalText = e.target.innerHTML;
+            e.target.innerHTML = '✅';
+            e.target.style.backgroundColor = '#E1FDF4';
+            e.target.style.borderColor = '#027A48';
+            addLeadEntry({
+                amount,
+                calls: 0,
+                closes: 0,
+                source: 'Quick Add Dashboard',
+                date: new Date().toISOString()
+            });
+            setTimeout(() => { window.location.reload(); }, 600);
+        });
+    });
+
+    // One-Tap Add Revenue Sale (Dropdown)
+    document.querySelector('.btn-1tap-sale-dropdown')?.addEventListener('click', (e) => {
+        const select = document.getElementById('dashboard-1tap-select');
+        if (!select) return;
+        const idx = select.value;
+        const btn = e.currentTarget;
+        const store = getStore();
+        const offerConf = store.revenue?.quickOffers?.[idx];
+        
+        if (offerConf) {
+            btn.innerHTML = '✅ Logged!';
+            btn.style.backgroundColor = '#E1FDF4';
+            btn.style.color = '#027A48';
+            btn.style.borderColor = '#027A48';
+            addRevenueEntry({
+                amount: parseFloat(offerConf.price) || 0,
+                source: offerConf.source || 'Dashboard 1-Tap',
+                offer: offerConf.name,
+                date: new Date().toISOString(),
+                notes: '1-Tap entry'
+            });
+            setTimeout(() => { window.location.reload(); }, 600);
+        }
+    });
+
+    // Copy Follow-up Template
+    document.querySelector('.btn-copy-followup')?.addEventListener('click', (e) => {
+        const template = "Hi {Name},\\n\\nI'm getting in touch because...";
+        // Simple fallback alert for insecure contexts
+        try {
+            navigator.clipboard.writeText(template).then(() => {
+                e.currentTarget.innerHTML = '✅ Copied to Clipboard!';
+                setTimeout(() => { e.currentTarget.innerHTML = '✉️ Copy Follow-up Template'; }, 2000);
+            }).catch(err => {
+                alert('Follow-up Template: \\n\\n' + template);
+            });
+        } catch (err) {
+            alert('Follow-up Template: \\n\\n' + template);
+        }
+    });
 }

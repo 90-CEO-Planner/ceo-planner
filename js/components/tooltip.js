@@ -4,6 +4,14 @@ export function renderTooltip(whatStr, whyStr) {
     // Generate a unique ID for aria properties
     const id = 'tt_' + Math.random().toString(36).substr(2, 9);
 
+    let content = '';
+    if (whatStr) {
+        content += `<span class="tooltip-section"><strong>What it is:</strong> ${whatStr}</span>`;
+    }
+    if (whyStr) {
+        content += `<span class="tooltip-section"><strong>Why it matters:</strong> ${whyStr}</span>`;
+    }
+
     return `
         <span class="tooltip-container" tabindex="0" aria-describedby="${id}">
             <svg class="info-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -12,12 +20,7 @@ export function renderTooltip(whatStr, whyStr) {
                 <line x1="12" y1="8" x2="12.01" y2="8"></line>
             </svg>
             <span class="tooltip-content" id="${id}" role="tooltip">
-                <span class="tooltip-section">
-                    <strong>What it is:</strong> ${whatStr}
-                </span>
-                <span class="tooltip-section">
-                    <strong>Why it matters:</strong> ${whyStr}
-                </span>
+                ${content}
             </span>
         </span>
     `;

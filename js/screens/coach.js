@@ -1,37 +1,56 @@
 // coach.js
 import { renderNav } from '../components/nav.js';
-import { getStore } from '../store.js';
+import { getStore, addNote, deleteNote } from '../store.js';
 import { renderTooltip } from '../components/tooltip.js';
 
 export function renderCoach() {
     window.setScreenModule({ attachEvents: coachAttachEvents });
     const store = getStore();
 
-    // Generate AI Insights (Classic)
-    const insight = generateInsights(store);
-
     return `
         ${renderNav()}
-        <div class="main-content" style="max-width: 800px; padding-top: 2rem;">
+        <div class="main-content dashboard-layout" style="padding-top: 2rem;">
             
             <div style="margin-bottom: 2rem; text-align: center;">
-                <h2>AI Coach</h2>
-                <p style="color: var(--color-text-muted);">Your personalized strategic advisor.</p>
+                <h2>Notepad</h2>
+                <p style="color: var(--color-text-muted);">Capture your thoughts and filter your ideas.</p>
             </div>
 
             <div style="display: flex; flex-direction: column; gap: 2rem;">
                 
-                <!-- CEO Insight Engine -->
+                <!-- Voice Notes -->
                 <div class="card" style="border-top: 4px solid var(--color-primary);">
                     <div class="flex items-center gap-2 mb-4">
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
                         <h3 style="margin: 0; display: flex; align-items: center;">
-                            Weekly CEO Insight
-                            ${renderTooltip("Identifies the area most likely slowing your progress right now.", "Solving the right problem is faster than doing more work.")}
+                            Voice Notes
+                            ${renderTooltip("Jot down thoughts and ideas quickly using your voice.", "Get ideas out of your head and into your notepad.")}
                         </h3>
                     </div>
-                    <div style="background: var(--color-bg-main); padding: 1.25rem; border-radius: var(--radius-md); font-size: 1.05rem; line-height: 1.6; color: var(--color-black);">
-                        ${insight}
+                    <form id="note-form" style="margin-bottom: 1.5rem;">
+                        <div class="form-group mb-2 relative" style="position: relative;">
+                            <textarea class="form-textarea" id="note-input" placeholder="Type or use voice to record a note..." required style="min-height: 100px; padding-right: 3rem;"></textarea>
+                            <button type="button" id="btn-voice-record" class="btn btn-ghost" style="position: absolute; right: 0.5rem; bottom: 0.5rem; padding: 0.5rem; border-radius: 50%; color: var(--color-primary); background: var(--color-bg-light);" title="Start Voice Recording">
+                                🎤
+                            </button>
+                        </div>
+                        <div id="recording-indicator" style="display: none; color: #D92D20; font-size: 0.85rem; margin-bottom: 1rem; align-items: center; gap: 0.5rem;">
+                            <span class="pulse-dot" style="width: 8px; height: 8px; background: #D92D20; border-radius: 50%; display: inline-block;"></span> Recording... (Speak now)
+                        </div>
+                        <button type="submit" class="btn btn-primary" style="width: 100%;">Save Note</button>
+                    </form>
+                    
+                    <div id="saved-notes-list" style="display: flex; flex-direction: column; gap: 1rem;">
+                        ${(store.notes || []).length === 0 ? '<p style="color: var(--color-text-muted); font-size: 0.9rem; text-align: center;">No notes saved yet.</p>' : 
+                            (store.notes || []).slice().reverse().map(n => `
+                            <div style="background: var(--color-bg-light); padding: 1rem; border-radius: var(--radius-sm); border-left: 3px solid var(--color-primary-light); position: relative;">
+                                <p style="font-size: 0.95rem; color: var(--color-black); margin-bottom: 0.5rem; white-space: pre-wrap;">${n.text}</p>
+                                <div style="display: flex; justify-content: space-between; align-items: flex-end;">
+                                    <span style="font-size: 0.75rem; color: var(--color-text-muted);">${new Date(n.date).toLocaleString(undefined, {dateStyle: 'medium', timeStyle: 'short'})}</span>
+                                    <button type="button" class="btn btn-ghost btn-sm btn-delete-note" data-id="${n.id}" style="padding: 0.25rem 0.5rem; color: var(--color-text-muted); font-size: 0.8rem; cursor: pointer; position: relative; z-index: 10;">Delete</button>
+                                </div>
+                            </div>
+                        `).join('')}
                     </div>
                 </div>
 
@@ -65,50 +84,127 @@ export function renderCoach() {
     `;
 }
 
-// Logic Rules Engine
-function generateInsights(store) {
-    const reviews = store.reviews || [];
-    const plans = store.weeklyPlans || [];
-    
-    // Check if we have enough data
-    if (reviews.length < 2 && plans.length < 2) {
-        return "Not enough data yet. Complete a few more weekly plans and Friday reviews so your Coach can spot patterns and generate personalized insights.";
-    }
+// Logic for insights removed as it's being moved to progress.js
 
-    const recentPlans = plans.slice(-3);
-    let visibilityCount = 0; let followUpCount = 0; let revActionCount = 0;
 
-    recentPlans.forEach(p => {
-        if (p.visibilityAction && p.visibilityAction.length > 5) visibilityCount++;
-        if (p.followUps && p.followUps.length > 5 && !p.followUps.toLowerCase().includes('none')) followUpCount++;
-        if (p.revenueAction && p.revenueAction.length > 5) revActionCount++;
-    });
-
-    // 1. Sales/Conversion Check
-    if (visibilityCount >= 2 && (followUpCount === 0 || revActionCount === 0)) {
-        return "<strong>Sales/Conversion Alert:</strong> You have been doing a lot of 'Visibility' and marketing actions recently, but you are failing to log 'Follow-up' or direct 'Revenue' actions. Stop marketing immediately and start scheduling sales conversations to convert your generated interest into revenue.";
-    }
-
-    // 2. Time/Energy Check
-    const recentReviews = reviews.slice(-3);
-    let difficultContent = false;
-    recentReviews.forEach(r => {
-        if (r.difficult) {
-            const diff = r.difficult.toLowerCase();
-            if (diff.includes('email') || diff.includes('content') || diff.includes('writing')) difficultContent = true;
-        }
-    });
-
-    if (difficultContent) {
-        return "<strong>Energy Drain Alert:</strong> You consistently mention that writing, emails, or content creation was difficult or draining. Consider lowering your content volume or immediately start batch-creating it on Mondays so it stops dragging down your energy all week.";
-    }
-
-    return "Your momentum looks clean. You are protecting your CEO time and focusing on revenue-generating actions. Keep executing your 90-day plan.";
-}
+// Inline handleDeleteNote removed in favor of event delegation
 
 function coachAttachEvents() {
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
     document.getElementById('nav-coach')?.classList.add('active');
+
+    // Voice Notes Events
+    const noteForm = document.getElementById('note-form');
+    if (noteForm) {
+        noteForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const text = document.getElementById('note-input').value.trim();
+            if (text) {
+                addNote({ text });
+                document.getElementById('note-input').value = '';
+                // Reload screen
+                const appContainer = document.getElementById('app-container');
+                if (appContainer) {
+                    appContainer.innerHTML = renderCoach();
+                    coachAttachEvents();
+                }
+            }
+        });
+    }
+
+    // Delete note event delegation
+    const savedNotesList = document.getElementById('saved-notes-list');
+    if (savedNotesList) {
+        // Clone and replace to remove any previously attached listeners (prevents duplicates)
+        const newSavedNotesList = savedNotesList.cloneNode(true);
+        savedNotesList.parentNode.replaceChild(newSavedNotesList, savedNotesList);
+        
+        newSavedNotesList.addEventListener('click', (e) => {
+            const deleteBtn = e.target.closest('.btn-delete-note');
+            if (deleteBtn) {
+                const id = deleteBtn.getAttribute('data-id');
+                if (confirm("Delete this note?")) {
+                    deleteNote(id);
+                    const appContainer = document.getElementById('app-container');
+                    if (appContainer) {
+                        appContainer.innerHTML = renderCoach();
+                        if (window.currentScreen && window.currentScreen.attachEvents) {
+                            window.currentScreen.attachEvents();
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Web Speech API for Voice Notes
+    const btnVoice = document.getElementById('btn-voice-record');
+    const noteInput = document.getElementById('note-input');
+    const recordingIndicator = document.getElementById('recording-indicator');
+    
+    if (btnVoice && 'webkitSpeechRecognition' in window) {
+        const recognition = new webkitSpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        let isRecording = false;
+
+        recognition.onstart = function() {
+            isRecording = true;
+            btnVoice.style.background = '#FEE4E2';
+            btnVoice.style.color = '#D92D20';
+            recordingIndicator.style.display = 'flex';
+        };
+
+        recognition.onresult = function(event) {
+            let interimTranscript = '';
+            let finalTranscript = '';
+
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                if (event.results[i].isFinal) {
+                    finalTranscript += event.results[i][0].transcript;
+                } else {
+                    interimTranscript += event.results[i][0].transcript;
+                }
+            }
+
+            if (finalTranscript) {
+                const currentVal = noteInput.value;
+                noteInput.value = currentVal + (currentVal.length > 0 && !currentVal.endsWith(' ') ? ' ' : '') + finalTranscript;
+            }
+        };
+
+        recognition.onerror = function(event) {
+            console.error("Speech recognition error", event.error);
+            stopRecording();
+        };
+
+        recognition.onend = function() {
+            stopRecording();
+        };
+
+        function stopRecording() {
+            isRecording = false;
+            btnVoice.style.background = 'var(--color-bg-light)';
+            btnVoice.style.color = 'var(--color-primary)';
+            recordingIndicator.style.display = 'none';
+        }
+
+        btnVoice.addEventListener('click', () => {
+            if (isRecording) {
+                recognition.stop();
+            } else {
+                try {
+                    recognition.start();
+                } catch(e) {
+                    console.error("Failed to start speech recognition", e);
+                }
+            }
+        });
+    } else if (btnVoice) {
+        btnVoice.addEventListener('click', () => {
+            alert("Voice recording is not supported in this browser. Please use Chrome or Safari.");
+        });
+    }
 
     // Decision Filter Events
     const filterForm = document.getElementById('decision-filter-form');

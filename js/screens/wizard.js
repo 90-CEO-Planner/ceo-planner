@@ -1,5 +1,6 @@
 // wizard.js
-import { getStore, updateGoals, updateProfile } from '../store.js';
+import { getStore, updateGoals, updateProfile, applyGeneratedPlan, updateSettings, updateRevenueSettings, updateLeadGoal } from '../store.js';
+import { generate90DayActionPlan } from '../aiService.js';
 
 let currentStep = 1;
 const TOTAL_STEPS = 6;
@@ -200,9 +201,13 @@ function renderStepContent() {
                     <p style="font-size: 0.875rem; color: var(--color-text-main); margin-top: 0.25rem;">Your 90-Day plan is locked in. Let's go to your CEO Dashboard.</p>
                 </div>
 
-                <div class="flex justify-between mt-8">
+                <div class="flex justify-between mt-8" id="wizard-step-6-buttons">
                     <button type="button" class="btn btn-ghost" id="btn-back">Back</button>
-                    <button type="submit" class="btn btn-primary">Complete Setup</button>
+                    <button type="submit" class="btn btn-primary" id="btn-complete-setup">Generate My 90-Day Plan</button>
+                </div>
+                <div id="wizard-loading" style="display: none; text-align: center; padding: 2rem 0;">
+                    <div class="spinner" style="margin: 0 auto 1rem auto; width: 40px; height: 40px; border: 4px solid var(--color-bg-light); border-top: 4px solid var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                    <p style="color: var(--color-primary-dark); font-weight: 500;">Building your 90-day roadmap... this takes about 20 seconds</p>
                 </div>
             </form>
         `;
@@ -305,9 +310,35 @@ function wizardAttachEvents() {
                 currentGoals.statement = document.getElementById('goal-statement').value;
                 updateGoals(currentGoals);
 
-                // Done! Go to dashboard
-                currentStep = 1; // reset for future
-                window.location.hash = '#/dashboard';
+                // Show loading state
+                const buttonsDiv = document.getElementById('wizard-step-6-buttons');
+                const loadingDiv = document.getElementById('wizard-loading');
+                if (buttonsDiv && loadingDiv) {
+                    buttonsDiv.style.display = 'none';
+                    loadingDiv.style.display = 'block';
+                }
+
+                // Generate Plan
+                generate90DayActionPlan().then(plan => {
+                    if (plan) {
+                        applyGeneratedPlan(plan);
+                        currentStep = 1; // reset for future
+                        window.location.hash = '#/roadmap';
+                    } else {
+                        if (buttonsDiv && loadingDiv) {
+                            buttonsDiv.style.display = 'flex';
+                            loadingDiv.style.display = 'none';
+                        }
+                        alert("Couldn't generate your plan right now — try again in a moment.");
+                    }
+                }).catch(err => {
+                    console.error(err);
+                    if (buttonsDiv && loadingDiv) {
+                        buttonsDiv.style.display = 'flex';
+                        loadingDiv.style.display = 'none';
+                    }
+                    alert("Couldn't generate your plan right now — try again in a moment.");
+                });
             }
         });
     }

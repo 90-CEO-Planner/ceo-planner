@@ -104,7 +104,10 @@ export async function generateAIResponse(messageHistory) {
 
     try {
         const { data, error } = await window.db.functions.invoke('chat', {
-            body: { messages: messages }
+            body: { messages: messages },
+            headers: {
+                Authorization: `Bearer ${window.db.supabaseKey}`
+            }
         });
 
         if (error) {
@@ -123,3 +126,175 @@ export async function generateAIResponse(messageHistory) {
         throw error;
     }
 }
+
+export async function generateMondayPlanDraft(reviewData) {
+    const store = getStore();
+    const focus = store.goals?.focus || "None set yet";
+    const bizName = store.profile?.businessName || "the company";
+
+    const prompt = `You are the AI CEO Advisor for ${bizName}. 
+The CEO has just completed their Friday Review. Here is what they said:
+- What moved the business forward: ${reviewData.movedForward}
+- What worked well: ${reviewData.workedWell}
+- What felt difficult or heavy: ${reviewData.difficult}
+- Personal Energy Level: ${reviewData.energy}
+- What to improve next week: ${reviewData.nextWeekImprove}
+
+Their overarching 90-day goal: ${focus}
+
+Based ONLY on this review, draft a highly actionable plan for this upcoming Monday. 
+You MUST return ONLY a raw JSON strictly following this schema with no markdown formatting or backticks:
+{
+  "weeklyFocus": "A strong one-sentence focus for the week based on their review improvements.",
+  "priorities": [
+    "Priority 1",
+    "Priority 2",
+    "Priority 3"
+  ],
+  "revenueAction": "A specific action to drive revenue this week, tailored to what worked well."
+}`;
+
+    try {
+        const { data, error } = await window.db.functions.invoke('chat', {
+            body: { messages: [{ role: 'user', content: prompt }] },
+            headers: {
+                Authorization: `Bearer ${window.db.supabaseKey}`
+            }
+        });
+
+        if (error) throw new Error(error.message);
+        if (data.error) throw new Error(data.error.message || data.error);
+
+        let content = data.choices[0].message.content;
+        content = content.replace(/^```json/g, '').replace(/```$/g, '').trim();
+        return JSON.parse(content);
+    } catch (error) {
+        console.error("Failed to generate Monday plan draft:", error);
+        return null;
+    }
+}
+
+export async function generate90DayActionPlan() {
+    const store = getStore();
+
+    const ceoName = store.profile?.name || "CEO";
+    const businessName = store.profile?.businessName || "the business";
+    const stage = store.profile?.stage || "Unknown";
+    const businessModel = store.profile?.businessModel || "Unknown";
+    const bottleneck = store.profile?.bottleneck || "Unknown";
+    const strategyMode = store.profile?.strategyMode || "Unknown";
+    const focus = store.goals?.focus || "Unknown";
+    const outcome = store.goals?.outcome || "Unknown";
+    const prioritiesArray = store.goals?.priorities || [];
+    const priorities = prioritiesArray.filter(p => p.trim() !== '').join(" | ") || "None";
+    const m1 = store.goals?.milestones?.month1 || "Unknown";
+    const m2 = store.goals?.milestones?.month2 || "Unknown";
+    const m3 = store.goals?.milestones?.month3 || "Unknown";
+    const currency = store.settings?.currency || "$";
+    const revenueGoal = store.revenue?.quarterlyGoal || 0;
+    const avgOfferPrice = store.revenue?.averageOfferPrice || 0;
+    const leadGoal = store.leads?.quarterlyGoal || 0;
+    const statement = store.goals?.statement || "None";
+
+    let salesRequired = "unknown";
+    if (avgOfferPrice > 0) {
+        salesRequired = Math.ceil(revenueGoal / avgOfferPrice);
+    }
+
+    const systemPrompt = `You are an elite strategic planner for solo entrepreneurs. You build calibrated, realistic 90-day action plans — not generic advice. You think like a Chief of Staff: ruthless about scope, honest about constraints, specific about weekly cadence.
+
+You are planning for ${ceoName}, founder of ${businessName}.
+
+REAL CONTEXT (use this and only this):
+- Business stage: ${stage}
+- Business model: ${businessModel}
+- #1 Bottleneck right now: ${bottleneck}
+- Strategy Mode for the quarter: ${strategyMode}
+- 90-Day Focus Theme: ${focus}
+- Measurable 90-Day Outcome: ${outcome}
+- Top 3 Priorities the user has chosen: ${priorities}
+- Monthly Milestones the user has chosen: M1: ${m1} | M2: ${m2} | M3: ${m3}
+- Quarterly Revenue Goal: ${currency}${revenueGoal}
+- Average Offer Price: ${currency}${avgOfferPrice}
+- Implied number of sales required this quarter: ${salesRequired}
+- Quarterly Lead Goal: ${leadGoal}
+- Currency: ${currency}
+- CEO Commitment statement: "${statement}"
+
+RULES (apply all of them):
+1. Calibrate targets honestly. If the math is unrealistic given stage and bottleneck, note it in the plan and propose a stretch vs. realistic split. Never inflate.
+2. Phase the 90 days: Month 1 = foundation (build the assets and remove the bottleneck), Month 2 = momentum (output and visibility), Month 3 = conversion (sell, follow up, close).
+3. Every week MUST contain a Top 3, ONE visibility action, ONE revenue action, ONE follow-up action. Visibility and Revenue are non-negotiable; do not let a week pass without both.
+4. Tie every weekly action back to the user's #1 Bottleneck or 90-Day Outcome. Generic tasks ("post on social media") are forbidden — be specific to their model and stage.
+5. Match weekly intensity to the user's stage. Just-starting users get fewer asks per week than scaling users.
+6. Build red-flag thresholds. These are the leading indicators that, if missed, mean the user is off track BEFORE the quarter ends. Each red flag = a metric, a threshold, and a corrective action.
+7. Build a one-time Setup Checklist of foundational items the user must complete in week 1 — things they only do once (set up email signature, install analytics pixel, write welcome sequence, etc.). Tailor it to the business model.
+8. Write in their voice: warm, direct, specific, no hype, no jargon. The user is a tired founder reading this on their phone.
+10. The 'successCheck' for each week MUST be highly realistic and grounded based on the user's stage. Do NOT set unattainable lag-metric checks (e.g., "10 new sales" or "50 signups" for a beginner). Instead, tie the check to the completion of the week's input actions (e.g., "Drafted 3 emails" or "Pitched 5 people").
+11. NEVER recommend tools they did not mention. NEVER assume budget or team. Default to "free or already-owned" tools.
+12. Output JSON only. No markdown, no code fences, no prose before or after.
+OUTPUT FORMAT (return exactly this JSON shape):
+{
+  "summary": "One paragraph (3-4 sentences) explaining the plan's logic, what's realistic, and what's stretch.",
+  "salesRequired": ${salesRequired},
+  "calibration": "One sentence noting if the goal is realistic, stretch, or needs adjusting based on stage and bottleneck.",
+  "monthlyThemes": {
+    "month1": "Foundation — one sentence theme tied to their milestone.",
+    "month2": "Momentum — one sentence theme tied to their milestone.",
+    "month3": "Conversion — one sentence theme tied to their milestone."
+  },
+  "setupChecklist": [
+    { "task": "Specific one-time setup task", "category": "foundation|email|sales|content|analytics", "estimatedMinutes": 30 }
+  ],
+  "redFlags": [
+    { "metric": "What to measure", "threshold": "The number/condition that triggers the flag", "checkFrequency": "weekly|monthly", "correctiveAction": "What to do if triggered" }
+  ],
+  "weeks": [
+    {
+      "weekNumber": 1,
+      "monthIndex": 1,
+      "weeklyFocus": "One sentence focus for the week, tied to monthly theme.",
+      "topPriorities": ["Priority 1 (specific)", "Priority 2 (specific)", "Priority 3 (specific)"],
+      "visibilityAction": "ONE specific visibility task this week (audience-facing, no sale).",
+      "revenueAction": "ONE specific revenue task this week (a direct invitation to buy).",
+      "followUpAction": "ONE specific follow-up task this week (nurture an existing lead).",
+      "dailyThree": ["Mon-Tue micro task", "Wed-Thu micro task", "Fri micro task"],
+      "successCheck": "How they will know this week worked (a measurable outcome)."
+    }
+  ]
+}
+
+CRITICAL: Return ONLY the JSON object above. No explanation, no preamble, no code fences.`;
+
+    try {
+        const { data, error } = await window.db.functions.invoke('chat', {
+            body: { 
+                messages: [
+                    { role: 'system', content: systemPrompt }, 
+                    { role: 'user', content: 'Generate my 90-day action plan now. Return only the JSON object, no prose, no markdown fences.' }
+                ] 
+            },
+            headers: {
+                Authorization: `Bearer ${window.db.supabaseKey}`
+            }
+        });
+
+        if (error) throw new Error(error.message);
+        if (data.error) throw new Error(data.error.message || data.error);
+
+        let content = data.choices[0].message.content;
+        content = content.replace(/^```json/gi, '').replace(/```$/g, '').trim();
+        const parsedPlan = JSON.parse(content);
+
+        // Basic validation
+        if (!parsedPlan.summary || !parsedPlan.weeks || !Array.isArray(parsedPlan.weeks) || parsedPlan.weeks.length !== 12) {
+             throw new Error("Invalid plan shape returned from AI.");
+        }
+
+        return parsedPlan;
+    } catch (error) {
+        console.error("Failed to generate 90-Day Action Plan:", error);
+        return null;
+    }
+}
+

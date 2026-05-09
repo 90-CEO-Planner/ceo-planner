@@ -42,6 +42,7 @@ const defaultState = {
     revenue: {
         quarterlyGoal: 0,
         averageOfferPrice: 0,
+        quickOffers: [], // Array of { id, name, price, source }
         entries: [] // Array of { id, date, weekStart, amount, notes }
     },
     leads: {
@@ -57,7 +58,12 @@ const defaultState = {
     monthlyReviews: [], // Array of monthly review objects
     dailyLogs: {}, // Dict of { "2023-11-20": [{text: "Task 1", done: false}, ...] }
     streak: 0, // Friday Review Streak
-    planningStreak: 0 // Monday Plan Streak
+    planningStreak: 0, // Monday Plan Streak
+    draftMondayPlan: null, // AI generated plan waiting for Monday
+    notes: [], // Array of { id, text, date }
+    setupChecklist: [], // Array of one-time setup tasks
+    redFlags: [], // Array of leading indicators
+    monthlyThemes: { month1: '', month2: '', month3: '' }
 };
 
 function getStore() {
@@ -70,14 +76,19 @@ function getStore() {
                 ...parsed,
                 profile: { ...defaultState.profile, ...(parsed.profile || {}) },
                 goals: { ...defaultState.goals, ...(parsed.goals || {}) },
-                revenue: { ...defaultState.revenue, ...(parsed.revenue || {}) },
+                revenue: { ...defaultState.revenue, ...(parsed.revenue || {}), quickOffers: parsed.revenue?.quickOffers || [] },
                 leads: { ...defaultState.leads, ...(parsed.leads || {}) },
                 settings: { ...defaultState.settings, ...(parsed.settings || {}) },
                 metrics: parsed.metrics || [],
                 weeklyPlans: parsed.weeklyPlans || [],
                 reviews: parsed.reviews || [],
                 monthlyReviews: parsed.monthlyReviews || [],
-                dailyLogs: parsed.dailyLogs || {}
+                dailyLogs: parsed.dailyLogs || {},
+                draftMondayPlan: parsed.draftMondayPlan || null,
+                notes: parsed.notes || [],
+                setupChecklist: parsed.setupChecklist || [],
+                redFlags: parsed.redFlags || [],
+                monthlyThemes: parsed.monthlyThemes || { month1: '', month2: '', month3: '' }
             };
             
             // Retroactively assign IDs to legacy revenue entries so they can be securely deleted
@@ -118,7 +129,7 @@ function saveStore(state) {
                         if (error) {
                             console.error("Background cloud sync failed", error);
                             if (!window._syncErrorAlerted) {
-                                alert("Warning: Cloud sync failed. Your data is only saved locally. Please check your Supabase RLS policies on the user_data table. Error: " + error.message);
+                                console.warn("Cloud sync failed. Your data is only saved locally. Please check your Supabase RLS policies on the user_data table. Error: " + error.message);
                                 window._syncErrorAlerted = true;
                             }
                         }
@@ -146,6 +157,13 @@ function updateGoals(goalsData) {
 function updateRevenueSettings(settings) {
     const store = getStore();
     store.revenue = { ...store.revenue, ...settings };
+    saveStore(store);
+}
+
+function updateQuickOffers(offers) {
+    const store = getStore();
+    // Enforce base tier limit of 3
+    store.revenue.quickOffers = offers.slice(0, 3);
     saveStore(store);
 }
 
@@ -423,6 +441,73 @@ function addMonthlyReview(review) {
     saveStore(store);
 }
 
+function saveDraftMondayPlan(plan) {
+    const store = getStore();
+    store.draftMondayPlan = plan;
+    saveStore(store);
+}
+
+function clearDraftMondayPlan() {
+    const store = getStore();
+    store.draftMondayPlan = null;
+    saveStore(store);
+}
+
+function applyGeneratedPlan(plan) {
+    if (!plan || !plan.summary || !plan.weeks || plan.weeks.length !== 12 || !plan.setupChecklist || !plan.redFlags || !plan.monthlyThemes) {
+        console.error("Invalid plan structure passed to applyGeneratedPlan");
+        return;
+    }
+
+    const store = getStore();
+
+    store.setupChecklist = plan.setupChecklist.map(item => ({ ...item, done: false }));
+    store.redFlags = plan.redFlags;
+    store.monthlyThemes = plan.monthlyThemes;
+    store.planSummary = plan.summary;
+    store.planCalibration = plan.calibration;
+
+    // Clear existing weekly plans for the new quarter start
+    store.weeklyPlans = [];
+
+    const now = Date.now();
+    plan.weeks.forEach((w, i) => {
+        store.weeklyPlans.push({
+            id: 'gen_' + (now + i).toString(),
+            date: new Date(now + i).toISOString(),
+            weekNumber: w.weekNumber,
+            monthIndex: w.monthIndex,
+            winCondition: w.weeklyFocus,
+            topActions: w.topPriorities,
+            visibilityAction: w.visibilityAction,
+            revenueAction: w.revenueAction,
+            followUps: w.followUpAction,
+            daily3: w.dailyThree,
+            successCheck: w.successCheck,
+            generated: true,
+            applied: false
+        });
+    });
+
+    saveStore(store);
+}
+
+function addNote(note) {
+    const store = getStore();
+    note.id = Date.now().toString();
+    note.date = new Date().toISOString();
+    if (!store.notes) store.notes = [];
+    store.notes.push(note);
+    saveStore(store);
+}
+
+function deleteNote(id) {
+    const store = getStore();
+    if (!store.notes) store.notes = [];
+    store.notes = store.notes.filter(n => String(n.id) !== String(id));
+    saveStore(store);
+}
+
 function calculateStreak(reviews) {
     if (!reviews || reviews.length === 0) return 0;
 
@@ -686,7 +771,10 @@ async function generateAIResponse(messageHistory) {
 
     try {
         const { data, error } = await window.db.functions.invoke('chat', {
-            body: { messages: messages }
+            body: { messages: messages },
+            headers: {
+                Authorization: `Bearer ${window.db.supabaseKey}`
+            }
         });
 
         if (error) {
@@ -705,6 +793,178 @@ async function generateAIResponse(messageHistory) {
         throw error;
     }
 }
+
+async function generateMondayPlanDraft(reviewData) {
+    const store = getStore();
+    const focus = store.goals?.focus || "None set yet";
+    const bizName = store.profile?.businessName || "the company";
+
+    const prompt = `You are the AI CEO Advisor for ${bizName}. 
+The CEO has just completed their Friday Review. Here is what they said:
+- What moved the business forward: ${reviewData.movedForward}
+- What worked well: ${reviewData.workedWell}
+- What felt difficult or heavy: ${reviewData.difficult}
+- Personal Energy Level: ${reviewData.energy}
+- What to improve next week: ${reviewData.nextWeekImprove}
+
+Their overarching 90-day goal: ${focus}
+
+Based ONLY on this review, draft a highly actionable plan for this upcoming Monday. 
+You MUST return ONLY a raw JSON strictly following this schema with no markdown formatting or backticks:
+{
+  "weeklyFocus": "A strong one-sentence focus for the week based on their review improvements.",
+  "priorities": [
+    "Priority 1",
+    "Priority 2",
+    "Priority 3"
+  ],
+  "revenueAction": "A specific action to drive revenue this week, tailored to what worked well."
+}`;
+
+    try {
+        const { data, error } = await window.db.functions.invoke('chat', {
+            body: { messages: [{ role: 'user', content: prompt }] },
+            headers: {
+                Authorization: `Bearer ${window.db.supabaseKey}`
+            }
+        });
+
+        if (error) throw new Error(error.message);
+        if (data.error) throw new Error(data.error.message || data.error);
+
+        let content = data.choices[0].message.content;
+        content = content.replace(/^```json/g, '').replace(/```$/g, '').trim();
+        return JSON.parse(content);
+    } catch (error) {
+        console.error("Failed to generate Monday plan draft:", error);
+        return null;
+    }
+}
+
+async function generate90DayActionPlan() {
+    const store = getStore();
+
+    const ceoName = store.profile?.name || "CEO";
+    const businessName = store.profile?.businessName || "the business";
+    const stage = store.profile?.stage || "Unknown";
+    const businessModel = store.profile?.businessModel || "Unknown";
+    const bottleneck = store.profile?.bottleneck || "Unknown";
+    const strategyMode = store.profile?.strategyMode || "Unknown";
+    const focus = store.goals?.focus || "Unknown";
+    const outcome = store.goals?.outcome || "Unknown";
+    const prioritiesArray = store.goals?.priorities || [];
+    const priorities = prioritiesArray.filter(p => p.trim() !== '').join(" | ") || "None";
+    const m1 = store.goals?.milestones?.month1 || "Unknown";
+    const m2 = store.goals?.milestones?.month2 || "Unknown";
+    const m3 = store.goals?.milestones?.month3 || "Unknown";
+    const currency = store.settings?.currency || "$";
+    const revenueGoal = store.revenue?.quarterlyGoal || 0;
+    const avgOfferPrice = store.revenue?.averageOfferPrice || 0;
+    const leadGoal = store.leads?.quarterlyGoal || 0;
+    const statement = store.goals?.statement || "None";
+
+    let salesRequired = "unknown";
+    if (avgOfferPrice > 0) {
+        salesRequired = Math.ceil(revenueGoal / avgOfferPrice);
+    }
+
+    const systemPrompt = `You are an elite strategic planner for solo entrepreneurs. You build calibrated, realistic 90-day action plans — not generic advice. You think like a Chief of Staff: ruthless about scope, honest about constraints, specific about weekly cadence.
+
+You are planning for ${ceoName}, founder of ${businessName}.
+
+REAL CONTEXT (use this and only this):
+- Business stage: ${stage}
+- Business model: ${businessModel}
+- #1 Bottleneck right now: ${bottleneck}
+- Strategy Mode for the quarter: ${strategyMode}
+- 90-Day Focus Theme: ${focus}
+- Measurable 90-Day Outcome: ${outcome}
+- Top 3 Priorities the user has chosen: ${priorities}
+- Monthly Milestones the user has chosen: M1: ${m1} | M2: ${m2} | M3: ${m3}
+- Quarterly Revenue Goal: ${currency}${revenueGoal}
+- Average Offer Price: ${currency}${avgOfferPrice}
+- Implied number of sales required this quarter: ${salesRequired}
+- Quarterly Lead Goal: ${leadGoal}
+- Currency: ${currency}
+- CEO Commitment statement: "${statement}"
+
+RULES (apply all of them):
+1. Calibrate targets honestly. If the math is unrealistic given stage and bottleneck, note it in the plan and propose a stretch vs. realistic split. Never inflate.
+2. Phase the 90 days: Month 1 = foundation (build the assets and remove the bottleneck), Month 2 = momentum (output and visibility), Month 3 = conversion (sell, follow up, close).
+3. Every week MUST contain a Top 3, ONE visibility action, ONE revenue action, ONE follow-up action. Visibility and Revenue are non-negotiable; do not let a week pass without both.
+4. Tie every weekly action back to the user's #1 Bottleneck or 90-Day Outcome. Generic tasks ("post on social media") are forbidden — be specific to their model and stage.
+5. Match weekly intensity to the user's stage. Just-starting users get fewer asks per week than scaling users.
+6. Build red-flag thresholds. These are the leading indicators that, if missed, mean the user is off track BEFORE the quarter ends. Each red flag = a metric, a threshold, and a corrective action.
+7. Build a one-time Setup Checklist of foundational items the user must complete in week 1 — things they only do once (set up email signature, install analytics pixel, write welcome sequence, etc.). Tailor it to the business model.
+8. Write in their voice: warm, direct, specific, no hype, no jargon. The user is a tired founder reading this on their phone.
+10. The 'successCheck' for each week MUST be highly realistic and grounded based on the user's stage. Do NOT set unattainable lag-metric checks (e.g., "10 new sales" or "50 signups" for a beginner). Instead, tie the check to the completion of the week's input actions (e.g., "Drafted 3 emails" or "Pitched 5 people").
+11. NEVER recommend tools they did not mention. NEVER assume budget or team. Default to "free or already-owned" tools.
+12. Output JSON only. No markdown, no code fences, no prose before or after.
+OUTPUT FORMAT (return exactly this JSON shape):
+{
+  "summary": "One paragraph (3-4 sentences) explaining the plan's logic, what's realistic, and what's stretch.",
+  "salesRequired": ${salesRequired},
+  "calibration": "One sentence noting if the goal is realistic, stretch, or needs adjusting based on stage and bottleneck.",
+  "monthlyThemes": {
+    "month1": "Foundation — one sentence theme tied to their milestone.",
+    "month2": "Momentum — one sentence theme tied to their milestone.",
+    "month3": "Conversion — one sentence theme tied to their milestone."
+  },
+  "setupChecklist": [
+    { "task": "Specific one-time setup task", "category": "foundation|email|sales|content|analytics", "estimatedMinutes": 30 }
+  ],
+  "redFlags": [
+    { "metric": "What to measure", "threshold": "The number/condition that triggers the flag", "checkFrequency": "weekly|monthly", "correctiveAction": "What to do if triggered" }
+  ],
+  "weeks": [
+    {
+      "weekNumber": 1,
+      "monthIndex": 1,
+      "weeklyFocus": "One sentence focus for the week, tied to monthly theme.",
+      "topPriorities": ["Priority 1 (specific)", "Priority 2 (specific)", "Priority 3 (specific)"],
+      "visibilityAction": "ONE specific visibility task this week (audience-facing, no sale).",
+      "revenueAction": "ONE specific revenue task this week (a direct invitation to buy).",
+      "followUpAction": "ONE specific follow-up task this week (nurture an existing lead).",
+      "dailyThree": ["Mon-Tue micro task", "Wed-Thu micro task", "Fri micro task"],
+      "successCheck": "How they will know this week worked (a measurable outcome)."
+    }
+  ]
+}
+
+CRITICAL: Return ONLY the JSON object above. No explanation, no preamble, no code fences.`;
+
+    try {
+        const { data, error } = await window.db.functions.invoke('chat', {
+            body: { 
+                messages: [
+                    { role: 'system', content: systemPrompt }, 
+                    { role: 'user', content: 'Generate my 90-day action plan now. Return only the JSON object, no prose, no markdown fences.' }
+                ] 
+            },
+            headers: {
+                Authorization: `Bearer ${window.db.supabaseKey}`
+            }
+        });
+
+        if (error) throw new Error(error.message);
+        if (data.error) throw new Error(data.error.message || data.error);
+
+        let content = data.choices[0].message.content;
+        content = content.replace(/^```json/gi, '').replace(/```$/g, '').trim();
+        const parsedPlan = JSON.parse(content);
+
+        // Basic validation
+        if (!parsedPlan.summary || !parsedPlan.weeks || !Array.isArray(parsedPlan.weeks) || parsedPlan.weeks.length !== 12) {
+             throw new Error("Invalid plan shape returned from AI.");
+        }
+
+        return parsedPlan;
+    } catch (error) {
+        console.error("Failed to generate 90-Day Action Plan:", error);
+        return null;
+    }
+}
+
 
 
 // --- js\components\nav.js ---
@@ -725,16 +985,15 @@ function renderNav() {
             </div>
             <nav class="nav-links">
                 <a href="#/dashboard" class="nav-link" id="nav-dashboard">Dashboard</a>
+                <a href="#/roadmap" class="nav-link" id="nav-roadmap">90-Day Plan</a>
                 <a href="#/planner" class="nav-link" id="nav-planner">Weekly Plan</a>
                 <a href="#/revenue" class="nav-link" id="nav-revenue">Revenue</a>
                 <a href="#/review" class="nav-link" id="nav-review">Friday Review</a>
-                <a href="#/coach" class="nav-link" id="nav-coach">AI Coach</a>
+                <a href="#/coach" class="nav-link" id="nav-coach">Notepad</a>
                 <a href="#/monthly-review" class="nav-link" id="nav-monthly-review">Monthly Review</a>
                 <a href="#/progress" class="nav-link" id="nav-progress">Wins & Progress</a>
-                <div style="margin-top: 2rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.1);">
-                    <a href="#/settings" class="nav-link" id="nav-settings" style="display: flex; gap: 0.5rem; align-items: center;">⚙️ Settings</a>
-                    <a href="#" class="nav-link" onclick="localStorage.removeItem('ceo_auth'); localStorage.removeItem('ceoPlanner_store'); window.location.hash='#/login'; window.location.reload(); return false;" style="color: #FCA5A5; display: flex; gap: 0.5rem; align-items: center;">🚪 Log Out</a>
-                </div>
+                <a href="#/settings" class="nav-link" id="nav-settings">⚙️ Settings</a>
+                <a href="#" class="nav-link" onclick="localStorage.removeItem('ceo_auth'); localStorage.removeItem('ceoPlanner_store'); window.location.hash='#/login'; window.location.reload(); return false;" style="color: #FCA5A5;">🚪 Log Out</a>
             </nav>
         </header>
     `;
@@ -748,6 +1007,14 @@ function renderTooltip(whatStr, whyStr) {
     // Generate a unique ID for aria properties
     const id = 'tt_' + Math.random().toString(36).substr(2, 9);
 
+    let content = '';
+    if (whatStr) {
+        content += `<span class="tooltip-section"><strong>What it is:</strong> ${whatStr}</span>`;
+    }
+    if (whyStr) {
+        content += `<span class="tooltip-section"><strong>Why it matters:</strong> ${whyStr}</span>`;
+    }
+
     return `
         <span class="tooltip-container" tabindex="0" aria-describedby="${id}">
             <svg class="info-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -756,12 +1023,7 @@ function renderTooltip(whatStr, whyStr) {
                 <line x1="12" y1="8" x2="12.01" y2="8"></line>
             </svg>
             <span class="tooltip-content" id="${id}" role="tooltip">
-                <span class="tooltip-section">
-                    <strong>What it is:</strong> ${whatStr}
-                </span>
-                <span class="tooltip-section">
-                    <strong>Why it matters:</strong> ${whyStr}
-                </span>
+                ${content}
             </span>
         </span>
     `;
@@ -865,13 +1127,13 @@ function initChatWidget() {
             // Inject Quick Prompt Chips
             messagesEl.innerHTML += `
                 <div style="display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.25rem;">
-                    <button onclick="document.getElementById('ai-widget-input').value='Critique my latest weekly plan: are there too many distractions?'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-primary); color: var(--color-primary); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
+                    <button type="button" onclick="document.getElementById('ai-widget-input').value='Critique my latest weekly plan: are there too many distractions?'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-primary); color: var(--color-primary); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
                         🎯 <b>Plan Alignment:</b> Critique my weekly priorities.
                     </button>
-                    <button onclick="document.getElementById('ai-widget-input').value='Give me 3 specific, fast actions I can take this week to overcome my main bottleneck.'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-primary); color: var(--color-primary); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
+                    <button type="button" onclick="document.getElementById('ai-widget-input').value='Give me 3 specific, fast actions I can take this week to overcome my main bottleneck.'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-primary); color: var(--color-primary); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
                         🚧 <b>Bottleneck Resolution:</b> Give me 3 fast actions to unblock me.
                     </button>
-                    <button onclick="document.getElementById('ai-widget-input').value='Based on my current business stage and goals, what is the #1 revenue-generating action I should focus on today?'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-primary); color: var(--color-primary); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
+                    <button type="button" onclick="document.getElementById('ai-widget-input').value='Based on my current business stage and goals, what is the #1 revenue-generating action I should focus on today?'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-primary); color: var(--color-primary); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
                         💰 <b>Revenue Focus:</b> What is the #1 action I should take today?
                     </button>
                 </div>
@@ -1231,9 +1493,13 @@ function renderStepContent() {
                     <p style="font-size: 0.875rem; color: var(--color-text-main); margin-top: 0.25rem;">Your 90-Day plan is locked in. Let's go to your CEO Dashboard.</p>
                 </div>
 
-                <div class="flex justify-between mt-8">
+                <div class="flex justify-between mt-8" id="wizard-step-6-buttons">
                     <button type="button" class="btn btn-ghost" id="btn-back">Back</button>
-                    <button type="submit" class="btn btn-primary">Complete Setup</button>
+                    <button type="submit" class="btn btn-primary" id="btn-complete-setup">Generate My 90-Day Plan</button>
+                </div>
+                <div id="wizard-loading" style="display: none; text-align: center; padding: 2rem 0;">
+                    <div class="spinner" style="margin: 0 auto 1rem auto; width: 40px; height: 40px; border: 4px solid var(--color-bg-light); border-top: 4px solid var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                    <p style="color: var(--color-primary-dark); font-weight: 500;">Building your 90-day roadmap... this takes about 20 seconds</p>
                 </div>
             </form>
         `;
@@ -1336,9 +1602,35 @@ function wizardAttachEvents() {
                 currentGoals.statement = document.getElementById('goal-statement').value;
                 updateGoals(currentGoals);
 
-                // Done! Go to dashboard
-                currentStep = 1; // reset for future
-                window.location.hash = '#/dashboard';
+                // Show loading state
+                const buttonsDiv = document.getElementById('wizard-step-6-buttons');
+                const loadingDiv = document.getElementById('wizard-loading');
+                if (buttonsDiv && loadingDiv) {
+                    buttonsDiv.style.display = 'none';
+                    loadingDiv.style.display = 'block';
+                }
+
+                // Generate Plan
+                generate90DayActionPlan().then(plan => {
+                    if (plan) {
+                        applyGeneratedPlan(plan);
+                        currentStep = 1; // reset for future
+                        window.location.hash = '#/roadmap';
+                    } else {
+                        if (buttonsDiv && loadingDiv) {
+                            buttonsDiv.style.display = 'flex';
+                            loadingDiv.style.display = 'none';
+                        }
+                        alert("Couldn't generate your plan right now — try again in a moment.");
+                    }
+                }).catch(err => {
+                    console.error(err);
+                    if (buttonsDiv && loadingDiv) {
+                        buttonsDiv.style.display = 'flex';
+                        loadingDiv.style.display = 'none';
+                    }
+                    alert("Couldn't generate your plan right now — try again in a moment.");
+                });
             }
         });
     }
@@ -1354,6 +1646,14 @@ function renderDashboard() {
     const streak = store.streak;
     const revInsights = getRevenueInsights();
     const currency = store.settings?.currency || '$';
+    
+    // Core calculations for KPI Clarity
+    const leads = store.leads?.entries || [];
+    const totalLeads = leads.reduce((sum, l) => sum + (parseFloat(l.amount) || 0), 0);
+    const salesCount = revInsights.entries ? revInsights.entries.length : 0;
+    const leadToSaleConversion = totalLeads > 0 ? ((salesCount / totalLeads) * 100).toFixed(1) : 0;
+    
+    const quickOffers = store.revenue?.quickOffers || [];
 
     // Check if there is an active weekly plan
     let activePlan = store.weeklyPlans.length > 0 ? store.weeklyPlans[store.weeklyPlans.length - 1] : null;
@@ -1386,6 +1686,13 @@ function renderDashboard() {
                     <p style="color: var(--color-text-muted);">Stay focused on your 90-day outcome.</p>
                 </div>
                 <div style="display: flex; gap: 0.75rem; align-items: center;">
+                    <div style="display: flex; flex-direction: column; align-items: center; gap: 0.25rem;">
+                        <div id="dash-regen-spinner" class="spinner" style="display: none; width: 16px; height: 16px; border: 2px solid var(--color-bg-light); border-top: 2px solid var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                        <button class="btn btn-outline btn-sm btn-regenerate-plan" style="display: flex; align-items: center; gap: 0.25rem;">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"></polyline><polyline points="23 20 23 14 17 14"></polyline><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"></path></svg>
+                            Regenerate Plan
+                        </button>
+                    </div>
                     <button class="btn btn-primary btn-sm btn-open-quick-sale" style="display: flex; align-items: center; gap: 0.25rem;">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                         Log a Sale
@@ -1425,120 +1732,144 @@ function renderDashboard() {
                         </div>
                     </div>
                 </div>
-                `;
+            `;
         })()}
-
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--spacing-lg); margin-bottom: var(--spacing-lg);">
+            <div class="grid-cols-3 mb-6">
                 
-                <!-- 90 Day Focus Card -->
-                <div class="card" style="border-top: 4px solid var(--color-primary);">
-                    <p style="display: flex; align-items: center; font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-muted); font-weight: 600; margin-bottom: var(--spacing-sm);">
-                        90-Day Focus
-                        ${renderTooltip("The main overarching goal you are working towards this quarter.", "A clear 90-day focus acts as a filter. If an opportunity or task doesn't support this focus, it's a distraction.")}
-                    </p>
-                    <h3 style="margin-bottom: var(--spacing-md);">${g.focus || 'Not set'}</h3>
-                    
-                    <div style="background: var(--color-bg-main); padding: 1rem; border-radius: var(--radius-md);">
-                        <p style="font-size: 0.875rem; color: var(--color-primary-dark); font-weight: 600; margin-bottom: 0.25rem;">Measurable Outcome:</p>
-                        <p style="font-size: 0.875rem;">${g.outcome || 'Not set'}</p>
-                    </div>
-
-                    <div class="mt-4">
-                        <p style="display: flex; align-items: center; font-size: 0.875rem; font-weight: 600; margin-bottom: 0.5rem;">
-                            Top 3 Priorities
-                            ${renderTooltip("The three core projects or objectives that will make your 90-day focus a reality.", "Keeping your priorities limited to three ensures you actually finish what you start instead of having ten half-finished projects.")}
-                        </p>
-                        <ul style="list-style-position: inside; font-size: 0.875rem; color: var(--color-text-muted);">
-                            ${g.priorities.map(p => `<li>${p || 'Not set'}</li>`).join('')}
-                        </ul>
-                    </div>
-                </div>
-
-                <!-- This Week Card -->
-                <div class="card" style="border-top: 4px solid var(--color-secondary);">
-                    <div class="flex justify-between items-center mb-4">
-                        <p style="display: flex; align-items: center; font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-muted); font-weight: 600;">
-                            This Week's Plan
-                            ${renderTooltip("Your weekly strategy broken down into actionable steps.", "Planning your week in advance is the difference between leading your business and reacting to it.")}
-                        </p>
-    `;
-
-    if (activePlan) {
-        html += `
-                        <span style="background: #E1FDF4; color: #027A48; padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); font-size: 0.75rem; font-weight: 600;">Active</span>
-                    </div>
-                    <h4 style="margin-bottom: var(--spacing-sm);">${activePlan.visibilityAction || 'Visibility Action'}</h4>
-                    <p style="font-size: 0.875rem; color: var(--color-text-muted); margin-bottom: var(--spacing-md);">Revenue action: ${activePlan.revenueAction}</p>
-                    <div id="ceo-focus-score" style="margin-bottom: var(--spacing-md); font-size: 0.875rem; padding: 0.5rem; background: var(--color-bg-main); border-radius: var(--radius-sm); font-weight: 600; display: flex; justify-content: space-between; align-items: center;">
-                        <span style="display: flex; align-items: center;">
-                            CEO Focus Score:
-                            ${renderTooltip("A score from 0-100% measuring the strength of your weekly plan.", "A strong plan always includes three things: a way to get visible, a way to generate revenue, and a way to follow up. This score keeps you accountable to all three.")}
-                        </span> 
-                        <span id="score-val">Calculating...</span>
-                    </div>
-                    <a href="#/planner" class="btn btn-outline" style="width: 100%;">View Full Plan</a>
-                </div>
-            </div>
-        `;
-    } else {
-        html += `
-                        <span style="background: #FEE4E2; color: #B42318; padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); font-size: 0.75rem; font-weight: 600;">Needs Planning</span>
-                    </div>
-                    <div style="text-align: center; padding: 2rem 0;">
-                        <p style="display: flex; align-items: center; justify-content: center; color: var(--color-text-muted); margin-bottom: 1rem;">
-                            You haven't planned your week yet.
-                            ${renderTooltip("Weekly Planning", "CEOs don't wing it. By dedicating 15 minutes to plan on Monday, you save hours of busywork later in the week.")}
-                        </p>
-                        <a href="#/planner" class="btn btn-primary" style="width: 100%;">Create Weekly Plan</a>
-                    </div>
-                </div>
-            </div>
-        `;
-    }
-
-    if (revInsights.goal > 0) {
-        html += `
-            <!-- Revenue Snapshot (NEW) -->
-            <div class="card mb-6" style="border-left: 4px solid var(--color-primary-dark); cursor: pointer;" onclick="window.location.hash='#/revenue'">
-                <div class="flex justify-between items-start mb-4">
-                    <div>
-                        <h3 style="display: flex; align-items: center; margin: 0 0 0.25rem 0; font-size: 0.95rem; color: var(--color-text-main); font-weight: 500;">
-                            This Week's Revenue
-                            ${renderTooltip("The total amount of sales logged in the current calendar week.", "Tracking your weekly cash flow keeps your finger on the pulse of the business and prevents end-of-quarter surprises.")}
+                <!-- KPI 1: Revenue & Cash Flow -->
+                <div class="card" style="border-top: 4px solid var(--color-primary-dark); display: flex; flex-direction: column;">
+                    <div style="flex-grow: 1;">
+                        <h3 style="display: flex; align-items: center; margin: 0 0 0.5rem 0; font-size: 0.95rem; color: var(--color-text-main); font-weight: 500;">
+                            Quarterly Revenue
                         </h3>
-                        <div style="font-size: 1.75rem; font-weight: 700; color: var(--color-accent-dark); line-height: 1;">
-                            ${currency}${revInsights.revenueThisWeek.toLocaleString()}
+                        <div style="font-size: 2rem; font-weight: 700; color: var(--color-black); line-height: 1.2;">
+                            ${currency}${revInsights.totalRevenue.toLocaleString()}
+                        </div>
+                        <div class="flex justify-between items-center mt-2 mb-1">
+                            <span style="font-size: 0.8rem; color: var(--color-text-muted);">Progress: ${revInsights.progressPercent.toFixed(1)}%</span>
+                            <span style="font-size: 0.8rem; color: var(--color-text-muted);">${currency}${revInsights.goal.toLocaleString()}</span>
+                        </div>
+                        <div class="progress-container" style="height: 6px; background: var(--color-bg-light); border-radius: var(--radius-full); overflow: hidden;">
+                            <div class="progress-bar" style="height: 100%; width: ${revInsights.progressPercent}%; background: linear-gradient(90deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);"></div>
+                        </div>
+                        <div style="margin-top: 1rem; font-size: 0.85rem; color: var(--color-text-muted); display: flex; justify-content: space-between;">
+                            <span>Weekly Pace: <strong style="${revInsights.projectedRevenue >= revInsights.goal ? 'color: var(--color-primary-dark);' : ''}">${currency}${revInsights.revenueThisWeek.toLocaleString()}</strong></span>
+                            <span>Target: ${currency}${revInsights.weeklyTargetLength.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
                         </div>
                     </div>
-                    <div style="text-align: right;">
-                        <span style="font-size: 0.8rem; color: var(--color-text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Weekly Target</span>
-                        <div style="font-size: 1rem; color: var(--color-text-main); font-weight: 600;">${currency}${revInsights.weeklyTargetLength.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                    
+                    <!-- Quiet Advisor Pulse: Revenue -->
+                    ${(() => {
+                        const pulse = getQuietAdvisorPulses(store, revInsights, leadToSaleConversion, activePlan).revenue;
+                        if (!pulse || sessionStorage.getItem('dismissPulse_revenue') === 'true') return '';
+                        return `
+                        <div style="margin-top: 0.75rem; background: #F8FAFC; border-left: 3px solid ${pulse.color}; padding: 0.75rem; border-radius: 4px; display: flex; justify-content: space-between; align-items:flex-start;">
+                            <div>
+                                <span style="font-size: 0.7rem; text-transform: uppercase; font-weight: 700; color: ${pulse.color}; letter-spacing: 0.05em; margin-bottom: 0.15rem; display: block;">${pulse.title}</span>
+                                <p style="font-size: 0.8rem; color: var(--color-text-main); margin: 0; line-height: 1.3;">${pulse.message}</p>
+                            </div>
+                            <button class="btn-dismiss-pulse" data-pulse-id="revenue" style="background: none; border: none; color: var(--color-text-muted); font-size: 1rem; cursor: pointer; line-height: 1; padding: 0 0 0 0.5rem;">&times;</button>
+                        </div>
+                        `;
+                    })()}
+                    
+                    <!-- Quick Actions Section -->
+                    <div style="margin-top: 1.5rem; border-top: 1px solid var(--color-border); padding-top: 1rem;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+                            <p style="font-size: 0.75rem; text-transform: uppercase; font-weight: 600; color: var(--color-text-muted); margin: 0;">⚡ 1-Tap Log Sale</p>
+                            ${renderTooltip("Select your product from the dropdown and click '+ Log' to instantly record a sale and update your pipeline without leaving the dashboard.", "")}
+                        </div>
+                        ${quickOffers.length > 0 ? `
+                        <div style="display: flex; gap: 0.4rem; flex-wrap: nowrap; align-items: stretch;">
+                            <select id="dashboard-1tap-select" class="form-control" style="flex-grow: 1; font-size: 0.8rem; padding: 0.35rem 0.5rem; height: auto; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background-color: var(--color-bg-light); cursor: pointer; min-width: 0;">
+                                ${quickOffers.map((o, idx) => `<option value="${idx}">${o.name} (${o.price > 0 ? currency + parseFloat(o.price).toLocaleString() : 'Free'})</option>`).join('')}
+                            </select>
+                            <button class="btn btn-outline btn-1tap-sale-dropdown" style="padding: 0.35rem 0.75rem; font-size: 0.85rem; border-color: var(--color-primary-light); color: var(--color-primary-dark); font-weight: 600; white-space: nowrap; flex-shrink: 0; outline: none; box-shadow: none;">
+                                + Log
+                            </button>
+                        </div>
+                        ` : `
+                            <button class="btn btn-sm btn-ghost btn-add-quick-offer" style="border: 1px dashed var(--color-border); color: var(--color-text-muted); width: 100%;" onclick="window.location.hash='#/revenue'">+ Setup Quick Offers</button>
+                        `}
                     </div>
                 </div>
-                
-                <hr style="border: none; border-top: 1px solid var(--color-border); margin: 1rem 0;" />
-                
-                <div class="flex justify-between items-center mb-2">
-                    <span style="font-weight: 500; font-size: 0.875rem; color: var(--color-text-muted);">Quarterly Goal Progress</span>
-                    <span style="font-weight: 600; font-size: 0.875rem; color: var(--color-primary-dark);">${revInsights.progressPercent.toFixed(1)}%</span>
+
+                <!-- KPI 2: Pipeline & Conversion -->
+                <div class="card" style="border-top: 4px solid var(--color-secondary); display: flex; flex-direction: column;">
+                    <div style="flex-grow: 1;">
+                        <h3 style="display: flex; align-items: center; margin: 0 0 0.5rem 0; font-size: 0.95rem; color: var(--color-text-main); font-weight: 500;">
+                            Pipeline Leads & Conversion
+                        </h3>
+                        <div style="font-size: 2rem; font-weight: 700; color: var(--color-black); line-height: 1.2;">
+                            ${totalLeads.toLocaleString()} <span style="font-size: 1rem; color: var(--color-text-muted); font-weight: 500;">Leads</span>
+                        </div>
+                        
+                        <div style="margin-top: 1.5rem; display: flex; align-items: center; justify-content: space-between;">
+                             <span style="font-size: 0.85rem; color: var(--color-text-muted);">Lead-to-Sale Conversion</span>
+                             <span style="font-size: 1.25rem; font-weight: 700; color: var(--color-secondary-dark);">${leadToSaleConversion}%</span>
+                        </div>
+                        <div style="margin-top: 0.5rem; display: flex; align-items: center; justify-content: space-between;">
+                             <span style="font-size: 0.85rem; color: var(--color-text-muted);">Total Closes YTD</span>
+                             <span style="font-size: 1.1rem; font-weight: 600; color: var(--color-black);">${salesCount}</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Quiet Advisor Pulse: Pipeline -->
+                    ${(() => {
+                        const pulse = getQuietAdvisorPulses(store, revInsights, leadToSaleConversion, activePlan).pipeline;
+                        if (!pulse || sessionStorage.getItem('dismissPulse_pipeline') === 'true') return '';
+                        return `
+                        <div style="margin-top: 0.75rem; background: #F8FAFC; border-left: 3px solid ${pulse.color}; padding: 0.75rem; border-radius: 4px; display: flex; justify-content: space-between; align-items:flex-start;">
+                            <div>
+                                <span style="font-size: 0.7rem; text-transform: uppercase; font-weight: 700; color: ${pulse.color}; letter-spacing: 0.05em; margin-bottom: 0.15rem; display: block;">${pulse.title}</span>
+                                <p style="font-size: 0.8rem; color: var(--color-text-main); margin: 0; line-height: 1.3;">${pulse.message}</p>
+                            </div>
+                            <button class="btn-dismiss-pulse" data-pulse-id="pipeline" style="background: none; border: none; color: var(--color-text-muted); font-size: 1rem; cursor: pointer; line-height: 1; padding: 0 0 0 0.5rem;">&times;</button>
+                        </div>
+                        `;
+                    })()}
+                    
+                    <!-- Quick Actions Section -->
+                    <div style="margin-top: 1.5rem; border-top: 1px solid var(--color-border); padding-top: 1rem;">
+                        <p style="font-size: 0.75rem; text-transform: uppercase; font-weight: 600; color: var(--color-text-muted); margin-bottom: 0.5rem;">⚡ 1-Tap Log Leads</p>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                             <button class="btn btn-sm btn-outline btn-1tap-lead" style="color: var(--color-secondary-dark); border-color: var(--color-secondary-light);" data-amount="1">+ 1 Lead</button>
+                             <button class="btn btn-sm btn-outline btn-1tap-lead" style="color: var(--color-secondary-dark); border-color: var(--color-secondary-light);" data-amount="5">+ 5 Leads</button>
+                             <button class="btn btn-sm btn-outline btn-1tap-lead" style="color: var(--color-secondary-dark); border-color: var(--color-secondary-light); grid-column: span 2;" data-amount="10">+ 10 Leads</button>
+                        </div>
+                    </div>
                 </div>
-                <div class="progress-container" style="height: 8px; background: var(--color-bg-light); border-radius: var(--radius-full); overflow: hidden; margin-bottom: 0.5rem;">
-                    <div class="progress-bar" style="height: 100%; width: ${revInsights.progressPercent}%; background: linear-gradient(90deg, var(--color-primary) 0%, var(--color-primary-dark) 100%); transition: width 0.5s ease-out;"></div>
-                </div>
-                <div class="flex justify-between" style="font-size: 0.8rem; color: var(--color-text-muted);">
-                    <span>${currency}${revInsights.totalRevenue.toLocaleString()} / ${currency}${revInsights.goal.toLocaleString()}</span>
-                    <span>${revInsights.salesRemaining} sales left</span>
+
+                <!-- KPI 3: Status & Focus -->
+                <div class="card" style="border-top: 4px solid var(--color-accent); display: flex; flex-direction: column;">
+                    <div style="flex-grow: 1;">
+                       <p style="display: flex; align-items: center; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-muted); font-weight: 600; margin-bottom: var(--spacing-sm);">
+                           90-Day Focus Goal
+                       </p>
+                       <h3 style="margin: 0 0 1rem 0; font-size: 1.1rem;">${g.focus || 'Not set'}</h3>
+                       
+                       <p style="display: flex; align-items: center; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-muted); font-weight: 600; margin-bottom: var(--spacing-sm);">
+                           This Week's Plan
+                       </p>
+                       ${activePlan ? `
+                           <span style="background: #E1FDF4; color: #027A48; padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); font-size: 0.75rem; font-weight: 600; display: inline-block; margin-bottom: 0.5rem;">Active</span>
+                           <p style="font-size: 0.9rem; color: var(--color-text-main); margin-bottom: 0;">${activePlan.visibilityAction || 'Visibility Action'}</p>
+                           <a href="#/planner" style="font-size: 0.85rem; color: var(--color-primary-dark); font-weight: 500; display: inline-block; margin-top: 0.5rem;">View Full Plan →</a>
+                       ` : `
+                           <span style="background: #FEE4E2; color: #B42318; padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); font-size: 0.75rem; font-weight: 600; display: inline-block; margin-bottom: 0.5rem;">Needs Planning</span>
+                           <p style="font-size: 0.85rem; color: var(--color-text-muted);">You haven't planned your week yet.</p>
+                           <a href="#/planner" style="font-size: 0.85rem; color: var(--color-primary-dark); font-weight: 500; display: inline-block; margin-top: 0.5rem;">Plan Now →</a>
+                       `}
+                    </div>
+                    
+                    <div style="margin-top: 1.5rem; background: var(--color-bg-light); padding: 1rem; border-radius: var(--radius-sm); text-align: center;">
+                        <span style="display: block; font-size: 0.8rem; color: var(--color-text-muted); font-weight: 600; text-transform: uppercase;">CEO Weekly Score</span>
+                        <div id="score-val" style="font-size: 1.5rem; font-weight: 700; margin-top: 0.25rem;">Calculating...</div>
+                    </div>
                 </div>
             </div>
-        `;
-    } else {
-        html += `
-            <div class="card mb-6" style="border-left: 4px solid var(--color-primary-dark); text-align: center; cursor: pointer;" onclick="window.location.hash='#/revenue'">
-                <h3 style="margin-bottom: 0.5rem; font-size: 1.125rem;">Track Your Revenue</h3>
-                <p style="font-size: 0.875rem; color: var(--color-text-muted); margin-bottom: 0;">Set your quarterly goal to unlock insights.</p>
-            </div>
-        `;
-    }
+    `;
+    // Replaced the entire block above with the new KPI 3-column layout
 
     let dailyTasksHtml = "";
 
@@ -1636,22 +1967,26 @@ function renderDashboard() {
     });
 
     html += `
-            <!-- Daily 3 Action Items -->
-            <div class="card mb-6" style="border-left: 4px solid var(--color-accent);">
-                 <div class="flex items-center gap-2 mb-4">
-                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent-dark)" stroke-width="2"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
-                     <h3 style="margin: 0;">The Daily 3</h3>
-                 </div>
-                 <p style="font-size: 0.9rem; color: var(--color-text-muted); margin-bottom: 1rem;">Move the needle today based on your top priorities.</p>
-                 <div style="display: flex; flex-direction: column; gap: 0.75rem;">
-                     ${dailyTasksHtml}
-                 </div>
-            </div>
+            <div class="grid-sidebar mb-6">
+                <!-- Daily 3 Action Items -->
+                <div class="card" style="border-left: 4px solid var(--color-accent);">
+                     <div class="flex items-center gap-2 mb-4">
+                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent-dark)" stroke-width="2"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
+                         <h3 style="margin: 0;">The Daily 3</h3>
+                     </div>
+                     <p style="font-size: 0.9rem; color: var(--color-text-muted); margin-bottom: 1rem;">Move the needle today based on your top priorities.</p>
+                     <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+                         ${dailyTasksHtml}
+                     </div>
+                </div>
 
-            <!--CEO Commitment-->
-            <div class="card" style="background-color: var(--color-primary-light); border-color: var(--color-primary-light); text-align: center;">
-                <p style="font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-primary-dark); font-weight: 600; margin-bottom: var(--spacing-sm);">${store.profile?.name ? store.profile.name + "'s" : "Your"} Commitment</p>
-                <p style="font-size: 1.125rem; font-family: var(--font-heading); font-style: italic; color: var(--color-black);">"${g.statement || "I commit to leading with confidence."}"</p>
+                <div style="display: flex; flex-direction: column; gap: var(--spacing-lg);">
+                    <!--CEO Commitment-->
+                    <div class="card" style="flex-grow: 1; background-color: var(--color-primary-light); border-color: var(--color-primary-light); display: flex; flex-direction: column; justify-content: center; text-align: center;">
+                        <p style="font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-primary-dark); font-weight: 600; margin-bottom: var(--spacing-sm);">${store.profile?.name ? store.profile.name + "'s" : "Your"} Commitment</p>
+                        <p style="font-size: 1.125rem; font-family: var(--font-heading); font-style: italic; color: var(--color-black); margin: 0;">"${g.statement || "I commit to leading with confidence."}"</p>
+                    </div>
+                </div>
             </div>
 
             <!--Quick Actions-->
@@ -1706,6 +2041,49 @@ function renderDashboard() {
         `;
 
     return html;
+}
+
+// FUTURE UPGRADE NOTES (Advanced Version Ideas):
+// 1. Quiet Advisor Dynamic Prompting: Once revenue allows, swap these local static rules to hit the OpenAI Edge Function dynamically for infinite creative variance.
+// 2. Direct Data Integrations: Add Stripe/QuickBooks APIs to completely eliminate manual revenue/cash flow entry (Zero-Entry Dashboard).
+// 3. Predictive Cash Flow Forecasting: Warn the CEO of upcoming dips based on recurring renewals/historical churn.
+// 4. Team Accountability: Allow assigning 'Next Actions' directly to team 'Maker' sub-accounts.
+// 5. Custom AI Prompts: Allow uploading company SOPs so the Quiet Advisor suggests actions specific to the user's business.
+function getQuietAdvisorPulses(store, revInsights, leadsConversion, activePlan) {
+    const pulses = { revenue: null, pipeline: null };
+    const day = new Date().getDay(); // 0 is Sunday, 5 is Friday
+
+    // Revenue Pulse Logic
+    if (revInsights.projectedRevenue < revInsights.goal && revInsights.goal > 0) {
+        pulses.revenue = {
+            title: "Pace Alert",
+            message: `You are ${(100 - revInsights.progressPercent).toFixed(0)}% behind target. Suggestion: Send custom bundle to your 3 most loyal past clients.`,
+            color: "#B42318" // Red
+        };
+    } else if (revInsights.revenueThisWeek > 0 || revInsights.goal > 0) {
+        pulses.revenue = {
+            title: "Momentum",
+            message: `Pacing beautifully. You're bringing in revenue. Protect your margin.`,
+            color: "#027A48" // Green
+        };
+    }
+
+    // Pipeline Pulse Logic
+    if (leadsConversion < 10 && store.leads?.entries?.length > 0) {
+        pulses.pipeline = {
+            title: "Conversion Drop",
+            message: `Close rate is below 10%. Stop acquiring leads and tighten your follow-up script.`,
+            color: "#F2C21D" // Yellow
+        };
+    } else if (activePlan && activePlan.followUps?.length > 1) {
+        pulses.pipeline = {
+            title: "Follow-Up Audit",
+            message: `You planned to follow up heavily this week. Have you logged those wins yet?`,
+            color: "var(--color-primary)" // Purple
+        };
+    }
+
+    return pulses;
 }
 
 function getCoachingEngineData(store, activePlan, revInsights) {
@@ -1894,6 +2272,35 @@ function dashboardAttachEvents() {
         scoreValEl.textContent = 'No Plan';
     }
 
+    // Regenerate Plan Logic
+    const btnRegen = document.querySelector('.btn-regenerate-plan');
+    const regenSpinner = document.getElementById('dash-regen-spinner');
+    if (btnRegen) {
+        btnRegen.addEventListener('click', async (e) => {
+            const confirmed = confirm("Are you sure you want to regenerate your 90-Day Plan? This will replace your current roadmap.");
+            if (!confirmed) return;
+
+            if (regenSpinner) regenSpinner.style.display = 'block';
+            e.currentTarget.disabled = true;
+
+            try {
+                const plan = await generate90DayActionPlan();
+                if (plan) {
+                    applyGeneratedPlan(plan);
+                    window.location.reload();
+                } else {
+                    alert("Couldn't generate plan right now. Please try again.");
+                }
+            } catch (err) {
+                console.error(err);
+                alert("Couldn't generate plan right now. Please try again.");
+            } finally {
+                if (regenSpinner) regenSpinner.style.display = 'none';
+                e.currentTarget.disabled = false;
+            }
+        });
+    }
+
     // Daily 3 state persistence using the store logic
     const todayStr = new Date().toISOString().split('T')[0];
     if (window._tempGeneratedTodaysLog) {
@@ -1915,6 +2322,16 @@ function dashboardAttachEvents() {
                 }
             });
         }
+    });
+
+    // Dismiss AI Pulses
+    document.querySelectorAll('.btn-dismiss-pulse').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const pulseId = e.currentTarget.getAttribute('data-pulse-id');
+            sessionStorage.setItem(`dismissPulse_${pulseId}`, 'true');
+            // Hide the pulse container immediately to prevent harsh reload
+            e.currentTarget.parentElement.style.display = 'none';
+        });
     });
 
     // Seed button
@@ -1968,6 +2385,65 @@ function dashboardAttachEvents() {
             });
         }
     }
+    // One-Tap Add Leads
+    document.querySelectorAll('.btn-1tap-lead').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const amount = parseInt(e.target.getAttribute('data-amount'), 10);
+            const originalText = e.target.innerHTML;
+            e.target.innerHTML = '✅';
+            e.target.style.backgroundColor = '#E1FDF4';
+            e.target.style.borderColor = '#027A48';
+            addLeadEntry({
+                amount,
+                calls: 0,
+                closes: 0,
+                source: 'Quick Add Dashboard',
+                date: new Date().toISOString()
+            });
+            setTimeout(() => { window.location.reload(); }, 600);
+        });
+    });
+
+    // One-Tap Add Revenue Sale (Dropdown)
+    document.querySelector('.btn-1tap-sale-dropdown')?.addEventListener('click', (e) => {
+        const select = document.getElementById('dashboard-1tap-select');
+        if (!select) return;
+        const idx = select.value;
+        const btn = e.currentTarget;
+        const store = getStore();
+        const offerConf = store.revenue?.quickOffers?.[idx];
+        
+        if (offerConf) {
+            btn.innerHTML = '✅ Logged!';
+            btn.style.backgroundColor = '#E1FDF4';
+            btn.style.color = '#027A48';
+            btn.style.borderColor = '#027A48';
+            addRevenueEntry({
+                amount: parseFloat(offerConf.price) || 0,
+                source: offerConf.source || 'Dashboard 1-Tap',
+                offer: offerConf.name,
+                date: new Date().toISOString(),
+                notes: '1-Tap entry'
+            });
+            setTimeout(() => { window.location.reload(); }, 600);
+        }
+    });
+
+    // Copy Follow-up Template
+    document.querySelector('.btn-copy-followup')?.addEventListener('click', (e) => {
+        const template = "Hi {Name},\\n\\nI'm getting in touch because...";
+        // Simple fallback alert for insecure contexts
+        try {
+            navigator.clipboard.writeText(template).then(() => {
+                e.currentTarget.innerHTML = '✅ Copied to Clipboard!';
+                setTimeout(() => { e.currentTarget.innerHTML = '✉️ Copy Follow-up Template'; }, 2000);
+            }).catch(err => {
+                alert('Follow-up Template: \\n\\n' + template);
+            });
+        } catch (err) {
+            alert('Follow-up Template: \\n\\n' + template);
+        }
+    });
 }
 
 
@@ -1986,19 +2462,30 @@ function renderPlanner() {
         }
     }
 
-    const win = activePlan ? activePlan.winCondition : '';
-    const p1 = activePlan && activePlan.topActions ? (activePlan.topActions[0] || '') : (store.goals?.priorities?.[0] || '');
-    const p2 = activePlan && activePlan.topActions ? (activePlan.topActions[1] || '') : (store.goals?.priorities?.[1] || '');
-    const p3 = activePlan && activePlan.topActions ? (activePlan.topActions[2] || '') : (store.goals?.priorities?.[2] || '');
-    const rev = activePlan ? activePlan.revenueAction : '';
-    const vis = activePlan ? activePlan.visibilityAction : '';
-    const fol = activePlan ? activePlan.followUps : '';
+    // Identify next generated plan to pre-fill if no active plan
+    let nextGeneratedPlan = null;
+    if (!activePlan) {
+        const unappliedGenerated = store.weeklyPlans.filter(p => p.generated && !p.applied);
+        if (unappliedGenerated.length > 0) {
+            // Sort by weekNumber
+            unappliedGenerated.sort((a, b) => a.weekNumber - b.weekNumber);
+            nextGeneratedPlan = unappliedGenerated[0];
+        }
+    }
+
+    const win = activePlan ? activePlan.winCondition : (nextGeneratedPlan ? nextGeneratedPlan.winCondition : '');
+    const p1 = activePlan && activePlan.topActions ? (activePlan.topActions[0] || '') : (nextGeneratedPlan && nextGeneratedPlan.topActions ? nextGeneratedPlan.topActions[0] : (store.goals?.priorities?.[0] || ''));
+    const p2 = activePlan && activePlan.topActions ? (activePlan.topActions[1] || '') : (nextGeneratedPlan && nextGeneratedPlan.topActions ? nextGeneratedPlan.topActions[1] : (store.goals?.priorities?.[1] || ''));
+    const p3 = activePlan && activePlan.topActions ? (activePlan.topActions[2] || '') : (nextGeneratedPlan && nextGeneratedPlan.topActions ? nextGeneratedPlan.topActions[2] : (store.goals?.priorities?.[2] || ''));
+    const rev = activePlan ? activePlan.revenueAction : (nextGeneratedPlan ? nextGeneratedPlan.revenueAction : '');
+    const vis = activePlan ? activePlan.visibilityAction : (nextGeneratedPlan ? nextGeneratedPlan.visibilityAction : '');
+    const fol = activePlan ? activePlan.followUps : (nextGeneratedPlan ? nextGeneratedPlan.followUps : '');
 
     const prompts = getSmartPrompts(store.profile?.strategyMode);
 
     return `
         ${renderNav()}
-        <div class="main-content" style="max-width: 700px;">
+        <div class="main-content dashboard-layout">
             <div style="margin-bottom: 2rem;">
                 <h2>Weekly CEO Plan</h2>
                 <p style="color: var(--color-text-muted);">Set your intentions and priorities for the week ahead.</p>
@@ -2037,7 +2524,7 @@ function renderPlanner() {
                 <p style="font-size: 0.8rem; color: var(--color-text-muted); margin-top: 0.75rem; text-align: center;">Steal these ideas or write your own below!</p>
             </div>
 
-            <form id="planner-form" class="card" data-plan-id="${activePlan ? activePlan.id : ''}">
+            <form id="planner-form" class="card" data-plan-id="${activePlan ? activePlan.id : ''}" data-gen-id="${nextGeneratedPlan ? nextGeneratedPlan.id : ''}">
                 <div class="form-group">
                     <label class="form-label" style="font-size: 1.1rem; color: var(--color-primary-dark);">${store.profile?.name ? store.profile.name + ", w" : "W"}hat would make this week a win?</label>
                     <textarea class="form-textarea" id="plan-win" placeholder="e.g., Getting 3 sales calls booked and finishing the landing page layout." required>${win}</textarea>
@@ -2158,9 +2645,16 @@ function plannerAttachEvents() {
             };
 
             const planId = form.getAttribute('data-plan-id');
+            const genId = form.getAttribute('data-gen-id');
+            
             if (planId) {
                 updateWeeklyPlan(planId, plan);
                 alert("Weekly plan updated!");
+            } else if (genId) {
+                // We are applying a generated plan
+                plan.applied = true;
+                updateWeeklyPlan(genId, plan);
+                alert("Weekly plan applied and saved! Have a great week, CEO.");
             } else {
                 addWeeklyPlan(plan);
                 alert("Weekly plan saved! Have a great week, CEO.");
@@ -2473,12 +2967,16 @@ function renderRevenue() {
     const salesCount = insights.entries ? insights.entries.length : 0;
     const metrics = store.metrics || [];
     
-    const totalCalls = metrics.reduce((sum, m) => sum + (parseFloat(m.calls) || 0), 0);
+    const snapshotCalls = metrics.reduce((sum, m) => sum + (parseFloat(m.calls) || 0), 0);
+    const leadCalls = leads.reduce((sum, l) => sum + (parseFloat(l.calls) || 0), 0);
+    const leadCloses = leads.reduce((sum, l) => sum + (parseFloat(l.closes) || 0), 0);
+    const totalCalls = snapshotCalls + leadCalls;
+    const effectiveCloses = Math.max(salesCount, leadCloses);
     
     // Conversion Rates
-    const leadToSaleConversion = totalLeads > 0 ? ((salesCount / totalLeads) * 100).toFixed(1) : 0;
+    const leadToSaleConversion = totalLeads > 0 ? ((effectiveCloses / totalLeads) * 100).toFixed(1) : 0;
     const callBookingRate = totalLeads > 0 ? ((totalCalls / totalLeads) * 100).toFixed(1) : 0;
-    const callCloseRate = totalCalls > 0 ? ((salesCount / totalCalls) * 100).toFixed(1) : (salesCount > 0 ? 100 : 0);
+    const callCloseRate = totalCalls > 0 ? ((effectiveCloses / totalCalls) * 100).toFixed(1) : (effectiveCloses > 0 ? 100 : 0);
 
     return `
         ${renderNav()}
@@ -2489,19 +2987,13 @@ function renderRevenue() {
                     <p style="color: var(--color-text-muted);">Monitor your pipeline, conversions, and growth metrics.</p>
                 </div>
                 <div style="display: flex; gap: 1rem; align-items: center;">
-                    <div style="position: relative;" id="report-dropdown-wrapper">
-                        <button class="btn btn-primary btn-sm" id="btn-toggle-report" style="display: flex; align-items: center; gap: 0.5rem;">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-                            Generate Report
+                    <div style="display: flex; gap: 0.5rem;">
+                        <button id="btn-report-csv" class="btn btn-outline btn-sm" style="display: flex; align-items: center; gap: 0.5rem;">
+                            📊 Export CSV
                         </button>
-                        <div id="report-dropdown-menu" style="display: none; position: absolute; top: 100%; right: 0; margin-top: 0.5rem; background: white; border: 1px solid var(--color-border); border-radius: var(--radius-md); box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); z-index: 100; min-width: 200px; overflow: hidden;">
-                            <button id="btn-report-csv" style="display: block; width: 100%; text-align: left; padding: 0.75rem 1rem; border: none; background: none; font-size: 0.9rem; color: var(--color-black); cursor: pointer; border-bottom: 1px solid var(--color-bg-light);" onmouseover="this.style.background='var(--color-bg-light)'" onmouseout="this.style.background='none'">
-                                📊 Raw Data Export (.csv)
-                            </button>
-                            <button id="btn-report-ai" style="display: block; width: 100%; text-align: left; padding: 0.75rem 1rem; border: none; background: none; font-size: 0.9rem; color: var(--color-primary-dark); cursor: pointer; font-weight: 500;" onmouseover="this.style.background='var(--color-bg-light)'" onmouseout="this.style.background='none'">
-                                🤖 AI Executive Report
-                            </button>
-                        </div>
+                        <button id="btn-report-ai" class="btn btn-primary btn-sm" style="display: flex; align-items: center; gap: 0.5rem; background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark)); border: none; box-shadow: var(--shadow-sm);">
+                            🤖 AI Executive Report
+                        </button>
                     </div>
                     <div style="background: var(--color-secondary-light); padding: 0.5rem 1rem; border-radius: var(--radius-full); display: flex; align-items: center; gap: 0.5rem; font-weight: 600; color: var(--color-secondary-dark);">
                         Quarter: ${insights.momentum}
@@ -2510,7 +3002,7 @@ function renderRevenue() {
             </div>
 
             <!-- Top Cards -->
-            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--spacing-md); margin-bottom: var(--spacing-lg);">
+            <div class="grid-cols-4 mb-6">
                 <div class="card" style="padding: 1.5rem; text-align: center;">
                     <p style="display: flex; align-items: center; justify-content: center; font-size: 0.8rem; color: var(--color-text-muted); font-weight: 600; margin-bottom: 0.5rem; text-transform: uppercase;">
                         Quarter Revenue Goal
@@ -2537,7 +3029,7 @@ function renderRevenue() {
                 </div>
             </div>
 
-            <div style="display: grid; grid-template-columns: 2fr 1fr; gap: var(--spacing-lg); margin-bottom: var(--spacing-lg);">
+            <div class="grid-sidebar mb-6">
                 
                 <!-- Main Content Left -->
                 <div>
@@ -2661,16 +3153,37 @@ function renderRevenue() {
                 <div>
                    <!-- Multi-Form Tabs -->
                    <div class="card" style="border-top: 4px solid var(--color-accent); padding: 1.5rem;">
-                       <div class="flex gap-2 mb-4" style="border-bottom: 1px solid var(--color-border); padding-bottom: 0.5rem;">
+                       <div class="flex gap-2 mb-4" style="border-bottom: 1px solid var(--color-border); padding-bottom: 0.5rem; flex-wrap: wrap;">
                            <button class="btn btn-ghost btn-sm active" id="tab-rev" style="color: var(--color-primary-dark); font-weight: 600;">💰 Sale</button>
                            <button class="btn btn-ghost btn-sm" id="tab-lead" style="color: var(--color-text-muted);">👥 Leads</button>
                            <button class="btn btn-ghost btn-sm" id="tab-metric" style="color: var(--color-text-muted);">📊 Snapshot</button>
+                           <button class="btn btn-ghost btn-sm" id="tab-quick-settings" style="color: var(--color-text-muted);">⚡ 1-Tap</button>
                        </div>
 
                        <!-- Log Revenue Form -->
-                       <form id="log-revenue-form" class="log-form active">
-                           <div class="form-group">
-                               <label>Amount Made (${currency})</label>
+                       <div id="rev-tab-wrapper" class="log-form active">
+                           ${(store.revenue?.quickOffers && store.revenue.quickOffers.length > 0) ? `
+                           <div style="margin-bottom: 1.5rem;">
+                               <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+                                   <p style="font-size: 0.75rem; text-transform: uppercase; font-weight: 600; color: var(--color-text-muted); margin: 0;">⚡ 1-Tap Log Sale</p>
+                                   ${renderTooltip("Select your product from the dropdown and click '+ Log' to instantly record a sale without filling the manual form.", "What is this?")}
+                               </div>
+                               <div style="display: flex; gap: 0.4rem; flex-wrap: nowrap; align-items: stretch;">
+                                   <select id="rev-1tap-select" class="form-control" style="flex-grow: 1; font-size: 0.8rem; padding: 0.35rem 0.5rem; height: auto; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background-color: var(--color-bg-light); cursor: pointer; min-width: 0;">
+                                       ${store.revenue.quickOffers.map((o, idx) => `<option value="${idx}">${o.name} (${o.price > 0 ? currency + parseFloat(o.price).toLocaleString() : 'Free'})</option>`).join('')}
+                                   </select>
+                                   <button type="button" class="btn btn-outline btn-1tap-sale-rev-dropdown" style="padding: 0.35rem 0.75rem; font-size: 0.85rem; border-color: var(--color-primary-light); color: var(--color-primary-dark); font-weight: 600; white-space: nowrap; flex-shrink: 0; outline: none; box-shadow: none;">
+                                       + Log
+                                   </button>
+                               </div>
+                               <div style="margin: 1rem 0; border-top: 1px dashed var(--color-border); text-align: center; position: relative;">
+                                   <span style="background: white; padding: 0 0.5rem; color: var(--color-text-muted); font-size: 0.8rem; position: relative; top: -0.6rem;">OR MANUAL ENTRY</span>
+                               </div>
+                           </div>
+                           ` : ''}
+                           <form id="log-revenue-form">
+                               <div class="form-group">
+                                   <label>Amount Made (${currency})</label>
                                <input type="number" id="log-amount" min="0" step="any" class="form-control" required placeholder="0.00">
                            </div>
                            <div class="form-group">
@@ -2698,7 +3211,8 @@ function renderRevenue() {
                                <input type="text" id="log-offer" class="form-control" placeholder="e.g. Digital Product Toolkit">
                            </div>
                            <button type="submit" class="btn btn-primary" style="width: 100%;">Log Sale</button>
-                       </form>
+                           </form>
+                       </div>
 
                        <!-- Log Leads Form -->
                        <form id="log-leads-form" class="log-form" style="display: none;">
@@ -2748,6 +3262,25 @@ function renderRevenue() {
                            </div>
                            <button type="submit" class="btn btn-outline" style="width: 100%;">Save Snapshot</button>
                        </form>
+
+                       <!-- Quick Offers Settings Form -->
+                       <form id="quick-offers-form" class="log-form" style="display: none;">
+                          <p style="font-size: 0.8rem; color: var(--color-text-muted); margin-bottom: 1rem;">Setup your core products for 1-Tap entry on the Dashboard.</p>
+                          ${[0,1,2].map(i => {
+                              const o = (store.revenue?.quickOffers || [])[i] || {name: '', price: '', source: 'Instagram'};
+                              return `
+                              <div style="background: var(--color-bg-light); padding: 0.75rem; border-radius: var(--radius-sm); margin-bottom: 0.75rem;">
+                                  <label style="font-size: 0.75rem; font-weight: 600; color: var(--color-text-main); display: block; margin-bottom: 0.25rem;">Slot ${i+1}</label>
+                                  <input type="text" id="qo-name-${i}" placeholder="Offer Name (e.g. Mastermind)" value="${o.name}" class="form-control" style="margin-bottom: 0.25rem; font-size: 0.8rem;">
+                                  <div style="display: flex; gap: 0.5rem;">
+                                      <input type="number" id="qo-price-${i}" placeholder="Price" value="${o.price}" class="form-control" style="font-size: 0.8rem;" step="any">
+                                      <input type="text" id="qo-source-${i}" placeholder="Default Source" value="${o.source}" class="form-control" style="font-size: 0.8rem;">
+                                  </div>
+                              </div>
+                              `;
+                          }).join('')}
+                          <button type="submit" class="btn btn-outline" style="width: 100%; border-color: var(--color-accent); color: var(--color-accent-dark);">Save Quick Actions</button>
+                       </form>
                    </div>
                    
                    <!-- Pipeline Visuals / Recent Entities -->
@@ -2792,7 +3325,10 @@ function renderRevenue() {
                 <div class="card" style="width: 100%; max-width: 800px; max-height: 90vh; overflow-y: auto; display: flex; flex-direction: column; position: relative;">
                     <div class="flex justify-between items-center mb-4 pb-4" style="border-bottom: 1px solid var(--color-border);">
                         <h2 style="margin:0;">Executive Summary</h2>
-                        <button id="btn-close-modal" style="background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--color-text-muted);">&times;</button>
+                        <div style="display: flex; gap: 1rem; align-items: center;">
+                            <button id="btn-download-ai-report" class="btn btn-outline btn-sm" style="display: none; align-items: center; gap: 0.5rem;">⬇️ Download (.txt)</button>
+                            <button id="btn-close-modal" style="background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--color-text-muted);">&times;</button>
+                        </div>
                     </div>
                     <div id="ai-report-content" class="custom-scroll" style="padding: 1rem; min-height: 200px;">
                         <div style="text-align: center; padding: 3rem 0;">
@@ -2855,14 +3391,107 @@ function renderPieChart(sources, currency) {
     `;
 }
 
+window.generateAiReport = async function() {
+    const aiModal = document.getElementById('ai-report-modal');
+    const aiContent = document.getElementById('ai-report-content');
+    if (!aiModal || !aiContent) return;
+
+    // Close the dropdown menu
+    const menu = document.getElementById('report-dropdown-menu');
+    if (menu) menu.style.display = 'none';
+
+    const btnDownload = document.getElementById('btn-download-ai-report');
+    if (btnDownload) btnDownload.style.display = 'none';
+
+    aiModal.style.display = 'flex';
+    aiContent.innerHTML = `
+        <div style="text-align: center; padding: 3rem 0;">
+            <div class="spinner" style="margin: 0 auto 1rem auto; width: 40px; height: 40px; border: 4px solid var(--color-bg-light); border-top: 4px solid var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite;"></div>
+            <h3 style="color: var(--color-text-main);">Evaluating Pipeline Data...</h3>
+            <p style="color: var(--color-text-muted);">The AI Coach is drafting your strategic briefing.</p>
+        </div>
+    `;
+
+    try {
+        const store = window.currentScreenModuleStore || JSON.parse(localStorage.getItem('ceoPlanner_store') || '{}');
+        const insights = getRevenueInsights();
+        const leads = store.leads?.entries || [];
+        const metrics = store.metrics || [];
+        
+        let prompt = `Analyze this exact SaaS / Business revenue data and provide a brutally honest Executive Summary.
+        
+        Formatting: Use markdown. Break the report into 3 sections:
+        1. 📊 The Data Snapshot (Summarize the numbers clearly)
+        2. 🔍 The Funnel Diagnosis (Where is the bottleneck? Are they failing to capture leads, book calls, or close sales?)
+        3. ⚡ Immediate Directive (Exactly what they must do this week to fix the primary bottleneck)
+        
+        Data:
+        Current Quarter Revenue Goal: ${store.revenue?.quarterlyGoal}
+        Total Revenue Generated: ${insights.totalRevenue}
+        Total Core Sales Made: ${insights.entries?.length || 0}
+        
+        Current Quarter Lead Goal: ${store.leads?.quarterlyGoal}
+        Total Leads Generated: ${leads.reduce((sum, l) => sum + (parseFloat(l.amount) || 0), 0)}
+        
+        Recent Monthly Snapshots (Traffic / Calls / Socials):
+        ${metrics.slice(-3).map(m => `Date: ${new Date(m.date).toLocaleDateString()}, Traffic: ${m.traffic}, Calls Booked: ${m.calls}, Social Audience: ${m.social}`).join('\n')}
+        
+        Recent Revenue Sources:
+        ${insights.entries.slice(-5).map(e => `Source: ${e.source}, Amount: ${e.amount}`).join('\n')}
+        `;
+
+        const { data, error } = await window.db.functions.invoke('chat', {
+            body: { messages: [{ role: 'user', content: prompt }] },
+            headers: {
+                Authorization: `Bearer ${window.db.supabaseKey}`
+            }
+        });
+
+        if (error) throw new Error(error.message);
+        if (data.error) throw new Error(data.error.message || data.error);
+
+        const reportText = data.choices[0].message.content;
+        aiContent.innerHTML = window.marked.parse(reportText);
+        
+        // Enable download button
+        if (btnDownload) {
+            btnDownload.style.display = 'flex';
+            btnDownload.onclick = () => {
+                const blob = new Blob([reportText], { type: 'text/plain;charset=utf-8' });
+                const url = window.URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = `AI_Executive_Report_${new Date().toISOString().split('T')[0]}.txt`;
+                document.body.appendChild(link);
+                link.click();
+                setTimeout(() => {
+                    document.body.removeChild(link);
+                    window.URL.revokeObjectURL(url);
+                }, 500);
+            };
+        }
+
+    } catch(e) {
+        aiContent.innerHTML = `<p style="color: var(--color-error); text-align: center;">Warning: The AI Coach failed to analyze the data. Error: ${e.message}</p>`;
+    }
+};
+
+window.closeAiModal = function() {
+    const aiModal = document.getElementById('ai-report-modal');
+    if (aiModal) aiModal.style.display = 'none';
+};
+
+// Document click listener removed
+
 function revenueAttachEvents() {
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
     document.getElementById('nav-revenue')?.classList.add('active');
 
     const toggleTabs = [
-        { id: 'tab-rev', formId: 'log-revenue-form' },
+        { id: 'tab-rev', formId: 'rev-tab-wrapper' },
         { id: 'tab-lead', formId: 'log-leads-form' },
-        { id: 'tab-metric', formId: 'log-metric-form' }
+        { id: 'tab-metric', formId: 'log-metric-form' },
+        { id: 'tab-quick-settings', formId: 'quick-offers-form' }
     ];
 
     toggleTabs.forEach(t => {
@@ -2894,6 +3523,30 @@ function revenueAttachEvents() {
         });
     }
 
+    document.querySelector('.btn-1tap-sale-rev-dropdown')?.addEventListener('click', (e) => {
+        const select = document.getElementById('rev-1tap-select');
+        if (!select) return;
+        const idx = select.value;
+        const btn = e.currentTarget;
+        const store = getStore();
+        const offerConf = store.revenue?.quickOffers?.[idx];
+        
+        if (offerConf) {
+            btn.innerHTML = '✅ Logged!';
+            btn.style.backgroundColor = '#E1FDF4';
+            btn.style.color = '#027A48';
+            btn.style.borderColor = '#027A48';
+            addRevenueEntry({
+                amount: parseFloat(offerConf.price) || 0,
+                source: offerConf.source || 'Revenue Page 1-Tap',
+                offer: offerConf.name,
+                date: new Date().toISOString(),
+                notes: '1-Tap entry'
+            });
+            setTimeout(() => { window.location.reload(); }, 600);
+        }
+    });
+
     const logLeadForm = document.getElementById('log-leads-form');
     if (logLeadForm) {
         logLeadForm.addEventListener('submit', (e) => {
@@ -2919,6 +3572,25 @@ function revenueAttachEvents() {
                 social: parseFloat(document.getElementById('metric-social').value),
                 date: new Date(document.getElementById('metric-date').value).toISOString()
             });
+            window.location.reload();
+        });
+    }
+
+    const quickOffersForm = document.getElementById('quick-offers-form');
+    if (quickOffersForm) {
+        quickOffersForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const offers = [];
+            for (let i = 0; i < 3; i++) {
+                const name = document.getElementById(`qo-name-${i}`).value.trim();
+                const price = document.getElementById(`qo-price-${i}`).value;
+                const source = document.getElementById(`qo-source-${i}`).value.trim();
+                if (name) {
+                    offers.push({ name, price, source });
+                }
+            }
+            updateQuickOffers(offers);
+            alert("1-Tap offers saved! Head to the Dashboard to use them.");
             window.location.reload();
         });
     }
@@ -2959,84 +3631,23 @@ function revenueAttachEvents() {
         renderChart('week');
     }
 
-    // Report Dropdown Logic
-    const btnToggleReport = document.getElementById('btn-toggle-report');
-    const reportMenu = document.getElementById('report-dropdown-menu');
-    
-    if (btnToggleReport && reportMenu) {
-        btnToggleReport.addEventListener('click', (e) => {
-            e.stopPropagation();
-            reportMenu.style.display = reportMenu.style.display === 'none' ? 'block' : 'none';
-        });
-
-        document.addEventListener('click', () => {
-            reportMenu.style.display = 'none';
-        });
-    }
-
     // AI Report Generation
     const btnReportAi = document.getElementById('btn-report-ai');
-    const aiModal = document.getElementById('ai-report-modal');
-    const aiContent = document.getElementById('ai-report-content');
-    const btnCloseModal = document.getElementById('btn-close-modal');
-
     if (btnReportAi) {
-        btnReportAi.addEventListener('click', async () => {
-            aiModal.style.display = 'flex';
-            aiContent.innerHTML = `
-                <div style="text-align: center; padding: 3rem 0;">
-                    <div class="spinner" style="margin: 0 auto 1rem auto; width: 40px; height: 40px; border: 4px solid var(--color-bg-light); border-top: 4px solid var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite;"></div>
-                    <h3 style="color: var(--color-text-main);">Evaluating Pipeline Data...</h3>
-                    <p style="color: var(--color-text-muted);">The AI Coach is drafting your strategic briefing.</p>
-                </div>
-            `;
-
-            try {
-                const store = getStore();
-                const insights = getRevenueInsights();
-                const leads = store.leads?.entries || [];
-                const metrics = store.metrics || [];
-                
-                let prompt = `Analyze this exact SaaS / Business revenue data and provide a brutally honest Executive Summary.
-                
-                Formatting: Use markdown. Break the report into 3 sections:
-                1. 📊 The Data Snapshot (Summarize the numbers clearly)
-                2. 🔍 The Funnel Diagnosis (Where is the bottleneck? Are they failing to capture leads, book calls, or close sales?)
-                3. ⚡ Immediate Directive (Exactly what they must do this week to fix the primary bottleneck)
-                
-                Data:
-                Current Quarter Revenue Goal: ${store.revenue?.quarterlyGoal}
-                Total Revenue Generated: ${insights.totalRevenue}
-                Total Core Sales Made: ${insights.entries?.length || 0}
-                
-                Current Quarter Lead Goal: ${store.leads?.quarterlyGoal}
-                Total Leads Generated: ${leads.reduce((sum, l) => sum + (parseFloat(l.amount) || 0), 0)}
-                
-                Recent Monthly Snapshots (Traffic / Calls / Socials):
-                ${metrics.slice(-3).map(m => `Date: ${new Date(m.date).toLocaleDateString()}, Traffic: ${m.traffic}, Calls Booked: ${m.calls}, Social Audience: ${m.social}`).join('\n')}
-                
-                Recent Revenue Sources:
-                ${insights.entries.slice(-5).map(e => `Source: ${e.source}, Amount: ${e.amount}`).join('\n')}
-                `;
-
-                const { data, error } = await window.db.functions.invoke('chat', {
-                    body: { messages: [{ role: 'user', content: prompt }] }
-                });
-
-                if (error) throw new Error(error.message);
-                if (data.error) throw new Error(data.error.message || data.error);
-
-                aiContent.innerHTML = window.marked.parse(data.choices[0].message.content);
-
-            } catch(e) {
-                aiContent.innerHTML = `<p style="color: var(--color-error); text-align: center;">Warning: The AI Coach failed to analyze the data. Error: ${e.message}</p>`;
+        btnReportAi.addEventListener('click', () => {
+            if (window.generateAiReport) {
+                window.generateAiReport();
             }
         });
     }
 
+    // Close AI Modal
+    const btnCloseModal = document.getElementById('btn-close-modal');
     if (btnCloseModal) {
         btnCloseModal.addEventListener('click', () => {
-            aiModal.style.display = 'none';
+            if (window.closeAiModal) {
+                window.closeAiModal();
+            }
         });
     }
 
@@ -3050,35 +3661,44 @@ function revenueAttachEvents() {
             const leads = store.leads?.entries || [];
             const metrics = store.metrics || [];
             
-            let csvContent = "--- REVENUE (SALES) ---\r\nDate,Amount,Source,Offer\r\n";
+            let csvContent = `"--- REVENUE (SALES) ---",,,\r\n"Date","Amount","Source","Offer"\r\n`;
             entries.forEach(e => {
                 csvContent += `"${new Date(e.date).toLocaleDateString()}","${e.amount}","${(e.source || '').replace(/"/g, '""')}","${(e.offer || '').replace(/"/g, '""')}"\r\n`;
             });
             
-            csvContent += "\r\n--- LEADS GENERATED ---\r\nDate,Amount,Source\r\n";
+            csvContent += `\r\n"--- LEADS GENERATED ---",,\r\n"Date","Amount","Source"\r\n`;
             leads.forEach(e => {
                 csvContent += `"${new Date(e.date).toLocaleDateString()}","${e.amount}","${(e.source || '').replace(/"/g, '""')}"\r\n`;
             });
 
-            csvContent += "\r\n--- MONTHLY SNAPSHOTS ---\r\nDate,Traffic,Calls Booked,Social Audience\r\n";
+            csvContent += `\r\n"--- MONTHLY SNAPSHOTS ---",,,\r\n"Date","Traffic","Calls Booked","Social Audience"\r\n`;
             metrics.forEach(m => {
                 csvContent += `"${new Date(m.date).toLocaleDateString()}","${m.traffic}","${m.calls}","${m.social}"\r\n`;
             });
             
-            const blob = new Blob(["\uFEFF", csvContent], { type: 'text/csv;charset=utf-8' });
-            const url = window.URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.style.display = 'none';
-            link.href = url;
-            link.download = `Analytics_Export_${new Date().toISOString().split('T')[0]}.csv`;
-            
-            document.body.appendChild(link);
-            link.click();
-            
-            setTimeout(() => {
-                document.body.removeChild(link);
-                window.URL.revokeObjectURL(url);
-            }, 500);
+            try {
+                const blob = new Blob(["\uFEFF", csvContent], { type: 'text/csv;charset=utf-8' });
+                // Fallback to data URI if blob fails
+                const url = window.URL ? window.URL.createObjectURL(blob) : 'data:text/csv;charset=utf-8,' + encodeURIComponent("\uFEFF" + csvContent);
+                const link = document.createElement('a');
+                link.style.display = 'none';
+                link.href = url;
+                link.download = `Analytics_Export_${new Date().toISOString().split('T')[0]}.csv`;
+                
+                document.body.appendChild(link);
+                link.click();
+                
+                setTimeout(() => {
+                    document.body.removeChild(link);
+                    if (window.URL) window.URL.revokeObjectURL(url);
+                }, 500);
+            } catch (err) {
+                console.error("CSV Download Error:", err);
+                alert("Failed to download CSV. Error: " + err.message);
+                
+                // Absolute fallback for highly restrictive browsers
+                window.open('data:text/csv;charset=utf-8,' + encodeURIComponent("\uFEFF" + csvContent));
+            }
         });
     }
 }
@@ -3127,9 +3747,9 @@ function renderChart(viewMode) {
                 const heightPct = maxAmount > 0 ? (d.amount / maxAmount) * 100 : 0;
                 return `
                 <div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; group">
-                    <div style="font-size: 0.7rem; color: var(--color-text-muted); margin-bottom: 4px; opacity: 0; transition: opacity 0.2s; white-space: nowrap;" class="chart-tooltip">${currency}${d.amount.toLocaleString()}</div>
+                    <div style="font-size: 0.75rem; font-weight: 600; color: var(--color-black); margin-bottom: 4px; white-space: nowrap;">${currency}${d.amount.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
                     <div class="chart-bar" style="width: 100%; max-width: 50px; height: ${heightPct}%; background-color: var(--color-secondary); border-radius: 4px 4px 0 0; min-height: 4px; transition: height 0.5s, background-color 0.2s;"></div>
-                    <div style="font-size: 0.65rem; color: var(--color-text-muted); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">${d.label}</div>
+                    <div style="font-size: 0.65rem; font-weight: 600; color: var(--color-text-muted); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">${d.label}</div>
                 </div>
                 `;
             }).join('')}
@@ -3139,13 +3759,12 @@ function renderChart(viewMode) {
 
 
 // --- js\screens\fridayReview.js ---
-// fridayReview.js
 
 function renderReview() {
     window.setScreenModule({ attachEvents: reviewAttachEvents });
     return `
         ${renderNav()}
-        <div class="main-content" style="max-width: 700px;">
+        <div class="main-content dashboard-layout">
             <div style="margin-bottom: 2rem;">
                 <h2>Friday CEO Review</h2>
                 <p style="color: var(--color-text-muted);">Reflect on the week, capture the wins, and plan for better next week.</p>
@@ -3191,6 +3810,19 @@ function renderReview() {
                 </div>
 
                 <div class="form-group mt-6">
+                    <label class="form-label" style="font-size: 1.1rem; color: var(--color-primary-dark);">
+                        How was your personal energy this week?
+                        ${renderTooltip("Your energy dictates your output.", "Tracking energy levels helps the AI suggest an appropriately paced plan for next week. Burnout requires a different strategy than peak flow.")}
+                    </label>
+                    <select class="form-control" id="rev-energy" required>
+                        <option value="High (In Flow, highly productive)">High (In Flow, highly productive)</option>
+                        <option value="Medium (Consistent but tired)">Medium (Consistent but tired)</option>
+                        <option value="Low (Pushing through mud)">Low (Pushing through mud)</option>
+                        <option value="Burnout (Need a break)">Burnout (Need a break)</option>
+                    </select>
+                </div>
+
+                <div class="form-group mt-6">
                     <label class="form-label" style="font-size: 1.1rem;">Metrics (Optional)</label>
                     <p class="form-helper mb-2">Track the numbers that matter for your 90-day goal.</p>
                     <div class="flex gap-4">
@@ -3215,7 +3847,7 @@ function renderReview() {
                 </div>
 
                 <div class="flex justify-end mt-8">
-                    <button type="submit" class="btn btn-primary">Save Review & Close Week</button>
+                    <button type="submit" id="btn-save-review" class="btn btn-primary" style="transition: all 0.2s;">Save Review & Let AI Draft Next Week</button>
                 </div>
             </form>
         </div>
@@ -3315,7 +3947,7 @@ function reviewAttachEvents() {
 
     const form = document.getElementById('review-form');
     if (form) {
-        form.addEventListener('submit', (e) => {
+        form.addEventListener('submit', async (e) => {
             e.preventDefault();
             if (isRecording) stopRecording();
 
@@ -3323,15 +3955,28 @@ function reviewAttachEvents() {
                 movedForward: document.getElementById('rev-forward').value,
                 workedWell: document.getElementById('rev-well').value,
                 difficult: document.getElementById('rev-difficult').value,
+                energy: document.getElementById('rev-energy').value,
                 leads: document.getElementById('rev-leads').value,
                 sales: document.getElementById('rev-sales').value,
                 nextWeekImprove: document.getElementById('rev-improve').value,
             };
 
+            const btn = document.getElementById('btn-save-review');
+            const origText = btn.innerText;
+            btn.innerText = "AI is drafting your Monday Plan...";
+            btn.style.opacity = '0.7';
+            btn.disabled = true;
+
+            // Generate AI Draft
+            const draft = await generateMondayPlanDraft(review);
+            if (draft) {
+                saveDraftMondayPlan(draft);
+            }
+
             addReview(review);
 
             // Show success and redirect
-            alert("Review saved! Great job this week. Take some well-deserved rest off.");
+            alert("Review saved! Your AI Advisor has drafted your action plan for next week.\\n\\nTake some well-deserved rest off.");
             window.location.hash = '#/progress';
         });
     }
@@ -3347,10 +3992,11 @@ function renderProgress() {
     const reviews = store.reviews;
     const monthlyReviews = store.monthlyReviews || [];
     const plansCount = store.weeklyPlans.length;
+    const insight = generateInsights(store);
 
     return `
         ${renderNav()}
-        <div class="main-content" style="max-width: 800px;">
+        <div class="main-content dashboard-layout">
             <div class="flex justify-between items-center mb-6">
                 <div>
                     <h2>Progress & Wins</h2>
@@ -3362,8 +4008,22 @@ function renderProgress() {
                 </div>
             </div>
 
+            <!-- CEO Insight Engine -->
+            <div class="card mb-6" style="border-top: 4px solid var(--color-primary);">
+                <div class="flex items-center gap-2 mb-4">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                    <h3 style="margin: 0; display: flex; align-items: center;">
+                        Weekly CEO Insight
+                        ${renderTooltip("Identifies the area most likely slowing your progress right now.", "Solving the right problem is faster than doing more work.")}
+                    </h3>
+                </div>
+                <div style="background: var(--color-bg-main); padding: 1.25rem; border-radius: var(--radius-md); font-size: 1.05rem; line-height: 1.6; color: var(--color-black);">
+                    ${insight}
+                </div>
+            </div>
+
             <!-- Stats Overview & Momentum Tracker -->
-            <div style="display: grid; grid-template-columns: 1fr 2fr; gap: var(--spacing-lg); margin-bottom: var(--spacing-xl);">
+            <div class="grid-sidebar-right mb-8">
                 <div class="flex-col gap-4">
                     <div class="card text-center flex-col justify-center" style="padding: 1.5rem 1rem; flex: 1; border-top: 4px solid var(--color-primary);">
                         <p style="font-size: 2.5rem; font-family: var(--font-heading); font-weight: 700; color: var(--color-primary); line-height: 1;">${store.streak}</p>
@@ -3499,6 +4159,47 @@ function renderProgress() {
             </div>
         </div>
     `;
+}
+
+// Logic Rules Engine
+function generateInsights(store) {
+    const reviews = store.reviews || [];
+    const plans = store.weeklyPlans || [];
+    
+    // Check if we have enough data
+    if (reviews.length < 2 && plans.length < 2) {
+        return "Not enough data yet. Complete a few more weekly plans and Friday reviews so your Coach can spot patterns and generate personalized insights.";
+    }
+
+    const recentPlans = plans.slice(-3);
+    let visibilityCount = 0; let followUpCount = 0; let revActionCount = 0;
+
+    recentPlans.forEach(p => {
+        if (p.visibilityAction && p.visibilityAction.length > 5) visibilityCount++;
+        if (p.followUps && p.followUps.length > 5 && !p.followUps.toLowerCase().includes('none')) followUpCount++;
+        if (p.revenueAction && p.revenueAction.length > 5) revActionCount++;
+    });
+
+    // 1. Sales/Conversion Check
+    if (visibilityCount >= 2 && (followUpCount === 0 || revActionCount === 0)) {
+        return "<strong>Sales/Conversion Alert:</strong> You have been doing a lot of 'Visibility' and marketing actions recently, but you are failing to log 'Follow-up' or direct 'Revenue' actions. Stop marketing immediately and start scheduling sales conversations to convert your generated interest into revenue.";
+    }
+
+    // 2. Time/Energy Check
+    const recentReviews = reviews.slice(-3);
+    let difficultContent = false;
+    recentReviews.forEach(r => {
+        if (r.difficult) {
+            const diff = r.difficult.toLowerCase();
+            if (diff.includes('email') || diff.includes('content') || diff.includes('writing')) difficultContent = true;
+        }
+    });
+
+    if (difficultContent) {
+        return "<strong>Energy Drain Alert:</strong> You consistently mention that writing, emails, or content creation was difficult or draining. Consider lowering your content volume or immediately start batch-creating it on Mondays so it stops dragging down your energy all week.";
+    }
+
+    return "Your momentum looks clean. You are protecting your CEO time and focusing on revenue-generating actions. Keep executing your 90-day plan.";
 }
 
 function progressAttachEvents() {
@@ -3959,31 +4660,50 @@ function renderCoach() {
     window.setScreenModule({ attachEvents: coachAttachEvents });
     const store = getStore();
 
-    // Generate AI Insights (Classic)
-    const insight = generateInsights(store);
-
     return `
         ${renderNav()}
-        <div class="main-content" style="max-width: 800px; padding-top: 2rem;">
+        <div class="main-content dashboard-layout" style="padding-top: 2rem;">
             
             <div style="margin-bottom: 2rem; text-align: center;">
-                <h2>AI Coach</h2>
-                <p style="color: var(--color-text-muted);">Your personalized strategic advisor.</p>
+                <h2>Notepad</h2>
+                <p style="color: var(--color-text-muted);">Capture your thoughts and filter your ideas.</p>
             </div>
 
             <div style="display: flex; flex-direction: column; gap: 2rem;">
                 
-                <!-- CEO Insight Engine -->
+                <!-- Voice Notes -->
                 <div class="card" style="border-top: 4px solid var(--color-primary);">
                     <div class="flex items-center gap-2 mb-4">
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
                         <h3 style="margin: 0; display: flex; align-items: center;">
-                            Weekly CEO Insight
-                            ${renderTooltip("Identifies the area most likely slowing your progress right now.", "Solving the right problem is faster than doing more work.")}
+                            Voice Notes
+                            ${renderTooltip("Jot down thoughts and ideas quickly using your voice.", "Get ideas out of your head and into your notepad.")}
                         </h3>
                     </div>
-                    <div style="background: var(--color-bg-main); padding: 1.25rem; border-radius: var(--radius-md); font-size: 1.05rem; line-height: 1.6; color: var(--color-black);">
-                        ${insight}
+                    <form id="note-form" style="margin-bottom: 1.5rem;">
+                        <div class="form-group mb-2 relative" style="position: relative;">
+                            <textarea class="form-textarea" id="note-input" placeholder="Type or use voice to record a note..." required style="min-height: 100px; padding-right: 3rem;"></textarea>
+                            <button type="button" id="btn-voice-record" class="btn btn-ghost" style="position: absolute; right: 0.5rem; bottom: 0.5rem; padding: 0.5rem; border-radius: 50%; color: var(--color-primary); background: var(--color-bg-light);" title="Start Voice Recording">
+                                🎤
+                            </button>
+                        </div>
+                        <div id="recording-indicator" style="display: none; color: #D92D20; font-size: 0.85rem; margin-bottom: 1rem; align-items: center; gap: 0.5rem;">
+                            <span class="pulse-dot" style="width: 8px; height: 8px; background: #D92D20; border-radius: 50%; display: inline-block;"></span> Recording... (Speak now)
+                        </div>
+                        <button type="submit" class="btn btn-primary" style="width: 100%;">Save Note</button>
+                    </form>
+                    
+                    <div id="saved-notes-list" style="display: flex; flex-direction: column; gap: 1rem;">
+                        ${(store.notes || []).length === 0 ? '<p style="color: var(--color-text-muted); font-size: 0.9rem; text-align: center;">No notes saved yet.</p>' : 
+                            (store.notes || []).slice().reverse().map(n => `
+                            <div style="background: var(--color-bg-light); padding: 1rem; border-radius: var(--radius-sm); border-left: 3px solid var(--color-primary-light); position: relative;">
+                                <p style="font-size: 0.95rem; color: var(--color-black); margin-bottom: 0.5rem; white-space: pre-wrap;">${n.text}</p>
+                                <div style="display: flex; justify-content: space-between; align-items: flex-end;">
+                                    <span style="font-size: 0.75rem; color: var(--color-text-muted);">${new Date(n.date).toLocaleString(undefined, {dateStyle: 'medium', timeStyle: 'short'})}</span>
+                                    <button type="button" class="btn btn-ghost btn-sm btn-delete-note" data-id="${n.id}" style="padding: 0.25rem 0.5rem; color: var(--color-text-muted); font-size: 0.8rem; cursor: pointer; position: relative; z-index: 10;">Delete</button>
+                                </div>
+                            </div>
+                        `).join('')}
                     </div>
                 </div>
 
@@ -4017,50 +4737,127 @@ function renderCoach() {
     `;
 }
 
-// Logic Rules Engine
-function generateInsights(store) {
-    const reviews = store.reviews || [];
-    const plans = store.weeklyPlans || [];
-    
-    // Check if we have enough data
-    if (reviews.length < 2 && plans.length < 2) {
-        return "Not enough data yet. Complete a few more weekly plans and Friday reviews so your Coach can spot patterns and generate personalized insights.";
-    }
+// Logic for insights removed as it's being moved to progress.js
 
-    const recentPlans = plans.slice(-3);
-    let visibilityCount = 0; let followUpCount = 0; let revActionCount = 0;
 
-    recentPlans.forEach(p => {
-        if (p.visibilityAction && p.visibilityAction.length > 5) visibilityCount++;
-        if (p.followUps && p.followUps.length > 5 && !p.followUps.toLowerCase().includes('none')) followUpCount++;
-        if (p.revenueAction && p.revenueAction.length > 5) revActionCount++;
-    });
-
-    // 1. Sales/Conversion Check
-    if (visibilityCount >= 2 && (followUpCount === 0 || revActionCount === 0)) {
-        return "<strong>Sales/Conversion Alert:</strong> You have been doing a lot of 'Visibility' and marketing actions recently, but you are failing to log 'Follow-up' or direct 'Revenue' actions. Stop marketing immediately and start scheduling sales conversations to convert your generated interest into revenue.";
-    }
-
-    // 2. Time/Energy Check
-    const recentReviews = reviews.slice(-3);
-    let difficultContent = false;
-    recentReviews.forEach(r => {
-        if (r.difficult) {
-            const diff = r.difficult.toLowerCase();
-            if (diff.includes('email') || diff.includes('content') || diff.includes('writing')) difficultContent = true;
-        }
-    });
-
-    if (difficultContent) {
-        return "<strong>Energy Drain Alert:</strong> You consistently mention that writing, emails, or content creation was difficult or draining. Consider lowering your content volume or immediately start batch-creating it on Mondays so it stops dragging down your energy all week.";
-    }
-
-    return "Your momentum looks clean. You are protecting your CEO time and focusing on revenue-generating actions. Keep executing your 90-day plan.";
-}
+// Inline handleDeleteNote removed in favor of event delegation
 
 function coachAttachEvents() {
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
     document.getElementById('nav-coach')?.classList.add('active');
+
+    // Voice Notes Events
+    const noteForm = document.getElementById('note-form');
+    if (noteForm) {
+        noteForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const text = document.getElementById('note-input').value.trim();
+            if (text) {
+                addNote({ text });
+                document.getElementById('note-input').value = '';
+                // Reload screen
+                const appContainer = document.getElementById('app-container');
+                if (appContainer) {
+                    appContainer.innerHTML = renderCoach();
+                    coachAttachEvents();
+                }
+            }
+        });
+    }
+
+    // Delete note event delegation
+    const savedNotesList = document.getElementById('saved-notes-list');
+    if (savedNotesList) {
+        // Clone and replace to remove any previously attached listeners (prevents duplicates)
+        const newSavedNotesList = savedNotesList.cloneNode(true);
+        savedNotesList.parentNode.replaceChild(newSavedNotesList, savedNotesList);
+        
+        newSavedNotesList.addEventListener('click', (e) => {
+            const deleteBtn = e.target.closest('.btn-delete-note');
+            if (deleteBtn) {
+                const id = deleteBtn.getAttribute('data-id');
+                if (confirm("Delete this note?")) {
+                    deleteNote(id);
+                    const appContainer = document.getElementById('app-container');
+                    if (appContainer) {
+                        appContainer.innerHTML = renderCoach();
+                        if (window.currentScreen && window.currentScreen.attachEvents) {
+                            window.currentScreen.attachEvents();
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Web Speech API for Voice Notes
+    const btnVoice = document.getElementById('btn-voice-record');
+    const noteInput = document.getElementById('note-input');
+    const recordingIndicator = document.getElementById('recording-indicator');
+    
+    if (btnVoice && 'webkitSpeechRecognition' in window) {
+        const recognition = new webkitSpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        let isRecording = false;
+
+        recognition.onstart = function() {
+            isRecording = true;
+            btnVoice.style.background = '#FEE4E2';
+            btnVoice.style.color = '#D92D20';
+            recordingIndicator.style.display = 'flex';
+        };
+
+        recognition.onresult = function(event) {
+            let interimTranscript = '';
+            let finalTranscript = '';
+
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                if (event.results[i].isFinal) {
+                    finalTranscript += event.results[i][0].transcript;
+                } else {
+                    interimTranscript += event.results[i][0].transcript;
+                }
+            }
+
+            if (finalTranscript) {
+                const currentVal = noteInput.value;
+                noteInput.value = currentVal + (currentVal.length > 0 && !currentVal.endsWith(' ') ? ' ' : '') + finalTranscript;
+            }
+        };
+
+        recognition.onerror = function(event) {
+            console.error("Speech recognition error", event.error);
+            stopRecording();
+        };
+
+        recognition.onend = function() {
+            stopRecording();
+        };
+
+        function stopRecording() {
+            isRecording = false;
+            btnVoice.style.background = 'var(--color-bg-light)';
+            btnVoice.style.color = 'var(--color-primary)';
+            recordingIndicator.style.display = 'none';
+        }
+
+        btnVoice.addEventListener('click', () => {
+            if (isRecording) {
+                recognition.stop();
+            } else {
+                try {
+                    recognition.start();
+                } catch(e) {
+                    console.error("Failed to start speech recognition", e);
+                }
+            }
+        });
+    } else if (btnVoice) {
+        btnVoice.addEventListener('click', () => {
+            alert("Voice recording is not supported in this browser. Please use Chrome or Safari.");
+        });
+    }
 
     // Decision Filter Events
     const filterForm = document.getElementById('decision-filter-form');
@@ -4116,7 +4913,7 @@ function renderMonthlyReview() {
 
     return `
         ${renderNav()}
-        <div class="main-content" style="max-width: 700px;">
+        <div class="main-content dashboard-layout">
             <div style="margin-bottom: 2rem;">
                 <h2>Monthly CEO Strategy Review</h2>
                 <p style="color: var(--color-text-muted);">A deeper 30-day reflection to refine your strategy and eliminate distractions.</p>
@@ -4414,13 +5211,46 @@ let mondayPlanData = {
     weeklyFocus: '',
     priorities: ['', '', ''],
     revenueAction: '',
-    daily3: ['', '', '']
+    daily3: ['', '', ''],
+    generatedPlanId: null
 };
 
 function renderMondayPlan() {
     window.setScreenModule({ attachEvents: mondayPlanAttachEvents });
     const store = getStore();
     const name = store.profile?.name || 'CEO';
+
+    // Hydrate from AI Draft if it exists and hasn't been loaded yet
+    if (store.draftMondayPlan && !mondayPlanData.loadedFromDraft) {
+        mondayPlanData.weeklyFocus = store.draftMondayPlan.weeklyFocus || '';
+        if (store.draftMondayPlan.priorities) {
+            mondayPlanData.priorities = [
+                store.draftMondayPlan.priorities[0] || '',
+                store.draftMondayPlan.priorities[1] || '',
+                store.draftMondayPlan.priorities[2] || ''
+            ];
+        }
+        mondayPlanData.revenueAction = store.draftMondayPlan.revenueAction || '';
+        mondayPlanData.loadedFromDraft = true;
+    } else if (!mondayPlanData.loadedFromDraft) {
+        // Otherwise, hydrate from next unapplied 90-Day Plan week
+        const unappliedGenerated = store.weeklyPlans.filter(p => p.generated && !p.applied);
+        if (unappliedGenerated.length > 0) {
+            unappliedGenerated.sort((a, b) => a.weekNumber - b.weekNumber);
+            const nextGenPlan = unappliedGenerated[0];
+            mondayPlanData.weeklyFocus = nextGenPlan.winCondition || '';
+            if (nextGenPlan.topActions) {
+                mondayPlanData.priorities = [
+                    nextGenPlan.topActions[0] || '',
+                    nextGenPlan.topActions[1] || '',
+                    nextGenPlan.topActions[2] || ''
+                ];
+            }
+            mondayPlanData.revenueAction = nextGenPlan.revenueAction || '';
+            mondayPlanData.generatedPlanId = nextGenPlan.id;
+            mondayPlanData.loadedFromDraft = true;
+        }
+    }
 
     let html = `
         <div class="main-content" style="max-width: 650px; padding-top: 5vh; font-family: 'Inter', sans-serif;">
@@ -4446,6 +5276,18 @@ function renderMondayPlan() {
                      <p style="font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; color: #666; margin-bottom: 0.25rem; font-weight: 600;">Your 90-Day Goal</p>
                      <p style="font-size: 1.1rem; color: #111; font-weight: 500; margin: 0;">${store.goals?.focus || 'Not set'}</p>
                 </div>
+
+                ${store.draftMondayPlan ? `
+                <div style="background: #f0fbff; padding: 0.75rem 1rem; border-radius: 8px; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--color-primary-dark); border: 1px solid #c9efff;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path><path d="M12 7v6"></path><path d="M12 17h.01"></path></svg>
+                    ✨ Pre-filled by your AI Coach based on Friday's Check-in. Tweak as needed!
+                </div>
+                ` : (mondayPlanData.generatedPlanId ? `
+                <div style="background: #f0fbff; padding: 0.75rem 1rem; border-radius: 8px; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--color-primary-dark); border: 1px solid #c9efff;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path><path d="M12 7v6"></path><path d="M12 17h.01"></path></svg>
+                    ✨ Pre-filled from your 90-Day Action Plan. Tweak as needed!
+                </div>
+                ` : '')}
 
                 <form id="monday-form-1">
                     <div class="form-group">
@@ -4711,11 +5553,17 @@ function mondayPlanAttachEvents() {
                 revenueAction: mondayPlanData.revenueAction,
                 visibilityAction: "Integrated into priorities", // Fallback for backwards compatibility with the planner UI insights
                 followUps: mondayPlanData.revenueAction.toLowerCase().includes('follow') ? mondayPlanData.revenueAction : "Integrated into priorities",
-                daily3: mondayPlanData.daily3
+                daily3: mondayPlanData.daily3,
+                id: mondayPlanData.generatedPlanId ? mondayPlanData.generatedPlanId : undefined,
+                applied: mondayPlanData.generatedPlanId ? true : undefined
             };
 
             // 2. Save it
-            addWeeklyPlan(newPlan);
+            if (newPlan.id) {
+                updateWeeklyPlan(newPlan.id, newPlan);
+            } else {
+                addWeeklyPlan(newPlan);
+            }
 
             // 2.5 Save the specific tasks for Monday immediately into the daily log
             const todayStr = new Date().toISOString().split('T')[0];
@@ -4724,7 +5572,8 @@ function mondayPlanAttachEvents() {
 
             // 3. Reset internal state for next week
             mondayStep = 1;
-            mondayPlanData = { weeklyFocus: '', priorities: ['', '', ''], revenueAction: '', daily3: ['', '', ''] };
+            mondayPlanData = { weeklyFocus: '', priorities: ['', '', ''], revenueAction: '', daily3: ['', '', ''], loadedFromDraft: false };
+            clearDraftMondayPlan();
 
             // 4. Mark today as completed
             sessionStorage.setItem('skippedMondayPlan', new Date().toDateString());
@@ -4950,6 +5799,182 @@ function authAttachEvents() {
 }
 
 
+// --- js\screens\roadmap.js ---
+// roadmap.js
+
+function renderRoadmap() {
+    window.setScreenModule({ attachEvents: roadmapAttachEvents });
+    const store = getStore();
+
+    // Ensure we have a plan to display
+    const weeks = store.weeklyPlans.filter(p => p.generated);
+    if (weeks.length === 0) {
+        return `
+            ${renderNav()}
+            <div class="main-content" style="max-width: 800px; padding-top: 5vh; text-align: center;">
+                <h2>No 90-Day Plan Found</h2>
+                <p style="color: var(--color-text-muted);">You haven't generated a plan yet. Please go to your dashboard to generate one.</p>
+                <a href="#/dashboard" class="btn btn-primary mt-4">Go to Dashboard</a>
+            </div>
+        `;
+    }
+
+    const themes = store.monthlyThemes || {};
+    const redFlags = store.redFlags || [];
+    const checklist = store.setupChecklist || [];
+    const summary = weeks.length > 0 && weeks[0].summary ? weeks[0].summary : "Your 90-day roadmap is ready."; // Not stored at top level currently, but we can just use the store if we need, wait... wait, summary is NOT saved in store. I need to fix applyGeneratedPlan to save summary and calibration!
+
+    // Wait, let me fix applyGeneratedPlan to save summary and calibration.
+    // I'll display a generic message here if it's missing, but I will fix store.js in the next step.
+    const planSummary = store.planSummary || "Your 90-Day Roadmap has been generated based on your strategy mode and current bottleneck.";
+    const planCalibration = store.planCalibration || "Calibrated for your specific stage.";
+
+    return `
+        ${renderNav()}
+        <div class="main-content dashboard-layout">
+            <div style="margin-bottom: 2rem;">
+                <h2>Your 90-Day Roadmap</h2>
+                <p style="color: var(--color-text-muted); font-size: 1.1rem; line-height: 1.5;">${planSummary}</p>
+                <div style="background: var(--color-primary-light); color: var(--color-primary-dark); padding: 0.75rem 1rem; border-radius: var(--radius-sm); font-size: 0.9rem; font-weight: 500; border-left: 3px solid var(--color-primary); margin-top: 1rem;">
+                    ${planCalibration}
+                </div>
+            </div>
+
+            <!-- Monthly Themes -->
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; margin-bottom: 2.5rem;">
+                <div class="card" style="border-top: 4px solid var(--color-primary);">
+                    <h4 style="color: var(--color-primary-dark); margin-bottom: 0.5rem; text-transform: uppercase; font-size: 0.8rem;">Month 1: Foundation</h4>
+                    <p style="font-size: 0.95rem; margin: 0;">${themes.month1 || 'Not set'}</p>
+                </div>
+                <div class="card" style="border-top: 4px solid var(--color-secondary);">
+                    <h4 style="color: var(--color-secondary-dark); margin-bottom: 0.5rem; text-transform: uppercase; font-size: 0.8rem;">Month 2: Momentum</h4>
+                    <p style="font-size: 0.95rem; margin: 0;">${themes.month2 || 'Not set'}</p>
+                </div>
+                <div class="card" style="border-top: 4px solid var(--color-accent);">
+                    <h4 style="color: var(--color-accent-dark); margin-bottom: 0.5rem; text-transform: uppercase; font-size: 0.8rem;">Month 3: Conversion</h4>
+                    <p style="font-size: 0.95rem; margin: 0;">${themes.month3 || 'Not set'}</p>
+                </div>
+            </div>
+
+            <!-- Setup Checklist -->
+            <div class="card mb-6" style="border-left: 4px solid var(--color-black);">
+                <h3 style="margin-bottom: 1rem;">Week 1 Setup Checklist</h3>
+                <p style="font-size: 0.9rem; color: var(--color-text-muted); margin-bottom: 1rem;">Complete these foundational items before diving into your weekly cadence.</p>
+                <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+                    ${checklist.map((item, index) => `
+                        <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer; padding: 0.5rem; background: ${item.done ? 'var(--color-bg-light)' : 'transparent'}; border-radius: var(--radius-sm); transition: background 0.2s;">
+                            <input type="checkbox" class="setup-checkbox" data-index="${index}" ${item.done ? 'checked' : ''} style="margin-top: 0.25rem; width: 18px; height: 18px; accent-color: var(--color-primary);">
+                            <div style="${item.done ? 'text-decoration: line-through; color: var(--color-text-muted);' : ''}">
+                                <span style="display: inline-block; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; background: var(--color-bg-light); padding: 0.1rem 0.4rem; border-radius: 4px; margin-bottom: 0.25rem; color: var(--color-text-main);">${item.category || 'task'} • ~${item.estimatedMinutes || 15}m</span>
+                                <span style="display: block;">${item.task}</span>
+                            </div>
+                        </label>
+                    `).join('')}
+                </div>
+            </div>
+
+            <!-- Red Flags -->
+            <div class="card mb-6" style="border-left: 4px solid #FCA5A5;">
+                <h3 style="margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem;">
+                    Red Flags & Course Correction
+                    ${renderTooltip("Red flags are leading indicators that you're veering off track.", "Course correction tells you exactly what to do when you hit that red flag so you can recover quickly.")}
+                </h3>
+                <div style="overflow-x: auto;">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+                        <thead>
+                            <tr style="border-bottom: 2px solid var(--color-border); text-align: left;">
+                                <th style="padding: 0.75rem 0.5rem; color: var(--color-text-muted); font-weight: 600;">Metric</th>
+                                <th style="padding: 0.75rem 0.5rem; color: var(--color-text-muted); font-weight: 600;">Threshold</th>
+                                <th style="padding: 0.75rem 0.5rem; color: var(--color-text-muted); font-weight: 600;">Frequency</th>
+                                <th style="padding: 0.75rem 0.5rem; color: var(--color-text-muted); font-weight: 600;">Corrective Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${redFlags.map(rf => `
+                                <tr style="border-bottom: 1px solid var(--color-border);">
+                                    <td style="padding: 0.75rem 0.5rem; font-weight: 500;">${rf.metric}</td>
+                                    <td style="padding: 0.75rem 0.5rem; color: #DC2626;">${rf.threshold}</td>
+                                    <td style="padding: 0.75rem 0.5rem;"><span style="background: var(--color-bg-light); padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 0.8rem; text-transform: uppercase;">${rf.checkFrequency}</span></td>
+                                    <td style="padding: 0.75rem 0.5rem;">${rf.correctiveAction}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 12-Week Roadmap -->
+            <div style="margin-top: 3rem; margin-bottom: 1.5rem;">
+                <h3 style="margin-bottom: 0.5rem;">12-Week Execution Plan</h3>
+                <p style="font-size: 0.9rem; color: var(--color-text-muted); font-style: italic;">Note: Your weekly priorities and triplet tasks will automatically populate your "Daily 3" list on the Dashboard to guide your daily focus.</p>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+                ${weeks.sort((a,b) => a.weekNumber - b.weekNumber).map(w => `
+                    <div class="card" style="border-left: 4px solid ${w.applied ? '#10B981' : '#E5E7EB'}; opacity: ${w.applied ? '0.7' : '1'};">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--color-border);">
+                            <div>
+                                <h4 style="margin: 0; color: var(--color-black); font-size: 1.2rem;">Week ${w.weekNumber} <span style="font-size: 0.9rem; font-weight: normal; color: var(--color-text-muted); ml-2">— Month ${w.monthIndex}</span></h4>
+                                <p style="font-weight: 500; color: var(--color-primary-dark); margin: 0.5rem 0 0 0;">Focus: ${w.winCondition}</p>
+                            </div>
+                            ${w.applied ? '<span style="background: #D1FAE5; color: #065F46; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600;">COMPLETED</span>' : ''}
+                        </div>
+                        
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+                            <div>
+                                <p style="font-size: 0.8rem; text-transform: uppercase; color: var(--color-text-muted); font-weight: 600; margin-bottom: 0.5rem;">Top 3 Priorities</p>
+                                <ul style="padding-left: 1.25rem; margin: 0; font-size: 0.9rem;">
+                                    ${(w.topActions || []).map(p => `<li>${p}</li>`).join('')}
+                                </ul>
+                            </div>
+                            <div>
+                                <p style="font-size: 0.8rem; text-transform: uppercase; color: var(--color-text-muted); font-weight: 600; margin-bottom: 0.5rem;">The Triplet</p>
+                                <div style="font-size: 0.9rem; display: flex; flex-direction: column; gap: 0.5rem;">
+                                    <div><span style="font-weight: 600; color: var(--color-secondary-dark);">Vis:</span> ${w.visibilityAction}</div>
+                                    <div><span style="font-weight: 600; color: var(--color-accent-dark);">Rev:</span> ${w.revenueAction}</div>
+                                    <div><span style="font-weight: 600; color: var(--color-primary-dark);">F/Up:</span> ${w.followUps}</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px dashed var(--color-border); font-size: 0.9rem;">
+                            <p style="margin-bottom: 0.5rem;"><strong>Daily Micro-Tasks:</strong> ${(w.daily3 || []).join(' | ')}</p>
+                            <p style="margin: 0;"><strong>Success Check:</strong> ${w.successCheck || 'Completed the week.'}</p>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+
+        </div>
+    `;
+}
+
+function roadmapAttachEvents() {
+    // Checkbox state persistence
+    document.querySelectorAll('.setup-checkbox').forEach(cb => {
+        cb.addEventListener('change', (e) => {
+            const index = parseInt(e.target.getAttribute('data-index'));
+            const store = getStore();
+            if (store.setupChecklist && store.setupChecklist[index]) {
+                store.setupChecklist[index].done = e.target.checked;
+                saveStore(store);
+                
+                // Visual update without full re-render
+                const container = e.target.closest('label');
+                if (e.target.checked) {
+                    container.style.background = 'var(--color-bg-light)';
+                    container.querySelector('div').style.textDecoration = 'line-through';
+                    container.querySelector('div').style.color = 'var(--color-text-muted)';
+                } else {
+                    container.style.background = 'transparent';
+                    container.querySelector('div').style.textDecoration = 'none';
+                    container.querySelector('div').style.color = 'inherit';
+                }
+            }
+        });
+    });
+}
+
+
 // --- js\app.js ---
 // app.js
 
@@ -5033,6 +6058,9 @@ function router() {
             break;
         case '#/monday-plan':
             appContainer.innerHTML = renderMondayPlan();
+            break;
+        case '#/roadmap':
+            appContainer.innerHTML = renderRoadmap();
             break;
         default:
             appContainer.innerHTML = renderDashboard();

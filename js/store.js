@@ -28,6 +28,7 @@ const defaultState = {
     revenue: {
         quarterlyGoal: 0,
         averageOfferPrice: 0,
+        quickOffers: [], // Array of { id, name, price, source }
         entries: [] // Array of { id, date, weekStart, amount, notes }
     },
     leads: {
@@ -43,7 +44,12 @@ const defaultState = {
     monthlyReviews: [], // Array of monthly review objects
     dailyLogs: {}, // Dict of { "2023-11-20": [{text: "Task 1", done: false}, ...] }
     streak: 0, // Friday Review Streak
-    planningStreak: 0 // Monday Plan Streak
+    planningStreak: 0, // Monday Plan Streak
+    draftMondayPlan: null, // AI generated plan waiting for Monday
+    notes: [], // Array of { id, text, date }
+    setupChecklist: [], // Array of one-time setup tasks
+    redFlags: [], // Array of leading indicators
+    monthlyThemes: { month1: '', month2: '', month3: '' }
 };
 
 export function getStore() {
@@ -56,14 +62,19 @@ export function getStore() {
                 ...parsed,
                 profile: { ...defaultState.profile, ...(parsed.profile || {}) },
                 goals: { ...defaultState.goals, ...(parsed.goals || {}) },
-                revenue: { ...defaultState.revenue, ...(parsed.revenue || {}) },
+                revenue: { ...defaultState.revenue, ...(parsed.revenue || {}), quickOffers: parsed.revenue?.quickOffers || [] },
                 leads: { ...defaultState.leads, ...(parsed.leads || {}) },
                 settings: { ...defaultState.settings, ...(parsed.settings || {}) },
                 metrics: parsed.metrics || [],
                 weeklyPlans: parsed.weeklyPlans || [],
                 reviews: parsed.reviews || [],
                 monthlyReviews: parsed.monthlyReviews || [],
-                dailyLogs: parsed.dailyLogs || {}
+                dailyLogs: parsed.dailyLogs || {},
+                draftMondayPlan: parsed.draftMondayPlan || null,
+                notes: parsed.notes || [],
+                setupChecklist: parsed.setupChecklist || [],
+                redFlags: parsed.redFlags || [],
+                monthlyThemes: parsed.monthlyThemes || { month1: '', month2: '', month3: '' }
             };
             
             // Retroactively assign IDs to legacy revenue entries so they can be securely deleted
@@ -104,7 +115,7 @@ export function saveStore(state) {
                         if (error) {
                             console.error("Background cloud sync failed", error);
                             if (!window._syncErrorAlerted) {
-                                alert("Warning: Cloud sync failed. Your data is only saved locally. Please check your Supabase RLS policies on the user_data table. Error: " + error.message);
+                                console.warn("Cloud sync failed. Your data is only saved locally. Please check your Supabase RLS policies on the user_data table. Error: " + error.message);
                                 window._syncErrorAlerted = true;
                             }
                         }
@@ -132,6 +143,13 @@ export function updateGoals(goalsData) {
 export function updateRevenueSettings(settings) {
     const store = getStore();
     store.revenue = { ...store.revenue, ...settings };
+    saveStore(store);
+}
+
+export function updateQuickOffers(offers) {
+    const store = getStore();
+    // Enforce base tier limit of 3
+    store.revenue.quickOffers = offers.slice(0, 3);
     saveStore(store);
 }
 
@@ -406,6 +424,73 @@ export function addMonthlyReview(review) {
     review.id = Date.now().toString();
     review.date = new Date().toISOString();
     store.monthlyReviews.push(review);
+    saveStore(store);
+}
+
+export function saveDraftMondayPlan(plan) {
+    const store = getStore();
+    store.draftMondayPlan = plan;
+    saveStore(store);
+}
+
+export function clearDraftMondayPlan() {
+    const store = getStore();
+    store.draftMondayPlan = null;
+    saveStore(store);
+}
+
+export function applyGeneratedPlan(plan) {
+    if (!plan || !plan.summary || !plan.weeks || plan.weeks.length !== 12 || !plan.setupChecklist || !plan.redFlags || !plan.monthlyThemes) {
+        console.error("Invalid plan structure passed to applyGeneratedPlan");
+        return;
+    }
+
+    const store = getStore();
+
+    store.setupChecklist = plan.setupChecklist.map(item => ({ ...item, done: false }));
+    store.redFlags = plan.redFlags;
+    store.monthlyThemes = plan.monthlyThemes;
+    store.planSummary = plan.summary;
+    store.planCalibration = plan.calibration;
+
+    // Clear existing weekly plans for the new quarter start
+    store.weeklyPlans = [];
+
+    const now = Date.now();
+    plan.weeks.forEach((w, i) => {
+        store.weeklyPlans.push({
+            id: 'gen_' + (now + i).toString(),
+            date: new Date(now + i).toISOString(),
+            weekNumber: w.weekNumber,
+            monthIndex: w.monthIndex,
+            winCondition: w.weeklyFocus,
+            topActions: w.topPriorities,
+            visibilityAction: w.visibilityAction,
+            revenueAction: w.revenueAction,
+            followUps: w.followUpAction,
+            daily3: w.dailyThree,
+            successCheck: w.successCheck,
+            generated: true,
+            applied: false
+        });
+    });
+
+    saveStore(store);
+}
+
+export function addNote(note) {
+    const store = getStore();
+    note.id = Date.now().toString();
+    note.date = new Date().toISOString();
+    if (!store.notes) store.notes = [];
+    store.notes.push(note);
+    saveStore(store);
+}
+
+export function deleteNote(id) {
+    const store = getStore();
+    if (!store.notes) store.notes = [];
+    store.notes = store.notes.filter(n => String(n.id) !== String(id));
     saveStore(store);
 }
 

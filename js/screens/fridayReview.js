@@ -1,13 +1,14 @@
-// fridayReview.js
 import { renderNav } from '../components/nav.js';
 import { addReview } from '../store.js';
 import { renderTooltip } from '../components/tooltip.js';
+import { generateMondayPlanDraft } from '../aiService.js';
+import { saveDraftMondayPlan } from '../store.js';
 
 export function renderReview() {
     window.setScreenModule({ attachEvents: reviewAttachEvents });
     return `
         ${renderNav()}
-        <div class="main-content" style="max-width: 700px;">
+        <div class="main-content dashboard-layout">
             <div style="margin-bottom: 2rem;">
                 <h2>Friday CEO Review</h2>
                 <p style="color: var(--color-text-muted);">Reflect on the week, capture the wins, and plan for better next week.</p>
@@ -53,6 +54,19 @@ export function renderReview() {
                 </div>
 
                 <div class="form-group mt-6">
+                    <label class="form-label" style="font-size: 1.1rem; color: var(--color-primary-dark);">
+                        How was your personal energy this week?
+                        ${renderTooltip("Your energy dictates your output.", "Tracking energy levels helps the AI suggest an appropriately paced plan for next week. Burnout requires a different strategy than peak flow.")}
+                    </label>
+                    <select class="form-control" id="rev-energy" required>
+                        <option value="High (In Flow, highly productive)">High (In Flow, highly productive)</option>
+                        <option value="Medium (Consistent but tired)">Medium (Consistent but tired)</option>
+                        <option value="Low (Pushing through mud)">Low (Pushing through mud)</option>
+                        <option value="Burnout (Need a break)">Burnout (Need a break)</option>
+                    </select>
+                </div>
+
+                <div class="form-group mt-6">
                     <label class="form-label" style="font-size: 1.1rem;">Metrics (Optional)</label>
                     <p class="form-helper mb-2">Track the numbers that matter for your 90-day goal.</p>
                     <div class="flex gap-4">
@@ -77,7 +91,7 @@ export function renderReview() {
                 </div>
 
                 <div class="flex justify-end mt-8">
-                    <button type="submit" class="btn btn-primary">Save Review & Close Week</button>
+                    <button type="submit" id="btn-save-review" class="btn btn-primary" style="transition: all 0.2s;">Save Review & Let AI Draft Next Week</button>
                 </div>
             </form>
         </div>
@@ -177,7 +191,7 @@ function reviewAttachEvents() {
 
     const form = document.getElementById('review-form');
     if (form) {
-        form.addEventListener('submit', (e) => {
+        form.addEventListener('submit', async (e) => {
             e.preventDefault();
             if (isRecording) stopRecording();
 
@@ -185,15 +199,28 @@ function reviewAttachEvents() {
                 movedForward: document.getElementById('rev-forward').value,
                 workedWell: document.getElementById('rev-well').value,
                 difficult: document.getElementById('rev-difficult').value,
+                energy: document.getElementById('rev-energy').value,
                 leads: document.getElementById('rev-leads').value,
                 sales: document.getElementById('rev-sales').value,
                 nextWeekImprove: document.getElementById('rev-improve').value,
             };
 
+            const btn = document.getElementById('btn-save-review');
+            const origText = btn.innerText;
+            btn.innerText = "AI is drafting your Monday Plan...";
+            btn.style.opacity = '0.7';
+            btn.disabled = true;
+
+            // Generate AI Draft
+            const draft = await generateMondayPlanDraft(review);
+            if (draft) {
+                saveDraftMondayPlan(draft);
+            }
+
             addReview(review);
 
             // Show success and redirect
-            alert("Review saved! Great job this week. Take some well-deserved rest off.");
+            alert("Review saved! Your AI Advisor has drafted your action plan for next week.\\n\\nTake some well-deserved rest off.");
             window.location.hash = '#/progress';
         });
     }

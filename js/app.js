@@ -16,6 +16,7 @@ import { renderCoach } from './screens/coach.js';
 import { renderMonthlyReview } from './screens/monthlyReview.js';
 import { renderMondayPlan } from './screens/mondayPlan.js';
 import { renderAuth } from './screens/auth.js';
+import { renderRoadmap } from './screens/roadmap.js';
 
 const appContainer = document.getElementById('app-container');
 
@@ -94,6 +95,9 @@ function router() {
             break;
         case '#/monday-plan':
             appContainer.innerHTML = renderMondayPlan();
+            break;
+        case '#/roadmap':
+            appContainer.innerHTML = renderRoadmap();
             break;
         default:
             appContainer.innerHTML = renderDashboard();

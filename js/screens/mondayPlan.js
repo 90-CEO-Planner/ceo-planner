@@ -1,4 +1,4 @@
-import { getStore, addWeeklyPlan, getRevenueInsights } from '../store.js';
+import { getStore, addWeeklyPlan, updateWeeklyPlan, getRevenueInsights, clearDraftMondayPlan } from '../store.js';
 import { updateDailyLog } from '../store.js';
 
 let mondayStep = 1;
@@ -7,13 +7,46 @@ let mondayPlanData = {
     weeklyFocus: '',
     priorities: ['', '', ''],
     revenueAction: '',
-    daily3: ['', '', '']
+    daily3: ['', '', ''],
+    generatedPlanId: null
 };
 
 export function renderMondayPlan() {
     window.setScreenModule({ attachEvents: mondayPlanAttachEvents });
     const store = getStore();
     const name = store.profile?.name || 'CEO';
+
+    // Hydrate from AI Draft if it exists and hasn't been loaded yet
+    if (store.draftMondayPlan && !mondayPlanData.loadedFromDraft) {
+        mondayPlanData.weeklyFocus = store.draftMondayPlan.weeklyFocus || '';
+        if (store.draftMondayPlan.priorities) {
+            mondayPlanData.priorities = [
+                store.draftMondayPlan.priorities[0] || '',
+                store.draftMondayPlan.priorities[1] || '',
+                store.draftMondayPlan.priorities[2] || ''
+            ];
+        }
+        mondayPlanData.revenueAction = store.draftMondayPlan.revenueAction || '';
+        mondayPlanData.loadedFromDraft = true;
+    } else if (!mondayPlanData.loadedFromDraft) {
+        // Otherwise, hydrate from next unapplied 90-Day Plan week
+        const unappliedGenerated = store.weeklyPlans.filter(p => p.generated && !p.applied);
+        if (unappliedGenerated.length > 0) {
+            unappliedGenerated.sort((a, b) => a.weekNumber - b.weekNumber);
+            const nextGenPlan = unappliedGenerated[0];
+            mondayPlanData.weeklyFocus = nextGenPlan.winCondition || '';
+            if (nextGenPlan.topActions) {
+                mondayPlanData.priorities = [
+                    nextGenPlan.topActions[0] || '',
+                    nextGenPlan.topActions[1] || '',
+                    nextGenPlan.topActions[2] || ''
+                ];
+            }
+            mondayPlanData.revenueAction = nextGenPlan.revenueAction || '';
+            mondayPlanData.generatedPlanId = nextGenPlan.id;
+            mondayPlanData.loadedFromDraft = true;
+        }
+    }
 
     let html = `
         <div class="main-content" style="max-width: 650px; padding-top: 5vh; font-family: 'Inter', sans-serif;">
@@ -39,6 +72,18 @@ export function renderMondayPlan() {
                      <p style="font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; color: #666; margin-bottom: 0.25rem; font-weight: 600;">Your 90-Day Goal</p>
                      <p style="font-size: 1.1rem; color: #111; font-weight: 500; margin: 0;">${store.goals?.focus || 'Not set'}</p>
                 </div>
+
+                ${store.draftMondayPlan ? `
+                <div style="background: #f0fbff; padding: 0.75rem 1rem; border-radius: 8px; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--color-primary-dark); border: 1px solid #c9efff;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path><path d="M12 7v6"></path><path d="M12 17h.01"></path></svg>
+                    ✨ Pre-filled by your AI Coach based on Friday's Check-in. Tweak as needed!
+                </div>
+                ` : (mondayPlanData.generatedPlanId ? `
+                <div style="background: #f0fbff; padding: 0.75rem 1rem; border-radius: 8px; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--color-primary-dark); border: 1px solid #c9efff;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path><path d="M12 7v6"></path><path d="M12 17h.01"></path></svg>
+                    ✨ Pre-filled from your 90-Day Action Plan. Tweak as needed!
+                </div>
+                ` : '')}
 
                 <form id="monday-form-1">
                     <div class="form-group">
@@ -304,11 +349,17 @@ function mondayPlanAttachEvents() {
                 revenueAction: mondayPlanData.revenueAction,
                 visibilityAction: "Integrated into priorities", // Fallback for backwards compatibility with the planner UI insights
                 followUps: mondayPlanData.revenueAction.toLowerCase().includes('follow') ? mondayPlanData.revenueAction : "Integrated into priorities",
-                daily3: mondayPlanData.daily3
+                daily3: mondayPlanData.daily3,
+                id: mondayPlanData.generatedPlanId ? mondayPlanData.generatedPlanId : undefined,
+                applied: mondayPlanData.generatedPlanId ? true : undefined
             };
 
             // 2. Save it
-            addWeeklyPlan(newPlan);
+            if (newPlan.id) {
+                updateWeeklyPlan(newPlan.id, newPlan);
+            } else {
+                addWeeklyPlan(newPlan);
+            }
 
             // 2.5 Save the specific tasks for Monday immediately into the daily log
             const todayStr = new Date().toISOString().split('T')[0];
@@ -317,7 +368,8 @@ function mondayPlanAttachEvents() {
 
             // 3. Reset internal state for next week
             mondayStep = 1;
-            mondayPlanData = { weeklyFocus: '', priorities: ['', '', ''], revenueAction: '', daily3: ['', '', ''] };
+            mondayPlanData = { weeklyFocus: '', priorities: ['', '', ''], revenueAction: '', daily3: ['', '', ''], loadedFromDraft: false };
+            clearDraftMondayPlan();
 
             // 4. Mark today as completed
             sessionStorage.setItem('skippedMondayPlan', new Date().toDateString());

@@ -9,10 +9,11 @@ export function renderProgress() {
     const reviews = store.reviews;
     const monthlyReviews = store.monthlyReviews || [];
     const plansCount = store.weeklyPlans.length;
+    const insight = generateInsights(store);
 
     return `
         ${renderNav()}
-        <div class="main-content" style="max-width: 800px;">
+        <div class="main-content dashboard-layout">
             <div class="flex justify-between items-center mb-6">
                 <div>
                     <h2>Progress & Wins</h2>
@@ -24,8 +25,22 @@ export function renderProgress() {
                 </div>
             </div>
 
+            <!-- CEO Insight Engine -->
+            <div class="card mb-6" style="border-top: 4px solid var(--color-primary);">
+                <div class="flex items-center gap-2 mb-4">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                    <h3 style="margin: 0; display: flex; align-items: center;">
+                        Weekly CEO Insight
+                        ${renderTooltip("Identifies the area most likely slowing your progress right now.", "Solving the right problem is faster than doing more work.")}
+                    </h3>
+                </div>
+                <div style="background: var(--color-bg-main); padding: 1.25rem; border-radius: var(--radius-md); font-size: 1.05rem; line-height: 1.6; color: var(--color-black);">
+                    ${insight}
+                </div>
+            </div>
+
             <!-- Stats Overview & Momentum Tracker -->
-            <div style="display: grid; grid-template-columns: 1fr 2fr; gap: var(--spacing-lg); margin-bottom: var(--spacing-xl);">
+            <div class="grid-sidebar-right mb-8">
                 <div class="flex-col gap-4">
                     <div class="card text-center flex-col justify-center" style="padding: 1.5rem 1rem; flex: 1; border-top: 4px solid var(--color-primary);">
                         <p style="font-size: 2.5rem; font-family: var(--font-heading); font-weight: 700; color: var(--color-primary); line-height: 1;">${store.streak}</p>
@@ -161,6 +176,47 @@ export function renderProgress() {
             </div>
         </div>
     `;
+}
+
+// Logic Rules Engine
+function generateInsights(store) {
+    const reviews = store.reviews || [];
+    const plans = store.weeklyPlans || [];
+    
+    // Check if we have enough data
+    if (reviews.length < 2 && plans.length < 2) {
+        return "Not enough data yet. Complete a few more weekly plans and Friday reviews so your Coach can spot patterns and generate personalized insights.";
+    }
+
+    const recentPlans = plans.slice(-3);
+    let visibilityCount = 0; let followUpCount = 0; let revActionCount = 0;
+
+    recentPlans.forEach(p => {
+        if (p.visibilityAction && p.visibilityAction.length > 5) visibilityCount++;
+        if (p.followUps && p.followUps.length > 5 && !p.followUps.toLowerCase().includes('none')) followUpCount++;
+        if (p.revenueAction && p.revenueAction.length > 5) revActionCount++;
+    });
+
+    // 1. Sales/Conversion Check
+    if (visibilityCount >= 2 && (followUpCount === 0 || revActionCount === 0)) {
+        return "<strong>Sales/Conversion Alert:</strong> You have been doing a lot of 'Visibility' and marketing actions recently, but you are failing to log 'Follow-up' or direct 'Revenue' actions. Stop marketing immediately and start scheduling sales conversations to convert your generated interest into revenue.";
+    }
+
+    // 2. Time/Energy Check
+    const recentReviews = reviews.slice(-3);
+    let difficultContent = false;
+    recentReviews.forEach(r => {
+        if (r.difficult) {
+            const diff = r.difficult.toLowerCase();
+            if (diff.includes('email') || diff.includes('content') || diff.includes('writing')) difficultContent = true;
+        }
+    });
+
+    if (difficultContent) {
+        return "<strong>Energy Drain Alert:</strong> You consistently mention that writing, emails, or content creation was difficult or draining. Consider lowering your content volume or immediately start batch-creating it on Mondays so it stops dragging down your energy all week.";
+    }
+
+    return "Your momentum looks clean. You are protecting your CEO time and focusing on revenue-generating actions. Keep executing your 90-day plan.";
 }
 
 function progressAttachEvents() {

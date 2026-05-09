@@ -14,19 +14,30 @@ export function renderPlanner() {
         }
     }
 
-    const win = activePlan ? activePlan.winCondition : '';
-    const p1 = activePlan && activePlan.topActions ? (activePlan.topActions[0] || '') : (store.goals?.priorities?.[0] || '');
-    const p2 = activePlan && activePlan.topActions ? (activePlan.topActions[1] || '') : (store.goals?.priorities?.[1] || '');
-    const p3 = activePlan && activePlan.topActions ? (activePlan.topActions[2] || '') : (store.goals?.priorities?.[2] || '');
-    const rev = activePlan ? activePlan.revenueAction : '';
-    const vis = activePlan ? activePlan.visibilityAction : '';
-    const fol = activePlan ? activePlan.followUps : '';
+    // Identify next generated plan to pre-fill if no active plan
+    let nextGeneratedPlan = null;
+    if (!activePlan) {
+        const unappliedGenerated = store.weeklyPlans.filter(p => p.generated && !p.applied);
+        if (unappliedGenerated.length > 0) {
+            // Sort by weekNumber
+            unappliedGenerated.sort((a, b) => a.weekNumber - b.weekNumber);
+            nextGeneratedPlan = unappliedGenerated[0];
+        }
+    }
+
+    const win = activePlan ? activePlan.winCondition : (nextGeneratedPlan ? nextGeneratedPlan.winCondition : '');
+    const p1 = activePlan && activePlan.topActions ? (activePlan.topActions[0] || '') : (nextGeneratedPlan && nextGeneratedPlan.topActions ? nextGeneratedPlan.topActions[0] : (store.goals?.priorities?.[0] || ''));
+    const p2 = activePlan && activePlan.topActions ? (activePlan.topActions[1] || '') : (nextGeneratedPlan && nextGeneratedPlan.topActions ? nextGeneratedPlan.topActions[1] : (store.goals?.priorities?.[1] || ''));
+    const p3 = activePlan && activePlan.topActions ? (activePlan.topActions[2] || '') : (nextGeneratedPlan && nextGeneratedPlan.topActions ? nextGeneratedPlan.topActions[2] : (store.goals?.priorities?.[2] || ''));
+    const rev = activePlan ? activePlan.revenueAction : (nextGeneratedPlan ? nextGeneratedPlan.revenueAction : '');
+    const vis = activePlan ? activePlan.visibilityAction : (nextGeneratedPlan ? nextGeneratedPlan.visibilityAction : '');
+    const fol = activePlan ? activePlan.followUps : (nextGeneratedPlan ? nextGeneratedPlan.followUps : '');
 
     const prompts = getSmartPrompts(store.profile?.strategyMode);
 
     return `
         ${renderNav()}
-        <div class="main-content" style="max-width: 700px;">
+        <div class="main-content dashboard-layout">
             <div style="margin-bottom: 2rem;">
                 <h2>Weekly CEO Plan</h2>
                 <p style="color: var(--color-text-muted);">Set your intentions and priorities for the week ahead.</p>
@@ -65,7 +76,7 @@ export function renderPlanner() {
                 <p style="font-size: 0.8rem; color: var(--color-text-muted); margin-top: 0.75rem; text-align: center;">Steal these ideas or write your own below!</p>
             </div>
 
-            <form id="planner-form" class="card" data-plan-id="${activePlan ? activePlan.id : ''}">
+            <form id="planner-form" class="card" data-plan-id="${activePlan ? activePlan.id : ''}" data-gen-id="${nextGeneratedPlan ? nextGeneratedPlan.id : ''}">
                 <div class="form-group">
                     <label class="form-label" style="font-size: 1.1rem; color: var(--color-primary-dark);">${store.profile?.name ? store.profile.name + ", w" : "W"}hat would make this week a win?</label>
                     <textarea class="form-textarea" id="plan-win" placeholder="e.g., Getting 3 sales calls booked and finishing the landing page layout." required>${win}</textarea>
@@ -186,9 +197,16 @@ function plannerAttachEvents() {
             };
 
             const planId = form.getAttribute('data-plan-id');
+            const genId = form.getAttribute('data-gen-id');
+            
             if (planId) {
                 updateWeeklyPlan(planId, plan);
                 alert("Weekly plan updated!");
+            } else if (genId) {
+                // We are applying a generated plan
+                plan.applied = true;
+                updateWeeklyPlan(genId, plan);
+                alert("Weekly plan applied and saved! Have a great week, CEO.");
             } else {
                 addWeeklyPlan(plan);
                 alert("Weekly plan saved! Have a great week, CEO.");
