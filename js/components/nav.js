@@ -14,6 +14,9 @@ export function renderNav() {
                     : `<div class="logo-icon"></div>`}
                 <span>${bName}</span>
             </div>
+            <button class="mobile-menu-btn" onclick="document.querySelector('.nav-links').classList.toggle('active')" aria-label="Toggle menu">
+                ☰
+            </button>
             <nav class="nav-links">
                 <a href="#/dashboard" class="nav-link" id="nav-dashboard">Dashboard</a>
                 <a href="#/roadmap" class="nav-link" id="nav-roadmap">90-Day Plan</a>
@@ -29,3 +32,4 @@ export function renderNav() {
         </header>
     `;
 }
+

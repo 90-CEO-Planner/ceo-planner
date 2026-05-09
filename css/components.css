@@ -166,6 +166,16 @@
     border-radius: var(--radius-sm);
 }
 
+.mobile-menu-btn {
+    display: none;
+    background: none;
+    border: none;
+    font-size: 1.5rem;
+    color: var(--color-text-main);
+    cursor: pointer;
+    padding: 0.5rem;
+}
+
 .nav-links {
     display: flex;
     gap: var(--spacing-md);
@@ -176,12 +186,40 @@
     font-weight: 500;
     padding: 0.5rem;
     border-radius: var(--radius-sm);
+    text-decoration: none;
+    display: block;
 }
 
 .nav-link:hover,
 .nav-link.active {
     color: var(--color-primary);
     background-color: var(--color-primary-light);
+}
+
+@media (max-width: 768px) {
+    .app-header {
+        flex-wrap: wrap;
+    }
+    .mobile-menu-btn {
+        display: block;
+    }
+    .nav-links {
+        display: none;
+        flex-direction: column;
+        width: 100%;
+        margin-top: 1rem;
+        background: var(--color-bg-card);
+        border-radius: var(--radius-md);
+        padding: 1rem;
+        box-shadow: var(--shadow-md);
+        position: absolute;
+        top: 60px;
+        left: 0;
+        z-index: 100;
+    }
+    .nav-links.active {
+        display: flex;
+    }
 }
 
 /* Wizard Steps */
