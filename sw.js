@@ -1,5 +1,5 @@
 // sw.js
-const CACHE_NAME = 'ceo-planner-cache-v1';
+const CACHE_NAME = 'ceo-planner-cache-v2';
 const urlsToCache = [
   './',
   './index.html',

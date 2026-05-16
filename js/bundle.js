@@ -995,8 +995,8 @@ function renderNav() {
                 <a href="#/coach" class="nav-link" id="nav-coach">Notepad</a>
                 <a href="#/monthly-review" class="nav-link" id="nav-monthly-review">Monthly Review</a>
                 <a href="#/progress" class="nav-link" id="nav-progress">Wins & Progress</a>
-                <a href="#/settings" class="nav-link" id="nav-settings">⚙️ Settings</a>
-                <a href="#" class="nav-link" onclick="localStorage.removeItem('ceo_auth'); localStorage.removeItem('ceoPlanner_store'); window.location.hash='#/login'; window.location.reload(); return false;" style="color: #FCA5A5;">🚪 Log Out</a>
+                <a href="#/settings" class="nav-link" id="nav-settings">Settings</a>
+                <a href="#" class="nav-link" onclick="localStorage.removeItem('ceo_auth'); localStorage.removeItem('ceoPlanner_store'); window.location.hash='#/login'; window.location.reload(); return false;" style="color: #FCA5A5;">Log Out</a>
             </nav>
         </header>
     `;
