@@ -1659,8 +1659,9 @@ function renderDashboard() {
     
     const quickOffers = store.revenue?.quickOffers || [];
 
-    // Check if there is an active weekly plan
-    let activePlan = store.weeklyPlans.length > 0 ? store.weeklyPlans[store.weeklyPlans.length - 1] : null;
+    // Check if there is an active weekly plan (ignore unapplied AI-generated drafts)
+    const validPlans = store.weeklyPlans.filter(p => !p.generated || p.applied);
+    let activePlan = validPlans.length > 0 ? validPlans[validPlans.length - 1] : null;
 
     if (activePlan) {
         const diffDays = Math.ceil(Math.abs(new Date() - new Date(activePlan.date)) / (1000 * 60 * 60 * 24));
@@ -2677,16 +2678,38 @@ function plannerAttachEvents() {
             const genId = form.getAttribute('data-gen-id');
             
             if (planId) {
+                // Update date so it extends the 6-day active window if they edit it
+                plan.date = new Date().toISOString();
                 updateWeeklyPlan(planId, plan);
                 alert("Weekly plan updated!");
             } else if (genId) {
                 // We are applying a generated plan
                 plan.applied = true;
+                plan.date = new Date().toISOString(); // Ensure it becomes active NOW
                 updateWeeklyPlan(genId, plan);
+                
+                // Move it to the end of the array so dashboard picks it up as the latest active plan
+                const store = window.getStore ? window.getStore() : JSON.parse(localStorage.getItem('ceoPlanner_store'));
+                if (store) {
+                   const idx = store.weeklyPlans.findIndex(p => String(p.id) === String(genId));
+                   if (idx !== -1) {
+                       const p = store.weeklyPlans.splice(idx, 1)[0];
+                       store.weeklyPlans.push(p);
+                       localStorage.setItem('ceoPlanner_store', JSON.stringify(store));
+                   }
+                }
                 alert("Weekly plan applied and saved! Have a great week, CEO.");
             } else {
                 addWeeklyPlan(plan);
                 alert("Weekly plan saved! Have a great week, CEO.");
+            }
+
+            // Clear today's daily log so the dashboard regenerates the Daily 3 based on the new plan
+            const store = window.getStore ? window.getStore() : JSON.parse(localStorage.getItem('ceoPlanner_store') || '{}');
+            if (store && store.dailyLogs) {
+                const todayStr = new Date().toISOString().split('T')[0];
+                delete store.dailyLogs[todayStr];
+                localStorage.setItem('ceoPlanner_store', JSON.stringify(store));
             }
 
             // Show success and redirect

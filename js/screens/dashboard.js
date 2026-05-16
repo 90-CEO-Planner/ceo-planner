@@ -19,8 +19,9 @@ export function renderDashboard() {
     
     const quickOffers = store.revenue?.quickOffers || [];
 
-    // Check if there is an active weekly plan
-    let activePlan = store.weeklyPlans.length > 0 ? store.weeklyPlans[store.weeklyPlans.length - 1] : null;
+    // Check if there is an active weekly plan (ignore unapplied AI-generated drafts)
+    const validPlans = store.weeklyPlans.filter(p => !p.generated || p.applied);
+    let activePlan = validPlans.length > 0 ? validPlans[validPlans.length - 1] : null;
 
     if (activePlan) {
         const diffDays = Math.ceil(Math.abs(new Date() - new Date(activePlan.date)) / (1000 * 60 * 60 * 24));
