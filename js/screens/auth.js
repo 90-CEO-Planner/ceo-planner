@@ -6,7 +6,7 @@ export function renderAuth(isSignup = false) {
     const title = isSignup ? "Create your account" : "Log in to your account";
     const subtitle = isSignup ? "Start your 90-day CEO journey today." : "Welcome back! Please enter your details.";
     const btnText = isSignup ? "Create Account" : "Sign In";
-    const switchText = isSignup ? "Already have an account? <a href='#/login' style='color: var(--color-primary-dark); text-decoration: none; font-weight: 600;'>Log in</a>" : "Don't have an account? <a href='#/signup' style='color: var(--color-primary-dark); text-decoration: none; font-weight: 600;'>Sign up</a>";
+    const switchText = isSignup ? "Already have an account? <a href='#/login' style='color: var(--color-primary-dark); text-decoration: none; font-weight: 600;'>Log in</a>" : "";
 
     return `
         <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--color-primary-light) 0%, var(--color-bg-main) 100%); padding: 1.5rem;">
