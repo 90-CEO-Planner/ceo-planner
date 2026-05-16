@@ -44,12 +44,12 @@ export function renderDashboard() {
     let html = `
         ${renderNav()}
         <div class="main-content dashboard-layout">
-            <div class="flex justify-between items-center mb-6">
+            <div class="flex justify-between items-center mb-6 flex-mobile-col" style="gap: 1rem; align-items: flex-start;">
                 <div>
                     <h2>Welcome back, ${store.profile?.name || 'CEO'}</h2>
                     <p style="color: var(--color-text-muted);">Stay focused on your 90-day outcome.</p>
                 </div>
-                <div style="display: flex; gap: 0.75rem; align-items: center;">
+                <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
                     <div style="display: flex; flex-direction: column; align-items: center; gap: 0.25rem;">
                         <div id="dash-regen-spinner" class="spinner" style="display: none; width: 16px; height: 16px; border: 2px solid var(--color-bg-light); border-top: 2px solid var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite;"></div>
                         <button class="btn btn-outline btn-sm btn-regenerate-plan" style="display: flex; align-items: center; gap: 0.25rem;">
@@ -240,22 +240,37 @@ export function renderDashboard() {
     // Helper to generate daily actionable steps from priorities and weekly plans
     const generateDaily3 = (priorities, plan) => {
         const tasks = [];
+        const usedTasks = new Set();
+        
+        const addTask = (text, fallback) => {
+            let t = breakdownTask(text, fallback);
+            let attempts = 0;
+            while (usedTasks.has(t) && attempts < 10) {
+                t = breakdownTask(text, fallback);
+                attempts++;
+            }
+            if (usedTasks.has(t)) {
+                t = t + ' (Part 2)';
+            }
+            usedTasks.add(t);
+            tasks.push(t);
+        };
 
         // Analyze Priority 1
         const p1 = priorities[0] || '';
-        tasks.push(breakdownTask(p1, 'Focus block on top priority'));
+        addTask(p1, 'Focus block on top priority');
 
         // Analyze Priority 2
         const p2 = priorities[1] || '';
-        tasks.push(breakdownTask(p2, 'Execute next step for second priority'));
+        addTask(p2, 'Execute next step for second priority');
 
         // Analyze Revenue Action based on Weekly Plan vs Priorities
         const rev = plan && plan.revenueAction ? plan.revenueAction : '';
         if (rev.trim() !== '') {
-            tasks.push(breakdownTask(rev, 'Complete revenue-generating action'));
+            addTask(rev, 'Complete revenue-generating action');
         } else {
             const p3 = priorities[2] || '';
-            tasks.push(breakdownTask(p3, 'Take action on third priority'));
+            addTask(p3, 'Take action on third priority');
         }
 
         return tasks;
@@ -271,34 +286,44 @@ export function renderDashboard() {
             return options[Math.floor(Math.random() * options.length)];
         }
         if (lower.match(/podcast|collab|pitch/)) {
-            return 'Research 3-5 potential podcasts/creators and draft a custom pitch';
+            const options = ['Research 3-5 potential podcasts/creators and draft a custom pitch', 'Follow up with past podcast hosts for a second appearance', 'Outline 3 new podcast topics to pitch'];
+            return options[Math.floor(Math.random() * options.length)];
         }
         if (lower.match(/course|program|module/)) {
-            return 'Outline the curriculum or record the first module for the course';
+            const options = ['Outline the curriculum or record the first module for the course', 'Review student feedback to improve the next module', 'Draft the sales page copy for your program'];
+            return options[Math.floor(Math.random() * options.length)];
         }
         if (lower.match(/email|newsletter|sequence/)) {
-            return 'Draft the outline and first draft of the email sequence';
+            const options = ['Draft the outline and first draft of the email sequence', 'Write 2 engaging emails for your newsletter', 'Review email metrics and optimize the subject lines'];
+            return options[Math.floor(Math.random() * options.length)];
         }
         if (lower.match(/post|reel|tiktok|content|video/)) {
-            return 'Script or outline 3 pieces of content and batch record/write them';
+            const options = ['Script or outline 3 pieces of content and batch record/write them', 'Repurpose your top-performing post into a short video script', 'Engage with 10 ideal clients before posting your content'];
+            return options[Math.floor(Math.random() * options.length)];
         }
         if (lower.match(/lead|magnet|freebie|opt-in/)) {
-            return 'Design the core asset for the lead magnet (PDF, video outline, checklist)';
+            const options = ['Design the core asset for the lead magnet (PDF, video outline, checklist)', 'Draft the opt-in page copy for your new freebie', 'Plan the 3-part welcome sequence for new subscribers'];
+            return options[Math.floor(Math.random() * options.length)];
         }
         if (lower.match(/sales|sell|close|revenue|income/)) {
-            return 'Identify 5 warm leads from recent interactions and send a personalized DM/email';
+            const options = ['Identify 5 warm leads from recent interactions and send a personalized DM/email', 'Follow up with 3 prospects who ghosted or said "not right now"', 'Review your sales process to identify and fix one bottleneck'];
+            return options[Math.floor(Math.random() * options.length)];
         }
         if (lower.match(/webinar|masterclass|live/)) {
-            return 'Draft the slide deck outline focusing on the core problem and solution';
+            const options = ['Draft the slide deck outline focusing on the core problem and solution', 'Promote your upcoming live session on your main social channel', 'Write the follow-up email sequence for webinar attendees'];
+            return options[Math.floor(Math.random() * options.length)];
         }
         if (lower.match(/website|landing page|sales page/)) {
-            return 'Draft the copy for the top three sections of the page (Headline, Problem, Solution)';
+            const options = ['Draft the copy for the top three sections of the page (Headline, Problem, Solution)', 'Review your landing page on mobile and optimize the call-to-action', 'Source 3 fresh testimonials to add to your sales page'];
+            return options[Math.floor(Math.random() * options.length)];
         }
         if (lower.match(/hire|va|delegate/)) {
-            return 'Document the step-by-step SOP for the task you want to delegate';
+            const options = ['Document the step-by-step SOP for the task you want to delegate', 'Draft the job description and post it on your preferred platform', 'Review applications or conduct a 15-minute interview'];
+            return options[Math.floor(Math.random() * options.length)];
         }
         if (lower.match(/brand|niche|messaging/)) {
-            return 'Write down 3 core beliefs your brand stands for to use in upcoming messaging';
+            const options = ['Write down 3 core beliefs your brand stands for to use in upcoming messaging', 'Review your social media bios and update them for clarity', 'Identify 3 common objections from your audience and draft responses'];
+            return options[Math.floor(Math.random() * options.length)];
         }
 
         // Generic fallbacks for unrecognized text
