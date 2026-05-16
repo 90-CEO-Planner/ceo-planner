@@ -254,7 +254,11 @@ OUTPUT FORMAT (return exactly this JSON shape):
       "weekNumber": 1,
       "monthIndex": 1,
       "weeklyFocus": "One sentence focus for the week, tied to monthly theme.",
-      "topPriorities": ["Priority 1 (specific)", "Priority 2 (specific)", "Priority 3 (specific)"],
+      "topPriorities": [
+        "Task: [Actionable task]. Execution: [Clear step-by-step direction on how to carry it out]",
+        "Task: [Actionable task]. Execution: [Clear step-by-step direction on how to carry it out]",
+        "Task: [Actionable task]. Execution: [Clear step-by-step direction on how to carry it out]"
+      ],
       "visibilityAction": "ONE specific visibility task this week (audience-facing, no sale).",
       "revenueAction": "ONE specific revenue task this week (a direct invitation to buy).",
       "followUpAction": "ONE specific follow-up task this week (nurture an existing lead).",

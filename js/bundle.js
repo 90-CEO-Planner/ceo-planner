@@ -921,7 +921,11 @@ OUTPUT FORMAT (return exactly this JSON shape):
       "weekNumber": 1,
       "monthIndex": 1,
       "weeklyFocus": "One sentence focus for the week, tied to monthly theme.",
-      "topPriorities": ["Priority 1 (specific)", "Priority 2 (specific)", "Priority 3 (specific)"],
+      "topPriorities": [
+        "Task: [Actionable task]. Execution: [Clear step-by-step direction on how to carry it out]",
+        "Task: [Actionable task]. Execution: [Clear step-by-step direction on how to carry it out]",
+        "Task: [Actionable task]. Execution: [Clear step-by-step direction on how to carry it out]"
+      ],
       "visibilityAction": "ONE specific visibility task this week (audience-facing, no sale).",
       "revenueAction": "ONE specific revenue task this week (a direct invitation to buy).",
       "followUpAction": "ONE specific follow-up task this week (nurture an existing lead).",
@@ -2503,6 +2507,10 @@ function renderPlanner() {
         }
     }
 
+    const quarterStartMonth = Math.floor(new Date().getMonth() / 3) * 3;
+    const currentMonthInQuarter = new Date().getMonth() - quarterStartMonth + 1;
+    const currentMilestone = store.goals?.milestones?.[`month${currentMonthInQuarter}`] || 'Not set';
+
     const win = activePlan ? activePlan.winCondition : (nextGeneratedPlan ? nextGeneratedPlan.winCondition : '');
     const p1 = activePlan && activePlan.topActions ? (activePlan.topActions[0] || '') : (nextGeneratedPlan && nextGeneratedPlan.topActions ? nextGeneratedPlan.topActions[0] : (store.goals?.priorities?.[0] || ''));
     const p2 = activePlan && activePlan.topActions ? (activePlan.topActions[1] || '') : (nextGeneratedPlan && nextGeneratedPlan.topActions ? nextGeneratedPlan.topActions[1] : (store.goals?.priorities?.[1] || ''));
@@ -2516,9 +2524,15 @@ function renderPlanner() {
     return `
         ${renderNav()}
         <div class="main-content dashboard-layout">
+            <div style="margin-bottom: 2rem; background: var(--color-primary-light); padding: 1rem; border-radius: var(--radius-md); border-left: 4px solid var(--color-primary-dark);">
+                <p style="margin:0; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-primary-dark); font-weight: 700;">Current 90-Day Focus</p>
+                <h3 style="margin: 0.25rem 0 0.5rem 0; color: var(--color-black);">${store.goals?.focus || 'Not set'}</h3>
+                <p style="margin:0; font-size: 0.85rem; color: var(--color-text-main);"><strong>Monthly Milestone:</strong> ${currentMilestone}</p>
+            </div>
+
             <div style="margin-bottom: 2rem;">
-                <h2>Weekly CEO Plan</h2>
-                <p style="color: var(--color-text-muted);">Set your intentions and priorities for the week ahead.</p>
+                <h2>${nextGeneratedPlan ? 'Review This Week\'s Roadmap' : 'Weekly CEO Plan'}</h2>
+                <p style="color: var(--color-text-muted);">${nextGeneratedPlan ? 'These are your AI-generated priorities based on your 90-day plan. Review and accept them, or edit as needed.' : 'Set your intentions and priorities for the week ahead.'}</p>
             </div>
 
             ${store.profile?.strategyMode ? `
@@ -2563,9 +2577,9 @@ function renderPlanner() {
                 <div class="form-group mt-6">
                     <label class="form-label" style="font-size: 1.1rem;">Top 3 Most Important Actions</label>
                     <p class="form-helper mb-2">${store.profile?.name ? store.profile.name + ", w" : "W"}hat three actions would move your business forward this week?</p>
-                    <input type="text" class="form-input mb-2" id="pa-1" value="${p1}" placeholder="1." required />
-                    <input type="text" class="form-input mb-2" id="pa-2" value="${p2}" placeholder="2." required />
-                    <input type="text" class="form-input" id="pa-3" value="${p3}" placeholder="3." required />
+                    <textarea class="form-textarea mb-2" id="pa-1" placeholder="1." style="min-height: 80px;" required>${p1}</textarea>
+                    <textarea class="form-textarea mb-2" id="pa-2" placeholder="2." style="min-height: 80px;" required>${p2}</textarea>
+                    <textarea class="form-textarea" id="pa-3" placeholder="3." style="min-height: 80px;" required>${p3}</textarea>
                 </div>
 
                 <div class="form-group mt-6">
