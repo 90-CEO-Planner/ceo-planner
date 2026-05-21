@@ -24,17 +24,20 @@ const appContainer = document.getElementById('app-container');
 // Simple Router
 function router() {
     const hash = window.location.hash || '#/';
+    const path = hash.split('?')[0];
     
     // Auth Intercept
     const isAuthenticated = localStorage.getItem('ceo_auth') === 'true';
     
     // Boot up the localized notification engine
     if (isAuthenticated) checkPushNotifications();
-    if (!isAuthenticated && hash !== '#/login' && hash !== '#/signup') {
+    
+    const isAuthRoute = path === '#/login' || path === '#/signup' || path === '#/forgot-password' || path === '#/reset-password';
+    if (!isAuthenticated && !isAuthRoute) {
         window.location.hash = '#/login';
         return;
     }
-    if (isAuthenticated && (hash === '#/login' || hash === '#/signup')) {
+    if (isAuthenticated && (path === '#/login' || path === '#/signup' || path === '#/forgot-password')) {
         window.location.hash = '#/';
         return;
     }
@@ -42,11 +45,11 @@ function router() {
     // Paywall Intercept
     if (isAuthenticated) {
         const subStatus = localStorage.getItem('ceo_sub_status');
-        if ((subStatus === 'incomplete' || subStatus === 'past_due' || subStatus === 'canceled' || subStatus === 'unpaid') && hash !== '#/billing') {
+        if ((subStatus === 'incomplete' || subStatus === 'past_due' || subStatus === 'canceled' || subStatus === 'unpaid') && path !== '#/billing') {
             window.location.hash = '#/billing';
             return;
         }
-        if (subStatus !== 'incomplete' && subStatus !== 'past_due' && subStatus !== 'canceled' && subStatus !== 'unpaid' && hash === '#/billing') {
+        if (subStatus !== 'incomplete' && subStatus !== 'past_due' && subStatus !== 'canceled' && subStatus !== 'unpaid' && path === '#/billing') {
             window.location.hash = '#/';
             return;
         }
@@ -58,17 +61,23 @@ function router() {
     const store = getStore();
     const isSetupComplete = store.goals && store.goals.focus !== '';
 
-    if (!isSetupComplete && hash !== '#/' && hash !== '#/wizard' && hash !== '#/login' && hash !== '#/signup' && hash !== '#/billing') {
+    if (!isSetupComplete && path !== '#/' && path !== '#/wizard' && !isAuthRoute && path !== '#/billing') {
         window.location.hash = '#/';
         return;
     }
 
-    switch(hash) {
+    switch(path) {
         case '#/login':
-            appContainer.innerHTML = renderAuth(false);
+            appContainer.innerHTML = renderAuth('login');
             break;
         case '#/signup':
-            appContainer.innerHTML = renderAuth(true);
+            appContainer.innerHTML = renderAuth('signup');
+            break;
+        case '#/forgot-password':
+            appContainer.innerHTML = renderAuth('forgot');
+            break;
+        case '#/reset-password':
+            appContainer.innerHTML = renderAuth('reset');
             break;
         case '#/billing':
             appContainer.innerHTML = renderBilling();
