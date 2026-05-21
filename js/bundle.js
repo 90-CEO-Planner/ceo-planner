@@ -5739,7 +5739,9 @@ function renderAuth(isSignup = false) {
     const title = isSignup ? "Create your account" : "Log in to your account";
     const subtitle = isSignup ? "Start your 90-day CEO journey today." : "Welcome back! Please enter your details.";
     const btnText = isSignup ? "Create Account" : "Sign In";
-    const switchText = isSignup ? "Already have an account? <a href='#/login' style='color: var(--color-primary-dark); text-decoration: none; font-weight: 600;'>Log in</a>" : "";
+    const switchText = isSignup 
+        ? "Already have an account? <a href='#/login' style='color: var(--color-primary-dark); text-decoration: none; font-weight: 600;'>Log in</a>" 
+        : "Just purchased? <a href='#/signup' style='color: var(--color-primary-dark); text-decoration: none; font-weight: 600;'>Create your account here</a>";
 
     return `
         <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--color-primary-light) 0%, var(--color-bg-main) 100%); padding: 1.5rem;">
@@ -5812,22 +5814,57 @@ function authAttachEvents() {
                 
                 if (isSignup) {
                     const name = document.getElementById('auth-name').value;
-                    // Real Supabase Signup
-                    db.auth.signUp({
-                        email: email,
-                        password: password,
-                        options: { data: { name: name } }
-                    }).then(async ({ data, error }) => {
-                        if (error) {
-                            alert("Sign up failed: " + error.message);
+                    
+                    // Verify email eligibility against paid signups table
+                    db.rpc('check_allowed_signup', { email_to_check: email }).then(async ({ data: isAllowed, error: rpcError }) => {
+                        if (rpcError) {
+                            console.error("Eligibility check failed:", rpcError);
+                        }
+                        
+                        if (!isAllowed) {
+                            alert("Sign up is only available for customers who have purchased a subscription. Please purchase a plan first, or verify you are using the same email address used during purchase.");
                             btn.innerText = originalText;
                             btn.style.opacity = '1';
-                        } else {
-                            localStorage.setItem('ceo_auth', 'true');
-                            localStorage.setItem('ceo_sub_status', 'trialing'); // Assume trialing on fresh signup
-                            window.location.hash = '#/';
-                            window.location.reload();
+                            return;
                         }
+                        
+                        // Real Supabase Signup
+                        db.auth.signUp({
+                            email: email,
+                            password: password,
+                            options: { data: { name: name } }
+                        }).then(async ({ data: signUpData, error: signUpError }) => {
+                            if (signUpError) {
+                                alert("Sign up failed: " + signUpError.message);
+                                btn.innerText = originalText;
+                                btn.style.opacity = '1';
+                            } else {
+                                let fetchedStatus = 'trialing'; // default fallback
+                                const userId = signUpData.user ? signUpData.user.id : null;
+                                if (userId) {
+                                    try {
+                                        // Wait briefly for trigger execution to complete
+                                        await new Promise(resolve => setTimeout(resolve, 500));
+                                        
+                                        const { data: profile } = await db
+                                            .from('profiles')
+                                            .select('subscription_status')
+                                            .eq('id', userId)
+                                            .single();
+                                        if (profile && profile.subscription_status) {
+                                            fetchedStatus = profile.subscription_status;
+                                        }
+                                    } catch (err) {
+                                        console.log("Error fetching subscription status on signup, defaulting to trialing.", err);
+                                    }
+                                }
+                                
+                                localStorage.setItem('ceo_auth', 'true');
+                                localStorage.setItem('ceo_sub_status', fetchedStatus);
+                                window.location.hash = '#/';
+                                window.location.reload();
+                            }
+                        });
                     });
                 } else {
                     // Real Supabase Login
@@ -6134,11 +6171,11 @@ function router() {
     // Paywall Intercept
     if (isAuthenticated) {
         const subStatus = localStorage.getItem('ceo_sub_status');
-        if ((subStatus === 'past_due' || subStatus === 'canceled' || subStatus === 'unpaid') && hash !== '#/billing') {
+        if ((subStatus === 'incomplete' || subStatus === 'past_due' || subStatus === 'canceled' || subStatus === 'unpaid') && hash !== '#/billing') {
             window.location.hash = '#/billing';
             return;
         }
-        if (subStatus !== 'past_due' && subStatus !== 'canceled' && subStatus !== 'unpaid' && hash === '#/billing') {
+        if (subStatus !== 'incomplete' && subStatus !== 'past_due' && subStatus !== 'canceled' && subStatus !== 'unpaid' && hash === '#/billing') {
             window.location.hash = '#/';
             return;
         }

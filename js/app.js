@@ -42,11 +42,11 @@ function router() {
     // Paywall Intercept
     if (isAuthenticated) {
         const subStatus = localStorage.getItem('ceo_sub_status');
-        if ((subStatus === 'past_due' || subStatus === 'canceled' || subStatus === 'unpaid') && hash !== '#/billing') {
+        if ((subStatus === 'incomplete' || subStatus === 'past_due' || subStatus === 'canceled' || subStatus === 'unpaid') && hash !== '#/billing') {
             window.location.hash = '#/billing';
             return;
         }
-        if (subStatus !== 'past_due' && subStatus !== 'canceled' && subStatus !== 'unpaid' && hash === '#/billing') {
+        if (subStatus !== 'incomplete' && subStatus !== 'past_due' && subStatus !== 'canceled' && subStatus !== 'unpaid' && hash === '#/billing') {
             window.location.hash = '#/';
             return;
         }
