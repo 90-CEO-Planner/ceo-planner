@@ -5767,9 +5767,7 @@ function renderAuth(mode = 'login') {
             <div class="card" style="width: 100%; max-width: 440px; padding: 2.5rem; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04); border: 1px solid rgba(255,255,255,0.5); backdrop-filter: blur(10px);">
                 
                 <div style="text-align: center; margin-bottom: 2rem;">
-                    <div style="display: inline-flex; align-items: center; justify-content: center; width: 48px; height: 48px; background: var(--color-primary); color: white; border-radius: 12px; margin-bottom: 1.5rem; box-shadow: 0 4px 6px -1px rgba(78, 14, 255, 0.3);">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>
-                    </div>
+                    <img src="./logo.png" alt="CEO Planner" style="max-height: 48px; max-width: 100%; object-fit: contain; margin-bottom: 1.5rem;">
                     <h2 style="font-size: 1.75rem; color: var(--color-black); margin-bottom: 0.5rem; letter-spacing: -0.02em;">${title}</h2>
                     <p style="color: var(--color-text-muted); font-size: 0.95rem;">${subtitle}</p>
                 </div>
