@@ -1,5 +1,32 @@
 // aiService.js
 
+const USER_GUIDE_TEXT = `
+# CEO Planner App User Guide
+
+Welcome to the CEO Planner, your business operating system.
+
+1. Core Philosophy:
+   - Vision: Set your 90-Day Vision (Focus, Outcome, Top 3 Priorities, Revenue Goal).
+   - Simplicity: Just 3 priorities a week, and 3 tasks a day (Daily 3).
+   - Visibility & Cash Flow: Every week requires marketing (Visibility) and selling (Revenue Action) tasks.
+
+2. Weekly Cadence:
+   - Monday Planning (Weekly Plan tab): Anchor vision, review AI-generated Weekly plan (Top 3, Visibility, Revenue, Follow-up actions), refine, and accept. Accepting populates your Daily 3.
+   - Daily Execution (Dashboard): Shows CEO Snapshot score, AI-recommended Next Best Action card, Daily 3 tasks (complete all 3 to build your streak), and 1-tap logging of sales/leads.
+   - Friday Review (Friday Review tab): Log Wins, rate completion %, write Bottlenecks, and receive an AI Focus Score and coaching critique.
+   - Streak counters: 'Plan' streak is consecutive weeks you have generated a Monday Plan; 'Review' streak is consecutive weeks you have completed a Friday Review.
+
+3. Revenue & Analytics:
+   - Revenue tab: Track conversion rates (Call Booking, Call Close, Pipeline Conversion).
+   - Log Sales/Leads: Set date, amount, source (Instagram, Referral, etc.), and offer.
+   - Export CSV: Instantly download your financial history as a spreadsheet.
+   - AI Executive Report: Generates a comprehensive strategic funnel briefing (can be downloaded as a text file).
+
+4. Managing Settings:
+   - Settings tab: Edit profile, business name, logo, 90-day targets, and planning day. Erase all data permanently in the Danger Zone.
+   - Chat Widget (Executive AI Coach): Floating chat assistant available on all core pages (hidden on wizard, auth, and billing) to review plans, offer strategies, and answer app questions.
+`;
+
 // Prepares the hyper-contextual system prompt by scraping the entire database
 function buildSystemPrompt() {
     const store = getStore();
@@ -90,7 +117,9 @@ Instructions:
 3. Highly Actionable: When providing tactical advice, don't just tell them what to do. Break the task down into specific, step-by-step MICRO-TASKS showing exactly HOW to execute it.
 4. Explain Your Rationale: If you disagree with their weekly actions because they don't align with the primary 90-Day Goal or #1 Bottleneck, forcefully but professionally challenge them. Explain exactly WHY you disagree and suggest what makes more sense based on their data.
 5. If they are behind on revenue, aggressively pivot them to direct sales/marketing actions.
-6. Avoid repetition. Be concise. Use bullet points for micro-tasks. NEVER provide generic business advice; always tie your critiques back to their specific bottleneck or revenue target.`;
+6. Avoid repetition. Be concise. Use bullet points for micro-tasks. NEVER provide generic business advice; always tie your critiques back to their specific bottleneck or revenue target.
+7. App Assistance: If the user asks how the app works, how to use specific features (like Monday plans, Daily 3, logging sales, Friday reviews, exporting CSV, or reset data), guide them using this official app guide:
+${USER_GUIDE_TEXT}`;
 
     return prompt;
 }
@@ -132,7 +161,7 @@ export async function generateMondayPlanDraft(reviewData) {
     const focus = store.goals?.focus || "None set yet";
     const bizName = store.profile?.businessName || "the company";
 
-    const prompt = `You are the AI CEO Advisor for ${bizName}. 
+    const prompt = `You are the Executive AI Coach for ${bizName}. 
 The CEO has just completed their Friday Review. Here is what they said:
 - What moved the business forward: ${reviewData.movedForward}
 - What worked well: ${reviewData.workedWell}

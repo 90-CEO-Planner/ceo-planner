@@ -9,6 +9,25 @@ export function renderRevenue() {
     const insights = getRevenueInsights();
     
     const currency = store.settings?.currency || '$';
+
+    const firstVisitDone = localStorage.getItem('first_revenue_visit_done') === 'true';
+    let firstVisitTooltipHtml = '';
+    if (!firstVisitDone) {
+        firstVisitTooltipHtml = `
+            <div id="revenue-first-visit-card" class="card mb-6" style="background: linear-gradient(135deg, var(--color-primary-light) 0%, var(--color-bg-main) 100%); border-left: 4px solid var(--color-primary); padding: 1.5rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; box-shadow: var(--shadow-sm); border-radius: 12px; border: 1px solid var(--color-border);">
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    <div style="font-size: 2.25rem;">📈</div>
+                    <div>
+                        <h4 style="margin: 0 0 0.25rem 0; font-size: 1.05rem; color: var(--color-primary-dark); font-weight: 700;">First Visit Guide</h4>
+                        <p style="margin: 0; font-size: 0.95rem; color: var(--color-text-main); line-height: 1.5;">
+                            This is your command centre. Log your first lead now — it only takes one tap, and watching your pipeline fill up is seriously motivating. Try it ➡️
+                        </p>
+                    </div>
+                </div>
+                <button id="btn-close-revenue-tooltip" class="btn btn-sm btn-ghost" style="font-size: 1.25rem; color: var(--color-text-muted); cursor: pointer; align-self: flex-start; padding: 0.25rem 0.5rem; background: none; border: none;">&times;</button>
+            </div>
+        `;
+    }
     
     // Core calculations
     const leads = store.leads?.entries || [];
@@ -45,13 +64,17 @@ export function renderRevenue() {
                         </button>
                         <button id="btn-report-ai" class="btn btn-primary btn-sm" style="display: flex; align-items: center; gap: 0.5rem; background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark)); border: none; box-shadow: var(--shadow-sm);">
                             🤖 AI Executive Report
+                            ${renderTooltip("A comprehensive, AI-generated analysis of your business's financial health, sales pipeline, and growth bottlenecks.", "It synthesizes your traffic, calls, conversions, and revenue into a clear strategy briefing and lists specific, high-priority tasks to help you optimize your funnel.")}
                         </button>
                     </div>
                     <div style="background: var(--color-secondary-light); padding: 0.5rem 1rem; border-radius: var(--radius-full); display: flex; align-items: center; gap: 0.5rem; font-weight: 600; color: var(--color-secondary-dark);">
                         Quarter: ${insights.momentum}
+                        ${renderTooltip("Your quarterly revenue momentum score, comparing your current pace against your target goal.", "It tells you if you are ahead, on track, behind, or if you need to log more entries ('Not enough data') to compute a realistic projection.")}
                     </div>
                 </div>
             </div>
+
+            ${firstVisitTooltipHtml}
 
             <!-- Top Cards -->
             <div class="grid-cols-4 mb-6">
@@ -386,7 +409,7 @@ export function renderRevenue() {
                         <div style="text-align: center; padding: 3rem 0;">
                             <div class="spinner" style="margin: 0 auto 1rem auto; width: 40px; height: 40px; border: 4px solid var(--color-bg-light); border-top: 4px solid var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite;"></div>
                             <h3 style="color: var(--color-text-main);">Analyzing Pipeline Data...</h3>
-                            <p style="color: var(--color-text-muted);">The AI Coach is reviewing your revenue, leads, and conversions.</p>
+                            <p style="color: var(--color-text-muted);">The Executive AI Coach is reviewing your revenue, leads, and conversions.</p>
                         </div>
                     </div>
                 </div>
@@ -460,7 +483,7 @@ window.generateAiReport = async function() {
         <div style="text-align: center; padding: 3rem 0;">
             <div class="spinner" style="margin: 0 auto 1rem auto; width: 40px; height: 40px; border: 4px solid var(--color-bg-light); border-top: 4px solid var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite;"></div>
             <h3 style="color: var(--color-text-main);">Evaluating Pipeline Data...</h3>
-            <p style="color: var(--color-text-muted);">The AI Coach is drafting your strategic briefing.</p>
+            <p style="color: var(--color-text-muted);">The Executive AI Coach is drafting your strategic briefing.</p>
         </div>
     `;
 
@@ -524,7 +547,7 @@ window.generateAiReport = async function() {
         }
 
     } catch(e) {
-        aiContent.innerHTML = `<p style="color: var(--color-error); text-align: center;">Warning: The AI Coach failed to analyze the data. Error: ${e.message}</p>`;
+        aiContent.innerHTML = `<p style="color: var(--color-error); text-align: center;">Warning: The Executive AI Coach failed to analyze the data. Error: ${e.message}</p>`;
     }
 };
 
@@ -538,6 +561,15 @@ window.closeAiModal = function() {
 function revenueAttachEvents() {
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
     document.getElementById('nav-revenue')?.classList.add('active');
+
+    const closeTooltipBtn = document.getElementById('btn-close-revenue-tooltip');
+    if (closeTooltipBtn) {
+        closeTooltipBtn.addEventListener('click', () => {
+            localStorage.setItem('first_revenue_visit_done', 'true');
+            const card = document.getElementById('revenue-first-visit-card');
+            if (card) card.style.display = 'none';
+        });
+    }
 
     const toggleTabs = [
         { id: 'tab-rev', formId: 'rev-tab-wrapper' },

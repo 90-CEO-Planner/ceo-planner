@@ -220,7 +220,7 @@ function reviewAttachEvents() {
             addReview(review);
 
             // Show success and redirect
-            alert("Review saved! Your AI Advisor has drafted your action plan for next week.\\n\\nTake some well-deserved rest off.");
+            alert("Review saved! Your Executive AI Coach has drafted your action plan for next week.\\n\\nTake some well-deserved rest off.");
             window.location.hash = '#/progress';
         });
     }

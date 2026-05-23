@@ -110,7 +110,7 @@ function authAttachEvents() {
         
         if (isForgot) {
             if (email) {
-                db.auth.resetPasswordForEmail(email, {
+                window.db.auth.resetPasswordForEmail(email, {
                     redirectTo: window.location.origin + window.location.pathname + '#/reset-password'
                 }).then(({ error }) => {
                     btn.innerText = originalText;
@@ -125,7 +125,7 @@ function authAttachEvents() {
             }
         } else if (isReset) {
             if (password) {
-                db.auth.updateUser({ password: password }).then(({ error }) => {
+                window.db.auth.updateUser({ password: password }).then(({ error }) => {
                     btn.innerText = originalText;
                     btn.style.opacity = '1';
                     if (error) {
@@ -140,7 +140,7 @@ function authAttachEvents() {
             const name = document.getElementById('auth-name').value;
             
             // Verify email eligibility against paid signups table
-            db.rpc('check_allowed_signup', { email_to_check: email }).then(async ({ data: isAllowed, error: rpcError }) => {
+            window.db.rpc('check_allowed_signup', { email_to_check: email }).then(async ({ data: isAllowed, error: rpcError }) => {
                 if (rpcError) {
                     console.error("Eligibility check failed:", rpcError);
                 }
@@ -153,7 +153,7 @@ function authAttachEvents() {
                 }
                 
                 // Real Supabase Signup
-                db.auth.signUp({
+                window.db.auth.signUp({
                     email: email,
                     password: password,
                     options: { data: { name: name } }
@@ -170,7 +170,7 @@ function authAttachEvents() {
                                 // Wait briefly for trigger execution to complete
                                 await new Promise(resolve => setTimeout(resolve, 500));
                                 
-                                const { data: profile } = await db
+                                const { data: profile } = await window.db
                                     .from('profiles')
                                     .select('subscription_status')
                                     .eq('id', userId)
@@ -192,7 +192,7 @@ function authAttachEvents() {
             });
         } else {
             // Real Supabase Login
-            db.auth.signInWithPassword({
+            window.db.auth.signInWithPassword({
                 email: email,
                 password: password
             }).then(async ({ data, error }) => {
@@ -203,7 +203,7 @@ function authAttachEvents() {
                 } else {
                     // Fetch user's cloud data and populate local storage
                     try {
-                        const { data: dbData, error: dbError } = await db
+                        const { data: dbData, error: dbError } = await window.db
                             .from('user_data')
                             .select('data')
                             .eq('user_id', data.user.id)
@@ -218,7 +218,7 @@ function authAttachEvents() {
 
                     // Fetch Subscription Status separately
                     try {
-                        const { data: profile } = await db
+                        const { data: profile } = await window.db
                             .from('profiles')
                             .select('subscription_status')
                             .eq('id', data.user.id)

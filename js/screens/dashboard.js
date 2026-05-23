@@ -1,4 +1,4 @@
-import { getStore, getRevenueInsights, addRevenueEntry, updateDailyLog, addLeadEntry, applyGeneratedPlan } from '../store.js';
+import { getStore, getRevenueInsights, addRevenueEntry, updateDailyLog, addLeadEntry, applyGeneratedPlan, updateProfile } from '../store.js';
 import { renderNav } from '../components/nav.js';
 import { renderTooltip } from '../components/tooltip.js';
 import { generate90DayActionPlan } from '../aiService.js';
@@ -18,6 +18,38 @@ export function renderDashboard() {
     const leadToSaleConversion = totalLeads > 0 ? ((salesCount / totalLeads) * 100).toFixed(1) : 0;
     
     const quickOffers = store.revenue?.quickOffers || [];
+
+    // --- Activation Strategy Prompts ---
+    let setupBannerHtml = '';
+    if (!g.focus) {
+        setupBannerHtml = `
+            <div style="background: linear-gradient(90deg, var(--color-primary) 0%, var(--color-primary-dark) 100%); color: white; padding: 0.75rem 1.5rem; text-align: center; font-size: 0.95rem; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 0.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); position: relative; z-index: 10;">
+                <span>You haven't set your 90-Day Vision yet — your Daily 3 is waiting.</span>
+                <a href="#/wizard" style="color: white; text-decoration: underline; font-weight: 700; display: inline-flex; align-items: center; gap: 0.25rem;">Set it up now (3 mins) 🎯</a>
+            </div>
+        `;
+    }
+
+    let trialWarningHtml = '';
+    const trialStartDateStr = store.profile?.trialStartDate;
+    if (trialStartDateStr && store.profile?.subscription_status === 'trialing') {
+        const trialStart = new Date(trialStartDateStr);
+        const diffMs = new Date() - trialStart;
+        const elapsedDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+        const remainingDays = 14 - elapsedDays;
+        
+        // Show banner on Day 12, 13, 14
+        if (elapsedDays >= 11 && elapsedDays <= 14) {
+            const endDate = new Date(trialStart.getTime() + 14 * 24 * 60 * 60 * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+            trialWarningHtml = `
+                <div style="background: #FFF3CD; border-bottom: 1px solid #FFEBAA; color: #856404; padding: 0.75rem 1.5rem; text-align: center; font-size: 0.95rem; font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 0.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); position: relative; z-index: 10;">
+                    <span>Your 14-day free trial is ending in ${remainingDays} days (on ${endDate}). You will be automatically moved to your paid plan to keep uninterrupted access.</span>
+                    <a href="#/settings" style="color: #533F03; text-decoration: underline; font-weight: 700; display: inline-flex; align-items: center; gap: 0.25rem;">Manage Subscription</a>
+                </div>
+            `;
+        }
+    }
+    // ------------------------------------
 
     // Check if there is an active weekly plan (ignore unapplied AI-generated drafts)
     const validPlans = store.weeklyPlans.filter(p => !p.generated || p.applied);
@@ -44,6 +76,8 @@ export function renderDashboard() {
 
     let html = `
         ${renderNav()}
+        ${setupBannerHtml}
+        ${trialWarningHtml}
         <div class="main-content dashboard-layout">
             <div class="flex justify-between items-center mb-6 flex-mobile-col" style="gap: 1rem; align-items: flex-start;">
                 <div>
@@ -64,6 +98,7 @@ export function renderDashboard() {
                     </button>
                     <div style="background: var(--color-secondary-light); padding: 0.5rem 1rem; border-radius: var(--radius-full); display: flex; align-items: center; gap: 0.5rem; font-weight: 600; color: var(--color-secondary-dark);">
                         Plan: ${store.planningStreak || 0}w | Review: ${streak}w
+                        ${renderTooltip("Your weekly CEO cadence streaks. 'Plan' is consecutive weeks you have generated a Monday Plan; 'Review' is consecutive weeks you have completed a Friday Review.", "Maintaining this weekly habit helps you stay aligned with your 90-day trajectory. Missing a week resets the streak.")}
                     </div>
                 </div>
             </div>
@@ -340,21 +375,30 @@ export function renderDashboard() {
     const todayStrDash = new Date().toISOString().split('T')[0];
     let todaysLog = store.dailyLogs[todayStrDash];
 
-    if (!todaysLog) {
-        const currentPriorities = activePlan && activePlan.topActions ? activePlan.topActions : g.priorities;
-        let generatedTasks = generateDaily3([0, 1, 2].map(i => currentPriorities[i] || ''), activePlan);
-        todaysLog = generatedTasks.map(t => ({ text: t, done: false }));
-        window._tempGeneratedTodaysLog = todaysLog; // to be saved on attachEvents
-    }
-
-    todaysLog.forEach((taskObj, i) => {
-        dailyTasksHtml += `
-            <label style="display: flex; align-items: center; gap: 0.75rem; cursor: pointer; padding: 0.5rem; border-radius: var(--radius-sm); transition: background-color var(--transition-fast);" class="dailyhover">
-                <input type="checkbox" id="daily-task-${i}" ${taskObj.done ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: var(--color-primary);">
-                <span style="font-size: 0.95rem; font-weight: 500; ${taskObj.done ? 'text-decoration: line-through; color: var(--color-text-muted);' : ''}">${taskObj.text}</span>
-            </label>
+    if (!g.focus) {
+        dailyTasksHtml = `
+            <div style="padding: 1.5rem; background: var(--color-bg-light); border-radius: var(--radius-sm); border: 1px dashed var(--color-border); text-align: center;">
+                <p style="font-size: 0.9rem; color: var(--color-text-muted); margin: 0 0 1rem 0;">Setup your 90-Day Plan in the wizard to unlock your daily actions.</p>
+                <a href="#/wizard" class="btn btn-primary btn-sm" style="display: inline-block;">Start Setup</a>
+            </div>
         `;
-    });
+    } else {
+        if (!todaysLog) {
+            const currentPriorities = activePlan && activePlan.topActions ? activePlan.topActions : g.priorities;
+            let generatedTasks = generateDaily3([0, 1, 2].map(i => currentPriorities[i] || ''), activePlan);
+            todaysLog = generatedTasks.map(t => ({ text: t, done: false }));
+            window._tempGeneratedTodaysLog = todaysLog; // to be saved on attachEvents
+        }
+
+        todaysLog.forEach((taskObj, i) => {
+            dailyTasksHtml += `
+                <label style="display: flex; align-items: center; gap: 0.75rem; cursor: pointer; padding: 0.5rem; border-radius: var(--radius-sm); transition: background-color var(--transition-fast);" class="dailyhover">
+                    <input type="checkbox" id="daily-task-${i}" ${taskObj.done ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: var(--color-primary);">
+                    <span style="font-size: 0.95rem; font-weight: 500; ${taskObj.done ? 'text-decoration: line-through; color: var(--color-text-muted);' : ''}">${taskObj.text}</span>
+                </label>
+            `;
+        });
+    }
 
     html += `
             <div class="grid-sidebar mb-6">
@@ -426,6 +470,18 @@ export function renderDashboard() {
                         </div>
                         <button type="submit" class="btn btn-primary" style="width: 100%;">Save</button>
                     </form>
+                </div>
+            </div>
+            
+            <!-- Daily 3 Celebration Modal -->
+            <div id="daily3-celebration-modal" class="modal-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; backdrop-filter: blur(4px);">
+                <div class="card" style="width: 100%; max-width: 440px; padding: 2.5rem; position: relative; text-align: center; border-radius: 16px; border: 1px solid rgba(255,255,255,0.5); box-shadow: 0 20px 25px -5px rgba(0,0,0,0.2); background: white;">
+                    <div style="font-size: 3.5rem; margin-bottom: 1.5rem; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.1));">🔥</div>
+                    <h3 style="font-size: 1.5rem; margin-bottom: 0.75rem; color: var(--color-black); font-family: var(--font-heading); font-weight: 700;">First Daily 3 Complete!</h3>
+                    <p style="color: var(--color-text-main); font-size: 1.05rem; line-height: 1.6; margin-bottom: 2rem;">
+                        You're already ahead of 80% of entrepreneurs today. See you tomorrow.
+                    </p>
+                    <button id="btn-close-celebration" class="btn btn-primary" style="width: 100%; padding: 0.85rem; font-size: 1rem; border-radius: 8px;">Got it, thank you!</button>
                 </div>
             </div>
         `;
@@ -707,12 +763,33 @@ function dashboardAttachEvents() {
                 if (log[i]) {
                     log[i].done = e.target.checked;
                     updateDailyLog(todayStr, log);
-                    // Rerender dashboard to apply strikethrough styling and coach engine updates safely
-                    window.dispatchEvent(new Event('hashchange'));
+                    
+                    // Check if all 3 are completed and firstDaily3Completed is not set
+                    const allDone = log.length === 3 && log.every(t => t.done);
+                    if (allDone && !updatedStore.profile?.firstDaily3Completed) {
+                        updateProfile({ firstDaily3Completed: true });
+                        const modal = document.getElementById('daily3-celebration-modal');
+                        if (modal) {
+                            modal.style.display = 'flex';
+                        }
+                    } else {
+                        // Rerender dashboard to apply strikethrough styling and coach engine updates safely
+                        window.dispatchEvent(new Event('hashchange'));
+                    }
                 }
             });
         }
     });
+
+    const closeCelebrationBtn = document.getElementById('btn-close-celebration');
+    const celebrationModal = document.getElementById('daily3-celebration-modal');
+    if (closeCelebrationBtn && celebrationModal) {
+        closeCelebrationBtn.addEventListener('click', () => {
+            celebrationModal.style.display = 'none';
+            // Reload screen to show completed task changes
+            window.dispatchEvent(new Event('hashchange'));
+        });
+    }
 
     // Dismiss AI Pulses
     document.querySelectorAll('.btn-dismiss-pulse').forEach(btn => {

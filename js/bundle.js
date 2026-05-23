@@ -26,7 +26,8 @@ const defaultState = {
         bottleneck: '',
         strategyMode: '', // Phase 2: 'First Sale Sprint', 'Offer Launch Quarter', 'Audience Growth Quarter', 'CEO Reset'
         planningDay: 'Monday',
-        reminderTimes: []
+        reminderTimes: [],
+        trialStartDate: '' // ISO timestamp for notification and banner scheduling
     },
     goals: {
         focus: '',
@@ -667,6 +668,33 @@ function seedMockData() {
 // --- js\aiService.js ---
 // aiService.js
 
+const USER_GUIDE_TEXT = `
+# CEO Planner App User Guide
+
+Welcome to the CEO Planner, your business operating system.
+
+1. Core Philosophy:
+   - Vision: Set your 90-Day Vision (Focus, Outcome, Top 3 Priorities, Revenue Goal).
+   - Simplicity: Just 3 priorities a week, and 3 tasks a day (Daily 3).
+   - Visibility & Cash Flow: Every week requires marketing (Visibility) and selling (Revenue Action) tasks.
+
+2. Weekly Cadence:
+   - Monday Planning (Weekly Plan tab): Anchor vision, review AI-generated Weekly plan (Top 3, Visibility, Revenue, Follow-up actions), refine, and accept. Accepting populates your Daily 3.
+   - Daily Execution (Dashboard): Shows CEO Snapshot score, AI-recommended Next Best Action card, Daily 3 tasks (complete all 3 to build your streak), and 1-tap logging of sales/leads.
+   - Friday Review (Friday Review tab): Log Wins, rate completion %, write Bottlenecks, and receive an AI Focus Score and coaching critique.
+   - Streak counters: 'Plan' streak is consecutive weeks you have generated a Monday Plan; 'Review' streak is consecutive weeks you have completed a Friday Review.
+
+3. Revenue & Analytics:
+   - Revenue tab: Track conversion rates (Call Booking, Call Close, Pipeline Conversion).
+   - Log Sales/Leads: Set date, amount, source (Instagram, Referral, etc.), and offer.
+   - Export CSV: Instantly download your financial history as a spreadsheet.
+   - AI Executive Report: Generates a comprehensive strategic funnel briefing (can be downloaded as a text file).
+
+4. Managing Settings:
+   - Settings tab: Edit profile, business name, logo, 90-day targets, and planning day. Erase all data permanently in the Danger Zone.
+   - Chat Widget (Executive AI Coach): Floating chat assistant available on all core pages (hidden on wizard, auth, and billing) to review plans, offer strategies, and answer app questions.
+`;
+
 // Prepares the hyper-contextual system prompt by scraping the entire database
 function buildSystemPrompt() {
     const store = getStore();
@@ -757,7 +785,9 @@ Instructions:
 3. Highly Actionable: When providing tactical advice, don't just tell them what to do. Break the task down into specific, step-by-step MICRO-TASKS showing exactly HOW to execute it.
 4. Explain Your Rationale: If you disagree with their weekly actions because they don't align with the primary 90-Day Goal or #1 Bottleneck, forcefully but professionally challenge them. Explain exactly WHY you disagree and suggest what makes more sense based on their data.
 5. If they are behind on revenue, aggressively pivot them to direct sales/marketing actions.
-6. Avoid repetition. Be concise. Use bullet points for micro-tasks. NEVER provide generic business advice; always tie your critiques back to their specific bottleneck or revenue target.`;
+6. Avoid repetition. Be concise. Use bullet points for micro-tasks. NEVER provide generic business advice; always tie your critiques back to their specific bottleneck or revenue target.
+7. App Assistance: If the user asks how the app works, how to use specific features (like Monday plans, Daily 3, logging sales, Friday reviews, exporting CSV, or reset data), guide them using this official app guide:
+${USER_GUIDE_TEXT}`;
 
     return prompt;
 }
@@ -799,7 +829,7 @@ async function generateMondayPlanDraft(reviewData) {
     const focus = store.goals?.focus || "None set yet";
     const bizName = store.profile?.businessName || "the company";
 
-    const prompt = `You are the AI CEO Advisor for ${bizName}. 
+    const prompt = `You are the Executive AI Coach for ${bizName}. 
 The CEO has just completed their Friday Review. Here is what they said:
 - What moved the business forward: ${reviewData.movedForward}
 - What worked well: ${reviewData.workedWell}
@@ -1043,11 +1073,11 @@ function renderTooltip(whatStr, whyStr) {
 
 function renderWidgetMessage(role, content) {
     const isAi = role === 'assistant';
-    const bg = isAi ? '#F8FAFC' : 'var(--color-primary)';
-    const color = isAi ? 'var(--color-text-main)' : 'white';
+    const bg = isAi ? '#F8FAFC' : 'var(--color-primary-light)';
+    const color = 'var(--color-black)';
     const align = isAi ? 'flex-start' : 'flex-end';
     const radius = isAi ? '16px 16px 16px 4px' : '16px 16px 4px 16px';
-    const border = isAi ? '1px solid var(--color-border)' : 'none';
+    const border = '1px solid var(--color-border)';
 
     let formattedContent = content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>');
 
@@ -1068,6 +1098,16 @@ function initChatWidget() {
     widgetContainer.style.zIndex = '9999';
     widgetContainer.style.fontFamily = "'Inter', sans-serif";
 
+    // Hide widget on wizard, auth, and billing pages initially
+    const hash = window.location.hash || '#/';
+    const path = hash.split('?')[0];
+    const isAuthRoute = path === '#/login' || path === '#/signup' || path === '#/forgot-password' || path === '#/reset-password';
+    if (path === '#/wizard' || isAuthRoute || path === '#/billing') {
+        widgetContainer.style.display = 'none';
+    } else {
+        widgetContainer.style.display = 'block';
+    }
+
     widgetContainer.innerHTML = `
         <!-- Floating Chat Window (Hidden by default) -->
         <div id="ai-chat-window" style="display: none; position: absolute; bottom: 70px; right: 0; width: 350px; height: 500px; background: white; border-radius: 16px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.1); border: 1px solid var(--color-border); flex-direction: column; overflow: hidden; transform-origin: bottom right; transition: all 0.2s ease;">
@@ -1077,7 +1117,7 @@ function initChatWidget() {
                 <div style="display: flex; align-items: center; gap: 0.75rem;">
                     <div style="width: 32px; height: 32px; border-radius: 50%; background: rgba(255,255,255,0.2); display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 0.85rem;">AI</div>
                     <div>
-                        <h3 style="margin: 0; font-size: 0.95rem; font-weight: 600;">CEO Advisor</h3>
+                        <h3 style="margin: 0; font-size: 0.95rem; font-weight: 600;">Executive AI Coach</h3>
                     </div>
                 </div>
                 <!-- Clear Chat Button -->
@@ -1094,12 +1134,23 @@ function initChatWidget() {
             <!-- Input Form -->
             <div style="padding: 0.75rem 1rem; border-top: 1px solid var(--color-border); background: #F8FAFC;">
                 <form id="ai-widget-form" style="display: flex; gap: 0.5rem; margin: 0;">
-                    <input type="text" id="ai-widget-input" placeholder="Ask your Co-Pilot..." style="flex: 1; border-radius: 20px; border: 1px solid var(--color-border); padding: 0.5rem 1rem; font-size: 0.85rem; outline: none; transition: border-color 0.2s;" autocomplete="off" required>
+                    <input type="text" id="ai-widget-input" placeholder="Ask your Co-Pilot..." style="flex: 1; border-radius: 20px; border: 1px solid var(--color-border); padding: 0.5rem 1rem; font-size: 0.85rem; color: var(--color-black); outline: none; transition: border-color 0.2s;" autocomplete="off" required>
                     <button type="submit" id="ai-widget-submit" style="background: var(--color-primary); color: white; border: none; border-radius: 50%; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; transition: transform 0.1s;">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-left: -2px;"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
                     </button>
                 </form>
             </div>
+        </div>
+
+        <!-- Onboarding Coach Tooltip Popover -->
+        <div id="ai-coach-tooltip-popover" style="display: ${localStorage.getItem('first_coach_visit_done') === 'true' ? 'none' : 'block'}; position: absolute; bottom: 75px; right: 0; width: 280px; background: white; color: var(--color-text-main); padding: 1rem; border-radius: 12px; border: 1px solid var(--color-primary-light); border-left: 4px solid var(--color-primary); box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); z-index: 9998;">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem; margin-bottom: 0.25rem;">
+                <strong style="color: var(--color-primary-dark); font-size: 0.9rem;">Meet Your Executive AI Coach</strong>
+                <button id="btn-close-coach-tooltip" style="background: none; border: none; font-size: 1.1rem; color: var(--color-text-muted); cursor: pointer; padding: 0;">&times;</button>
+            </div>
+            <p style="margin: 0; font-size: 0.85rem; line-height: 1.4;">
+                Your Executive AI Coach knows your goals and your numbers. Ask it anything — or hit 'Generate Executive Report' to see exactly where your funnel needs work.
+            </p>
         </div>
 
         <!-- Floating Toggle Button -->
@@ -1124,24 +1175,39 @@ function initChatWidget() {
 
     let isOpen = false;
 
+    // Dismiss Tooltip logic
+    const dismissTooltip = () => {
+        localStorage.setItem('first_coach_visit_done', 'true');
+        const tooltipPopover = document.getElementById('ai-coach-tooltip-popover');
+        if (tooltipPopover) tooltipPopover.style.display = 'none';
+    };
+
+    const closeCoachTooltipBtn = document.getElementById('btn-close-coach-tooltip');
+    if (closeCoachTooltipBtn) {
+        closeCoachTooltipBtn.addEventListener('click', (e) => {
+            e.stopPropagation(); // prevent opening chat
+            dismissTooltip();
+        });
+    }
+
     // Load History Function
     const loadMemory = () => {
         if (!window.ceoChatHistory || window.ceoChatHistory.length === 0) {
             window.ceoChatHistory = [];
-            const greeting = `Hello! I am your Executive AI Advisor. I have your 90-day goals, active bottleneck, and recent task history fully loaded in my context. How can I accelerate your productivity today?`;
+            const greeting = `Hello! I am your Executive AI Coach. I have your 90-day goals, active bottleneck, and recent task history fully loaded in my context. How can I accelerate your productivity today?`;
             
             messagesEl.innerHTML = renderWidgetMessage('assistant', greeting);
             
             // Inject Quick Prompt Chips
             messagesEl.innerHTML += `
                 <div style="display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.25rem;">
-                    <button type="button" onclick="document.getElementById('ai-widget-input').value='Critique my latest weekly plan: are there too many distractions?'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-primary); color: var(--color-primary); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
+                    <button type="button" onclick="document.getElementById('ai-widget-input').value='Critique my latest weekly plan: are there too many distractions?'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-text-muted); color: var(--color-black); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
                         🎯 <b>Plan Alignment:</b> Critique my weekly priorities.
                     </button>
-                    <button type="button" onclick="document.getElementById('ai-widget-input').value='Give me 3 specific, fast actions I can take this week to overcome my main bottleneck.'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-primary); color: var(--color-primary); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
+                    <button type="button" onclick="document.getElementById('ai-widget-input').value='Give me 3 specific, fast actions I can take this week to overcome my main bottleneck.'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-text-muted); color: var(--color-black); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
                         🚧 <b>Bottleneck Resolution:</b> Give me 3 fast actions to unblock me.
                     </button>
-                    <button type="button" onclick="document.getElementById('ai-widget-input').value='Based on my current business stage and goals, what is the #1 revenue-generating action I should focus on today?'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-primary); color: var(--color-primary); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
+                    <button type="button" onclick="document.getElementById('ai-widget-input').value='Based on my current business stage and goals, what is the #1 revenue-generating action I should focus on today?'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-text-muted); color: var(--color-black); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
                         💰 <b>Revenue Focus:</b> What is the #1 action I should take today?
                     </button>
                 </div>
@@ -1157,6 +1223,7 @@ function initChatWidget() {
 
     // Toggle Window
     toggleBtn.addEventListener('click', () => {
+        dismissTooltip();
         isOpen = !isOpen;
         if (isOpen) {
             chatWindow.style.display = 'flex';
@@ -1196,7 +1263,7 @@ function initChatWidget() {
 
         const loadingId = 'wid-load-' + Date.now();
         messagesEl.innerHTML += `
-            <div id="${loadingId}" style="align-self: flex-start; padding: 0.5rem 1rem; color: var(--color-text-muted); font-size: 0.8rem; font-style: italic;">
+            <div id="${loadingId}" style="align-self: flex-start; padding: 0.5rem 1rem; color: var(--color-black); font-size: 0.8rem; font-style: italic;">
                 Thinking...
             </div>
         `;
@@ -1303,27 +1370,26 @@ function welcomeAttachEvents() {
 // wizard.js
 
 let currentStep = 1;
-const TOTAL_STEPS = 6;
+const TOTAL_STEPS = 5;
 
 function renderWizard() {
     window.setScreenModule({ attachEvents: wizardAttachEvents });
     return `
-        <div class="main-content" style="max-width: 700px; padding-top: 5vh;">
-            <div style="margin-bottom: 2rem;">
-                <h2 style="color: var(--color-black);">Build Your 90-Day CEO Plan</h2>
-                <p style="color: var(--color-text-muted);">Step ${currentStep} of 6</p>
+        <div class="main-content" style="max-width: 600px; padding-top: 5vh;">
+            <div style="margin-bottom: 2rem; text-align: center;">
+                <h2 style="color: var(--color-black); font-size: 1.75rem;">Build Your 90-Day CEO Plan</h2>
+                <p style="color: var(--color-text-muted);">Step ${currentStep} of ${TOTAL_STEPS}</p>
             </div>
 
-            <div class="wizard-progress">
+            <div class="wizard-progress" style="display: flex; justify-content: center; gap: 0.5rem; margin-bottom: 2rem;">
                 <div class="wizard-step ${currentStep >= 1 ? 'active' : ''} ${currentStep > 1 ? 'completed' : ''}">1</div>
                 <div class="wizard-step ${currentStep >= 2 ? 'active' : ''} ${currentStep > 2 ? 'completed' : ''}">2</div>
                 <div class="wizard-step ${currentStep >= 3 ? 'active' : ''} ${currentStep > 3 ? 'completed' : ''}">3</div>
                 <div class="wizard-step ${currentStep >= 4 ? 'active' : ''} ${currentStep > 4 ? 'completed' : ''}">4</div>
-                <div class="wizard-step ${currentStep >= 5 ? 'active' : ''} ${currentStep > 5 ? 'completed' : ''}">5</div>
-                <div class="wizard-step ${currentStep >= 6 ? 'active' : ''}">6</div>
+                <div class="wizard-step ${currentStep >= 5 ? 'active' : ''}">5</div>
             </div>
 
-            <div class="card" id="wizard-content">
+            <div class="card" id="wizard-content" style="padding: 2.5rem; box-shadow: var(--shadow-md); border-radius: var(--radius-lg); background: white;">
                 ${renderStepContent()}
             </div>
         </div>
@@ -1336,60 +1402,32 @@ function renderStepContent() {
 
     if (currentStep === 1) {
         return `
-            <h3 class="mb-2">Your Workspace</h3>
-            <p class="form-helper mb-6" style="font-size: 0.9rem;">Let's customize your command center.</p>
-            
-            <form id="wizard-form-1">
-                <div class="form-group">
-                    <label class="form-label">Your Name</label>
-                    <input type="text" class="form-input" id="profile-name" value="${store.profile?.name || ''}" placeholder="e.g., Jen" required />
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Business Name</label>
-                    <input type="text" class="form-input" id="profile-business" value="${store.profile?.businessName || ''}" placeholder="e.g., The Marketing Co." required />
-                </div>
-                <div class="form-group mt-6">
-                    <label class="form-label">Business Logo (Optional)</label>
-                    <input type="file" class="form-input" id="logo-upload" accept="image/*" style="padding: 0.5rem;" />
-                    <span class="form-helper">Upload a square image to display in your navigation bar.</span>
-                </div>
-                <div class="flex justify-between mt-8">
-                    <button type="button" class="btn btn-ghost" disabled>Back</button>
-                    <button type="submit" class="btn btn-primary">Next Step</button>
-                </div>
-            </form>
+            <div style="text-align: center; padding: 1rem 0;">
+                <div style="font-size: 3.5rem; margin-bottom: 1.5rem; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.05));">🎯</div>
+                <h3 style="font-size: 1.5rem; margin-bottom: 1rem; color: var(--color-black); font-family: var(--font-heading); font-weight: 700;">Welcome to CEO Planner</h3>
+                <p style="color: var(--color-text-muted); font-size: 1.05rem; margin-bottom: 2.5rem; line-height: 1.6;">
+                    Let's set your 90-day goal. This takes 3 minutes and unlocks your personalised Daily 3 action plan.
+                </p>
+                <form id="wizard-form-1">
+                    <button type="submit" class="btn btn-primary" style="width: 100%; padding: 0.85rem; font-size: 1.05rem; border-radius: 8px;">Let's Begin</button>
+                </form>
+            </div>
         `;
     }
 
     if (currentStep === 2) {
         return `
-            <h3 class="mb-2">Define your 90-Day Focus</h3>
-            <p class="form-helper mb-6" style="font-size: 0.9rem;">What is the ONE main objective you are driving towards? A tight focus prevents idea-hopping.</p>
+            <h3 class="mb-2" style="font-family: var(--font-heading); font-weight: 700;">Define your 90-Day Focus</h3>
+            <p class="form-helper mb-6" style="font-size: 0.95rem; color: var(--color-text-muted); line-height: 1.5;">What is the ONE main objective you are driving towards? A tight focus prevents idea-hopping.</p>
             
             <form id="wizard-form-2">
                 <div class="form-group">
-                    <label class="form-label">90-Day Focus Theme</label>
-                    <input type="text" class="form-input" id="goal-focus" value="${g.focus}" placeholder="e.g., Launch Signature Course, Double Email List" required />
+                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">What's your main focus for the next 90 days?</label>
+                    <input type="text" class="form-input" id="goal-focus" value="${g.focus || ''}" placeholder="e.g., Launch Signature Course, Double Email List" required style="border-radius: 8px; padding: 0.75rem;" />
                 </div>
-                <div class="form-group">
-                    <label class="form-label">Measurable Outcome</label>
-                    <input type="text" class="form-input" id="goal-outcome" value="${g.outcome}" placeholder="e.g., 20 new sales, 1,000 new subscribers" required />
-                    <span class="form-helper">How will you objectively know you succeeded?</span>
-                </div>
-                <div class="form-group mt-6">
-                    <label class="form-label" style="color: var(--color-primary-dark);">CEO Strategy Mode</label>
-                    <p class="form-helper mb-2">Select your primary mode for the quarter. We'll use this to tailor your coaching prompts.</p>
-                    <select class="form-input" id="strategy-mode" required style="padding: 0.75rem; border-color: var(--color-primary-light);">
-                        <option value="" disabled ${!store.profile?.strategyMode ? 'selected' : ''}>Select a Strategy Mode...</option>
-                        <option value="First Sale Sprint" ${store.profile?.strategyMode === 'First Sale Sprint' ? 'selected' : ''}>First Sale Sprint</option>
-                        <option value="Offer Launch Quarter" ${store.profile?.strategyMode === 'Offer Launch Quarter' ? 'selected' : ''}>Offer Launch Quarter</option>
-                        <option value="Visibility & Lead Gen Quarter" ${store.profile?.strategyMode === 'Visibility & Lead Gen Quarter' ? 'selected' : ''}>Visibility & Lead Gen Quarter</option>
-                        <option value="Systems & CEO Reset Quarter" ${store.profile?.strategyMode === 'Systems & CEO Reset Quarter' ? 'selected' : ''}>Systems & CEO Reset Quarter</option>
-                    </select>
-                </div>
-                <div class="flex justify-between mt-8">
-                    <button type="button" class="btn btn-ghost" id="btn-back">Back</button>
-                    <button type="submit" class="btn btn-primary">Next Step</button>
+                <div class="flex justify-between mt-8" style="display: flex; gap: 1rem;">
+                    <button type="button" class="btn btn-ghost" id="btn-back" style="flex: 1;">Back</button>
+                    <button type="submit" class="btn btn-primary" style="flex: 2;">Next Step</button>
                 </div>
             </form>
         `;
@@ -1397,25 +1435,20 @@ function renderStepContent() {
 
     if (currentStep === 3) {
         return `
-            <h3 class="mb-2">Choose Your Top 3 Priorities</h3>
-            <p class="form-helper mb-6" style="font-size: 0.9rem;">To achieve your focus, what are the three big rock projects that move the needle?</p>
+            <h3 class="mb-2" style="font-family: var(--font-heading); font-weight: 700;">Financial Target</h3>
+            <p class="form-helper mb-6" style="font-size: 0.95rem; color: var(--color-text-muted); line-height: 1.5;">Set a clear, measurable revenue milestone for this 90-day period.</p>
             
             <form id="wizard-form-3">
                 <div class="form-group">
-                    <label class="form-label">Priority 1</label>
-                    <input type="text" class="form-input" id="p1" value="${g.priorities[0]}" placeholder="e.g., Build course sales page" required />
+                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">What revenue target are you aiming for?</label>
+                    <div style="position: relative; display: flex; align-items: center;">
+                        <span style="position: absolute; left: 1rem; font-weight: 600; color: var(--color-text-muted);">${store.settings?.currency || '$'}</span>
+                        <input type="number" class="form-input" id="rev-goal" value="${store.revenue?.quarterlyGoal || ''}" min="0" step="1" placeholder="e.g., 15000" required style="border-radius: 8px; padding: 0.75rem 0.75rem 0.75rem 2rem; width: 100%;" />
+                    </div>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">Priority 2</label>
-                    <input type="text" class="form-input" id="p2" value="${g.priorities[1]}" placeholder="e.g., Map out 4-week launch email sequence" />
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Priority 3</label>
-                    <input type="text" class="form-input" id="p3" value="${g.priorities[2]}" placeholder="e.g., Host weekly IG live Q&As" />
-                </div>
-                <div class="flex justify-between mt-8">
-                    <button type="button" class="btn btn-ghost" id="btn-back">Back</button>
-                    <button type="submit" class="btn btn-primary">Next Step</button>
+                <div class="flex justify-between mt-8" style="display: flex; gap: 1rem;">
+                    <button type="button" class="btn btn-ghost" id="btn-back" style="flex: 1;">Back</button>
+                    <button type="submit" class="btn btn-primary" style="flex: 2;">Next Step</button>
                 </div>
             </form>
         `;
@@ -1423,25 +1456,31 @@ function renderStepContent() {
 
     if (currentStep === 4) {
         return `
-            <h3 class="mb-2">Break It Into Milestones</h3>
-            <p class="form-helper mb-6" style="font-size: 0.9rem;">What needs to happen each month so you stay on track for your 90-day outcome?</p>
+            <h3 class="mb-2" style="font-family: var(--font-heading); font-weight: 700;">Choose Your Top 3 Priorities</h3>
+            <p class="form-helper mb-6" style="font-size: 0.95rem; color: var(--color-text-muted); line-height: 1.5;">To achieve your focus, what are the three big projects that will move the needle?</p>
             
             <form id="wizard-form-4">
-                <div class="form-group">
-                    <label class="form-label" style="color: var(--color-primary-dark);">Month 1 Focus</label>
-                    <input type="text" class="form-input" id="m1" value="${g.milestones.month1}" placeholder="e.g., Complete curriculum outline" required />
+                <div class="form-group" style="display: flex; flex-direction: column; gap: 1rem;">
+                    <div>
+                        <label class="form-label" style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0.4rem; display: block;">Priority 1</label>
+                        <input type="text" class="form-input" id="p1" value="${g.priorities[0] || ''}" placeholder="e.g., Build course sales page" required style="border-radius: 8px; padding: 0.75rem;" />
+                    </div>
+                    <div>
+                        <label class="form-label" style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0.4rem; display: block;">Priority 2</label>
+                        <input type="text" class="form-input" id="p2" value="${g.priorities[1] || ''}" placeholder="e.g., Map out 4-week launch email sequence" required style="border-radius: 8px; padding: 0.75rem;" />
+                    </div>
+                    <div>
+                        <label class="form-label" style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0.4rem; display: block;">Priority 3</label>
+                        <input type="text" class="form-input" id="p3" value="${g.priorities[2] || ''}" placeholder="e.g., Host weekly IG live Q&As" required style="border-radius: 8px; padding: 0.75rem;" />
+                    </div>
                 </div>
-                <div class="form-group">
-                    <label class="form-label" style="color: var(--color-secondary-dark);">Month 2 Focus</label>
-                    <input type="text" class="form-input" id="m2" value="${g.milestones.month2}" placeholder="e.g., Launch beta & open cart" />
+                <div class="flex justify-between mt-8" id="wizard-step-4-buttons" style="display: flex; gap: 1rem;">
+                    <button type="button" class="btn btn-ghost" id="btn-back" style="flex: 1;">Back</button>
+                    <button type="submit" class="btn btn-primary" id="btn-complete-setup" style="flex: 2;">Generate My 90-Day Plan</button>
                 </div>
-                <div class="form-group">
-                    <label class="form-label" style="color: var(--color-accent-dark);">Month 3 Focus</label>
-                    <input type="text" class="form-input" id="m3" value="${g.milestones.month3}" placeholder="e.g., Deliver program & collect testimonials" />
-                </div>
-                <div class="flex justify-between mt-8">
-                    <button type="button" class="btn btn-ghost" id="btn-back">Back</button>
-                    <button type="submit" class="btn btn-primary">Next Step</button>
+                <div id="wizard-loading" style="display: none; text-align: center; padding: 2rem 0;">
+                    <div class="spinner" style="margin: 0 auto 1rem auto; width: 40px; height: 40px; border: 4px solid var(--color-bg-light); border-top: 4px solid var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                    <p style="color: var(--color-primary-dark); font-weight: 600;">Building your 90-day roadmap... this takes about 20 seconds</p>
                 </div>
             </form>
         `;
@@ -1449,73 +1488,19 @@ function renderStepContent() {
 
     if (currentStep === 5) {
         return `
-            <h3 class="mb-2">The Analytics Pipeline</h3>
-            <p class="form-helper mb-6" style="font-size: 0.9rem;">Set your targets for revenue and leads so we can track your conversion rate.</p>
-            
-            <form id="wizard-form-5">
-                <div class="form-group">
-                    <label class="form-label" style="color: var(--color-primary-dark);">Currency Symbol</label>
-                    <select class="form-input" id="currency-symbol" required style="padding: 0.75rem;">
-                        <option value="$" ${store.settings?.currency === '$' ? 'selected' : ''}>$ USD/CAD/AUD</option>
-                        <option value="£" ${store.settings?.currency === '£' ? 'selected' : ''}>£ GBP</option>
-                        <option value="€" ${store.settings?.currency === '€' ? 'selected' : ''}>€ EUR</option>
-                        <option value="¥" ${store.settings?.currency === '¥' ? 'selected' : ''}>¥ JPY/CNY</option>
-                        <option value="₹" ${store.settings?.currency === '₹' ? 'selected' : ''}>₹ INR</option>
-                    </select>
-                </div>
-                <div class="form-group mt-6">
-                    <label class="form-label" style="color: var(--color-primary-dark);">Quarterly Revenue Goal</label>
-                    <input type="number" class="form-input" id="rev-goal" value="${store.revenue?.quarterlyGoal || ''}" min="0" step="1" placeholder="e.g. 15000" required />
-                </div>
-                <div class="form-group mt-6">
-                    <label class="form-label">Average Offer Price</label>
-                    <input type="number" class="form-input" id="offer-price" value="${store.revenue?.averageOfferPrice || ''}" min="0" step="any" placeholder="e.g. 1500" required />
-                    <span class="form-helper mt-1" style="display: block;">We'll use this to calculate how many sales you need.</span>
-                </div>
-                <div class="form-group mt-6">
-                    <label class="form-label" style="color: var(--color-accent-dark);">Quarterly Lead Goal</label>
-                    <input type="number" class="form-input" id="lead-goal" value="${store.leads?.quarterlyGoal || ''}" min="0" step="1" placeholder="e.g. 500" required />
-                    <span class="form-helper mt-1" style="display: block;">How many new subscribers or leads do you want to attract?</span>
-                </div>
-                <div class="flex justify-between mt-8">
-                    <button type="button" class="btn btn-ghost" id="btn-back">Back</button>
-                    <button type="submit" class="btn btn-primary">Next Step</button>
-                </div>
-            </form>
-        `;
-    }
-
-    if (currentStep === 6) {
-        return `
-            <h3 class="mb-2">The CEO Commitment</h3>
-            <p class="form-helper mb-6" style="font-size: 0.9rem;">Write a statement affirming how you choose to run your business in this season.</p>
-            
-            <form id="wizard-form-6">
-                <div class="form-group">
-                    <label class="form-label">I commit to...</label>
-                    <textarea class="form-textarea" id="goal-statement" placeholder="e.g., I commit to prioritising my top tasks before checking email, and trusting my strategy." required>${g.statement}</textarea>
-                </div>
-                
-                <div style="background: var(--color-secondary-light); padding: 1rem; border-radius: var(--radius-md); border-left: 4px solid var(--color-secondary); margin-bottom: var(--spacing-lg);">
-                    <p style="font-size: 0.875rem; font-weight: 500; color: var(--color-secondary-dark);">You are ready!</p>
-                    <p style="font-size: 0.875rem; color: var(--color-text-main); margin-top: 0.25rem;">Your 90-Day plan is locked in. Let's go to your CEO Dashboard.</p>
-                </div>
-
-                <div class="flex justify-between mt-8" id="wizard-step-6-buttons">
-                    <button type="button" class="btn btn-ghost" id="btn-back">Back</button>
-                    <button type="submit" class="btn btn-primary" id="btn-complete-setup">Generate My 90-Day Plan</button>
-                </div>
-                <div id="wizard-loading" style="display: none; text-align: center; padding: 2rem 0;">
-                    <div class="spinner" style="margin: 0 auto 1rem auto; width: 40px; height: 40px; border: 4px solid var(--color-bg-light); border-top: 4px solid var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite;"></div>
-                    <p style="color: var(--color-primary-dark); font-weight: 500;">Building your 90-day roadmap... this takes about 20 seconds</p>
-                </div>
-            </form>
+            <div style="text-align: center; padding: 1rem 0;">
+                <div style="font-size: 3.5rem; margin-bottom: 1.5rem; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.05));">🎉</div>
+                <h3 style="font-size: 1.5rem; margin-bottom: 1rem; color: var(--color-black); font-family: var(--font-heading); font-weight: 700;">Your Daily 3 is ready!</h3>
+                <p style="color: var(--color-text-muted); font-size: 1.05rem; margin-bottom: 2.5rem; line-height: 1.6;">
+                    Head to your dashboard to see today's most important actions.
+                </p>
+                <button id="btn-go-dashboard" class="btn btn-primary" style="width: 100%; padding: 0.85rem; font-size: 1.05rem; border-radius: 8px;">Go to Dashboard</button>
+            </div>
         `;
     }
 }
 
 function wizardAttachEvents() {
-    // Determine which form is active based on currentStep
     const form = document.getElementById(`wizard-form-${currentStep}`);
     const btnBack = document.getElementById('btn-back');
 
@@ -1523,10 +1508,7 @@ function wizardAttachEvents() {
         btnBack.addEventListener('click', () => {
             if (currentStep > 1) {
                 currentStep--;
-
-                // Triggers a re-render of the specific screen since simple router doesn't know about inner state
-                const appContainer = document.getElementById('app-container');
-                appContainer.innerHTML = renderWizard();
+                document.getElementById('app-container').innerHTML = renderWizard();
                 wizardAttachEvents();
             }
         });
@@ -1539,91 +1521,75 @@ function wizardAttachEvents() {
             const currentGoals = store.goals;
 
             if (currentStep === 1) {
-                const name = document.getElementById('profile-name').value;
-                const businessName = document.getElementById('profile-business').value;
-                const logoFile = document.getElementById('logo-upload').files[0];
-
-                const advance = (logoData) => {
-                    updateProfile({ name, businessName, ...(logoData && { logo: logoData }) });
-                    currentStep++;
-                    document.getElementById('app-container').innerHTML = renderWizard();
-                    wizardAttachEvents();
-                };
-
-                if (logoFile) {
-                    const reader = new FileReader();
-                    reader.onload = (e) => advance(e.target.result);
-                    reader.readAsDataURL(logoFile);
-                } else {
-                    advance(null);
-                }
+                currentStep++;
+                document.getElementById('app-container').innerHTML = renderWizard();
+                wizardAttachEvents();
             }
             else if (currentStep === 2) {
-                currentGoals.focus = document.getElementById('goal-focus').value;
-                currentGoals.outcome = document.getElementById('goal-outcome').value;
+                currentGoals.focus = document.getElementById('goal-focus').value.trim();
                 updateGoals(currentGoals);
-
-                const strategyMode = document.getElementById('strategy-mode').value;
-                updateProfile({ strategyMode });
 
                 currentStep++;
                 document.getElementById('app-container').innerHTML = renderWizard();
                 wizardAttachEvents();
             }
             else if (currentStep === 3) {
-                currentGoals.priorities = [
-                    document.getElementById('p1').value,
-                    document.getElementById('p2').value,
-                    document.getElementById('p3').value
-                ];
-                updateGoals(currentGoals);
+                const quarterlyGoal = parseFloat(document.getElementById('rev-goal').value);
+                updateRevenueSettings({ quarterlyGoal });
+
                 currentStep++;
                 document.getElementById('app-container').innerHTML = renderWizard();
                 wizardAttachEvents();
             }
             else if (currentStep === 4) {
+                currentGoals.priorities = [
+                    document.getElementById('p1').value.trim(),
+                    document.getElementById('p2').value.trim(),
+                    document.getElementById('p3').value.trim()
+                ];
+                currentGoals.outcome = `Achieve 90-day focus: ${currentGoals.focus}`;
                 currentGoals.milestones = {
-                    month1: document.getElementById('m1').value,
-                    month2: document.getElementById('m2').value,
-                    month3: document.getElementById('m3').value
+                    month1: `Build out and execute priorities for ${currentGoals.priorities[0]}`,
+                    month2: `Promote and launch ${currentGoals.priorities[1]}`,
+                    month3: `Scale and stabilize ${currentGoals.priorities[2]}`
                 };
+                currentGoals.statement = "I commit to prioritizing my top tasks before checking email, and trusting my strategy.";
                 updateGoals(currentGoals);
-                currentStep++;
-                document.getElementById('app-container').innerHTML = renderWizard();
-                wizardAttachEvents();
-            }
-            else if (currentStep === 5) {
+
+                // Set defaults for settings
                 updateSettings({
-                    currency: document.getElementById('currency-symbol').value
+                    currency: store.settings?.currency || '$'
                 });
                 updateRevenueSettings({
-                    quarterlyGoal: parseFloat(document.getElementById('rev-goal').value),
-                    averageOfferPrice: parseFloat(document.getElementById('offer-price').value)
+                    quarterlyGoal: parseFloat(store.revenue?.quarterlyGoal || 0),
+                    averageOfferPrice: 1000 // default price representation
                 });
-                updateLeadGoal(parseFloat(document.getElementById('lead-goal').value));
+                updateLeadGoal(100); // default quarterly lead target
 
-                currentStep++;
-                document.getElementById('app-container').innerHTML = renderWizard();
-                wizardAttachEvents();
-            }
-            else if (currentStep === 6) {
-                currentGoals.statement = document.getElementById('goal-statement').value;
-                updateGoals(currentGoals);
-
-                // Show loading state
-                const buttonsDiv = document.getElementById('wizard-step-6-buttons');
+                // Show loading spinner
+                const buttonsDiv = document.getElementById('wizard-step-4-buttons');
                 const loadingDiv = document.getElementById('wizard-loading');
                 if (buttonsDiv && loadingDiv) {
                     buttonsDiv.style.display = 'none';
                     loadingDiv.style.display = 'block';
                 }
 
-                // Generate Plan
+                // Call AI Action Plan generator
                 generate90DayActionPlan().then(plan => {
                     if (plan) {
                         applyGeneratedPlan(plan);
-                        currentStep = 1; // reset for future
-                        window.location.hash = '#/roadmap';
+                        
+                        // Set trialStartDate and default profile details
+                        updateProfile({
+                            trialStartDate: new Date().toISOString(),
+                            stage: store.profile?.stage || 'growth',
+                            businessModel: store.profile?.businessModel || 'Coaching/Consulting',
+                            bottleneck: store.profile?.bottleneck || 'Lead Generation'
+                        });
+
+                        currentStep = 5;
+                        document.getElementById('app-container').innerHTML = renderWizard();
+                        wizardAttachEvents();
                     } else {
                         if (buttonsDiv && loadingDiv) {
                             buttonsDiv.style.display = 'flex';
@@ -1632,7 +1598,7 @@ function wizardAttachEvents() {
                         alert("Couldn't generate your plan right now — try again in a moment.");
                     }
                 }).catch(err => {
-                    console.error(err);
+                    console.error("AI action plan generation failed", err);
                     if (buttonsDiv && loadingDiv) {
                         buttonsDiv.style.display = 'flex';
                         loadingDiv.style.display = 'none';
@@ -1640,6 +1606,14 @@ function wizardAttachEvents() {
                     alert("Couldn't generate your plan right now — try again in a moment.");
                 });
             }
+        });
+    }
+
+    const btnGoDashboard = document.getElementById('btn-go-dashboard');
+    if (btnGoDashboard) {
+        btnGoDashboard.addEventListener('click', () => {
+            currentStep = 1; // reset step counter
+            window.location.hash = '#/dashboard';
         });
     }
 }
@@ -1662,6 +1636,38 @@ function renderDashboard() {
     const leadToSaleConversion = totalLeads > 0 ? ((salesCount / totalLeads) * 100).toFixed(1) : 0;
     
     const quickOffers = store.revenue?.quickOffers || [];
+
+    // --- Activation Strategy Prompts ---
+    let setupBannerHtml = '';
+    if (!g.focus) {
+        setupBannerHtml = `
+            <div style="background: linear-gradient(90deg, var(--color-primary) 0%, var(--color-primary-dark) 100%); color: white; padding: 0.75rem 1.5rem; text-align: center; font-size: 0.95rem; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 0.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); position: relative; z-index: 10;">
+                <span>You haven't set your 90-Day Vision yet — your Daily 3 is waiting.</span>
+                <a href="#/wizard" style="color: white; text-decoration: underline; font-weight: 700; display: inline-flex; align-items: center; gap: 0.25rem;">Set it up now (3 mins) 🎯</a>
+            </div>
+        `;
+    }
+
+    let trialWarningHtml = '';
+    const trialStartDateStr = store.profile?.trialStartDate;
+    if (trialStartDateStr && store.profile?.subscription_status === 'trialing') {
+        const trialStart = new Date(trialStartDateStr);
+        const diffMs = new Date() - trialStart;
+        const elapsedDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+        const remainingDays = 14 - elapsedDays;
+        
+        // Show banner on Day 12, 13, 14
+        if (elapsedDays >= 11 && elapsedDays <= 14) {
+            const endDate = new Date(trialStart.getTime() + 14 * 24 * 60 * 60 * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+            trialWarningHtml = `
+                <div style="background: #FFF3CD; border-bottom: 1px solid #FFEBAA; color: #856404; padding: 0.75rem 1.5rem; text-align: center; font-size: 0.95rem; font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 0.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); position: relative; z-index: 10;">
+                    <span>Your 14-day free trial is ending in ${remainingDays} days (on ${endDate}). You will be automatically moved to your paid plan to keep uninterrupted access.</span>
+                    <a href="#/settings" style="color: #533F03; text-decoration: underline; font-weight: 700; display: inline-flex; align-items: center; gap: 0.25rem;">Manage Subscription</a>
+                </div>
+            `;
+        }
+    }
+    // ------------------------------------
 
     // Check if there is an active weekly plan (ignore unapplied AI-generated drafts)
     const validPlans = store.weeklyPlans.filter(p => !p.generated || p.applied);
@@ -1688,6 +1694,8 @@ function renderDashboard() {
 
     let html = `
         ${renderNav()}
+        ${setupBannerHtml}
+        ${trialWarningHtml}
         <div class="main-content dashboard-layout">
             <div class="flex justify-between items-center mb-6 flex-mobile-col" style="gap: 1rem; align-items: flex-start;">
                 <div>
@@ -1708,6 +1716,7 @@ function renderDashboard() {
                     </button>
                     <div style="background: var(--color-secondary-light); padding: 0.5rem 1rem; border-radius: var(--radius-full); display: flex; align-items: center; gap: 0.5rem; font-weight: 600; color: var(--color-secondary-dark);">
                         Plan: ${store.planningStreak || 0}w | Review: ${streak}w
+                        ${renderTooltip("Your weekly CEO cadence streaks. 'Plan' is consecutive weeks you have generated a Monday Plan; 'Review' is consecutive weeks you have completed a Friday Review.", "Maintaining this weekly habit helps you stay aligned with your 90-day trajectory. Missing a week resets the streak.")}
                     </div>
                 </div>
             </div>
@@ -1984,21 +1993,30 @@ function renderDashboard() {
     const todayStrDash = new Date().toISOString().split('T')[0];
     let todaysLog = store.dailyLogs[todayStrDash];
 
-    if (!todaysLog) {
-        const currentPriorities = activePlan && activePlan.topActions ? activePlan.topActions : g.priorities;
-        let generatedTasks = generateDaily3([0, 1, 2].map(i => currentPriorities[i] || ''), activePlan);
-        todaysLog = generatedTasks.map(t => ({ text: t, done: false }));
-        window._tempGeneratedTodaysLog = todaysLog; // to be saved on attachEvents
-    }
-
-    todaysLog.forEach((taskObj, i) => {
-        dailyTasksHtml += `
-            <label style="display: flex; align-items: center; gap: 0.75rem; cursor: pointer; padding: 0.5rem; border-radius: var(--radius-sm); transition: background-color var(--transition-fast);" class="dailyhover">
-                <input type="checkbox" id="daily-task-${i}" ${taskObj.done ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: var(--color-primary);">
-                <span style="font-size: 0.95rem; font-weight: 500; ${taskObj.done ? 'text-decoration: line-through; color: var(--color-text-muted);' : ''}">${taskObj.text}</span>
-            </label>
+    if (!g.focus) {
+        dailyTasksHtml = `
+            <div style="padding: 1.5rem; background: var(--color-bg-light); border-radius: var(--radius-sm); border: 1px dashed var(--color-border); text-align: center;">
+                <p style="font-size: 0.9rem; color: var(--color-text-muted); margin: 0 0 1rem 0;">Setup your 90-Day Plan in the wizard to unlock your daily actions.</p>
+                <a href="#/wizard" class="btn btn-primary btn-sm" style="display: inline-block;">Start Setup</a>
+            </div>
         `;
-    });
+    } else {
+        if (!todaysLog) {
+            const currentPriorities = activePlan && activePlan.topActions ? activePlan.topActions : g.priorities;
+            let generatedTasks = generateDaily3([0, 1, 2].map(i => currentPriorities[i] || ''), activePlan);
+            todaysLog = generatedTasks.map(t => ({ text: t, done: false }));
+            window._tempGeneratedTodaysLog = todaysLog; // to be saved on attachEvents
+        }
+
+        todaysLog.forEach((taskObj, i) => {
+            dailyTasksHtml += `
+                <label style="display: flex; align-items: center; gap: 0.75rem; cursor: pointer; padding: 0.5rem; border-radius: var(--radius-sm); transition: background-color var(--transition-fast);" class="dailyhover">
+                    <input type="checkbox" id="daily-task-${i}" ${taskObj.done ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: var(--color-primary);">
+                    <span style="font-size: 0.95rem; font-weight: 500; ${taskObj.done ? 'text-decoration: line-through; color: var(--color-text-muted);' : ''}">${taskObj.text}</span>
+                </label>
+            `;
+        });
+    }
 
     html += `
             <div class="grid-sidebar mb-6">
@@ -2070,6 +2088,18 @@ function renderDashboard() {
                         </div>
                         <button type="submit" class="btn btn-primary" style="width: 100%;">Save</button>
                     </form>
+                </div>
+            </div>
+            
+            <!-- Daily 3 Celebration Modal -->
+            <div id="daily3-celebration-modal" class="modal-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 10000; align-items: center; justify-content: center; backdrop-filter: blur(4px);">
+                <div class="card" style="width: 100%; max-width: 440px; padding: 2.5rem; position: relative; text-align: center; border-radius: 16px; border: 1px solid rgba(255,255,255,0.5); box-shadow: 0 20px 25px -5px rgba(0,0,0,0.2); background: white;">
+                    <div style="font-size: 3.5rem; margin-bottom: 1.5rem; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.1));">🔥</div>
+                    <h3 style="font-size: 1.5rem; margin-bottom: 0.75rem; color: var(--color-black); font-family: var(--font-heading); font-weight: 700;">First Daily 3 Complete!</h3>
+                    <p style="color: var(--color-text-main); font-size: 1.05rem; line-height: 1.6; margin-bottom: 2rem;">
+                        You're already ahead of 80% of entrepreneurs today. See you tomorrow.
+                    </p>
+                    <button id="btn-close-celebration" class="btn btn-primary" style="width: 100%; padding: 0.85rem; font-size: 1rem; border-radius: 8px;">Got it, thank you!</button>
                 </div>
             </div>
         `;
@@ -2351,12 +2381,33 @@ function dashboardAttachEvents() {
                 if (log[i]) {
                     log[i].done = e.target.checked;
                     updateDailyLog(todayStr, log);
-                    // Rerender dashboard to apply strikethrough styling and coach engine updates safely
-                    window.dispatchEvent(new Event('hashchange'));
+                    
+                    // Check if all 3 are completed and firstDaily3Completed is not set
+                    const allDone = log.length === 3 && log.every(t => t.done);
+                    if (allDone && !updatedStore.profile?.firstDaily3Completed) {
+                        updateProfile({ firstDaily3Completed: true });
+                        const modal = document.getElementById('daily3-celebration-modal');
+                        if (modal) {
+                            modal.style.display = 'flex';
+                        }
+                    } else {
+                        // Rerender dashboard to apply strikethrough styling and coach engine updates safely
+                        window.dispatchEvent(new Event('hashchange'));
+                    }
                 }
             });
         }
     });
+
+    const closeCelebrationBtn = document.getElementById('btn-close-celebration');
+    const celebrationModal = document.getElementById('daily3-celebration-modal');
+    if (closeCelebrationBtn && celebrationModal) {
+        closeCelebrationBtn.addEventListener('click', () => {
+            celebrationModal.style.display = 'none';
+            // Reload screen to show completed task changes
+            window.dispatchEvent(new Event('hashchange'));
+        });
+    }
 
     // Dismiss AI Pulses
     document.querySelectorAll('.btn-dismiss-pulse').forEach(btn => {
@@ -3023,6 +3074,25 @@ function renderRevenue() {
     const insights = getRevenueInsights();
     
     const currency = store.settings?.currency || '$';
+
+    const firstVisitDone = localStorage.getItem('first_revenue_visit_done') === 'true';
+    let firstVisitTooltipHtml = '';
+    if (!firstVisitDone) {
+        firstVisitTooltipHtml = `
+            <div id="revenue-first-visit-card" class="card mb-6" style="background: linear-gradient(135deg, var(--color-primary-light) 0%, var(--color-bg-main) 100%); border-left: 4px solid var(--color-primary); padding: 1.5rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; box-shadow: var(--shadow-sm); border-radius: 12px; border: 1px solid var(--color-border);">
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    <div style="font-size: 2.25rem;">📈</div>
+                    <div>
+                        <h4 style="margin: 0 0 0.25rem 0; font-size: 1.05rem; color: var(--color-primary-dark); font-weight: 700;">First Visit Guide</h4>
+                        <p style="margin: 0; font-size: 0.95rem; color: var(--color-text-main); line-height: 1.5;">
+                            This is your command centre. Log your first lead now — it only takes one tap, and watching your pipeline fill up is seriously motivating. Try it ➡️
+                        </p>
+                    </div>
+                </div>
+                <button id="btn-close-revenue-tooltip" class="btn btn-sm btn-ghost" style="font-size: 1.25rem; color: var(--color-text-muted); cursor: pointer; align-self: flex-start; padding: 0.25rem 0.5rem; background: none; border: none;">&times;</button>
+            </div>
+        `;
+    }
     
     // Core calculations
     const leads = store.leads?.entries || [];
@@ -3059,13 +3129,17 @@ function renderRevenue() {
                         </button>
                         <button id="btn-report-ai" class="btn btn-primary btn-sm" style="display: flex; align-items: center; gap: 0.5rem; background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark)); border: none; box-shadow: var(--shadow-sm);">
                             🤖 AI Executive Report
+                            ${renderTooltip("A comprehensive, AI-generated analysis of your business's financial health, sales pipeline, and growth bottlenecks.", "It synthesizes your traffic, calls, conversions, and revenue into a clear strategy briefing and lists specific, high-priority tasks to help you optimize your funnel.")}
                         </button>
                     </div>
                     <div style="background: var(--color-secondary-light); padding: 0.5rem 1rem; border-radius: var(--radius-full); display: flex; align-items: center; gap: 0.5rem; font-weight: 600; color: var(--color-secondary-dark);">
                         Quarter: ${insights.momentum}
+                        ${renderTooltip("Your quarterly revenue momentum score, comparing your current pace against your target goal.", "It tells you if you are ahead, on track, behind, or if you need to log more entries ('Not enough data') to compute a realistic projection.")}
                     </div>
                 </div>
             </div>
+
+            ${firstVisitTooltipHtml}
 
             <!-- Top Cards -->
             <div class="grid-cols-4 mb-6">
@@ -3400,7 +3474,7 @@ function renderRevenue() {
                         <div style="text-align: center; padding: 3rem 0;">
                             <div class="spinner" style="margin: 0 auto 1rem auto; width: 40px; height: 40px; border: 4px solid var(--color-bg-light); border-top: 4px solid var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite;"></div>
                             <h3 style="color: var(--color-text-main);">Analyzing Pipeline Data...</h3>
-                            <p style="color: var(--color-text-muted);">The AI Coach is reviewing your revenue, leads, and conversions.</p>
+                            <p style="color: var(--color-text-muted);">The Executive AI Coach is reviewing your revenue, leads, and conversions.</p>
                         </div>
                     </div>
                 </div>
@@ -3474,7 +3548,7 @@ window.generateAiReport = async function() {
         <div style="text-align: center; padding: 3rem 0;">
             <div class="spinner" style="margin: 0 auto 1rem auto; width: 40px; height: 40px; border: 4px solid var(--color-bg-light); border-top: 4px solid var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite;"></div>
             <h3 style="color: var(--color-text-main);">Evaluating Pipeline Data...</h3>
-            <p style="color: var(--color-text-muted);">The AI Coach is drafting your strategic briefing.</p>
+            <p style="color: var(--color-text-muted);">The Executive AI Coach is drafting your strategic briefing.</p>
         </div>
     `;
 
@@ -3538,7 +3612,7 @@ window.generateAiReport = async function() {
         }
 
     } catch(e) {
-        aiContent.innerHTML = `<p style="color: var(--color-error); text-align: center;">Warning: The AI Coach failed to analyze the data. Error: ${e.message}</p>`;
+        aiContent.innerHTML = `<p style="color: var(--color-error); text-align: center;">Warning: The Executive AI Coach failed to analyze the data. Error: ${e.message}</p>`;
     }
 };
 
@@ -3552,6 +3626,15 @@ window.closeAiModal = function() {
 function revenueAttachEvents() {
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
     document.getElementById('nav-revenue')?.classList.add('active');
+
+    const closeTooltipBtn = document.getElementById('btn-close-revenue-tooltip');
+    if (closeTooltipBtn) {
+        closeTooltipBtn.addEventListener('click', () => {
+            localStorage.setItem('first_revenue_visit_done', 'true');
+            const card = document.getElementById('revenue-first-visit-card');
+            if (card) card.style.display = 'none';
+        });
+    }
 
     const toggleTabs = [
         { id: 'tab-rev', formId: 'rev-tab-wrapper' },
@@ -4042,7 +4125,7 @@ function reviewAttachEvents() {
             addReview(review);
 
             // Show success and redirect
-            alert("Review saved! Your AI Advisor has drafted your action plan for next week.\\n\\nTake some well-deserved rest off.");
+            alert("Review saved! Your Executive AI Coach has drafted your action plan for next week.\\n\\nTake some well-deserved rest off.");
             window.location.hash = '#/progress';
         });
     }
@@ -4315,11 +4398,33 @@ function progressAttachEvents() {
 // --- js\screens\settings.js ---
 // settings.js
 
+function getCurrentUserEmail() {
+    try {
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key.startsWith('sb-') && key.endsWith('-auth-token')) {
+                const sessionStr = localStorage.getItem(key);
+                if (sessionStr) {
+                    const session = JSON.parse(sessionStr);
+                    if (session && session.user && session.user.email) {
+                        return session.user.email;
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        console.error("Error reading session email from localStorage:", e);
+    }
+    return null;
+}
+
 function renderSettings() {
     // We bind the event listeners after HTML is rendered using setScreenModule
     window.setScreenModule({ attachEvents: settingsAttachEvents });
     const store = getStore();
     const reminders = store.profile.reminderTimes || [];
+    const userEmail = getCurrentUserEmail();
+    const isAdmin = userEmail === 'jeanette_spencer@yahoo.com';
 
     // Quick helper to check if a reminder is active
     const isChecked = (val) => reminders.includes(val) ? 'checked' : '';
@@ -4364,7 +4469,7 @@ function renderSettings() {
             <h4 class="mb-4 pt-4" style="border-top: 1px solid var(--color-border); color: var(--color-primary-dark);">CEO Business Profile</h4>
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Top Business Bottleneck</label>
-                <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">The AI Coach uses this to prioritize its Friday Advice.</p>
+                <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">The Executive AI Coach uses this to prioritize its Friday Advice.</p>
                 <select id="set-bottleneck" class="form-input" style="padding: 0.75rem;">
                     <option value="Sales Conversion" ${store.profile.bottleneck === 'Sales Conversion' ? 'selected' : ''}>Sales Conversion (Traffic is high, Sales are low)</option>
                     <option value="Audience Size" ${store.profile.bottleneck === 'Audience Size' ? 'selected' : ''}>Audience Size (Offers are great, Visibility is low)</option>
@@ -4392,6 +4497,17 @@ function renderSettings() {
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Measurable Outcome</label>
                 <input type="text" id="set-outcome" class="form-input" value="${store.goals.outcome || ''}" placeholder="e.g. 10 beta clients at $1.5k" required>
+            </div>
+            <div class="form-group mb-4">
+                <label class="form-label" style="font-weight: 600;">Quarterly Revenue Goal</label>
+                <div style="position: relative; display: flex; align-items: center;">
+                    <span style="position: absolute; left: 1rem; font-weight: 600; color: var(--color-text-muted);">${store.settings?.currency || '$'}</span>
+                    <input type="number" id="set-revenue-goal" class="form-input" value="${store.revenue?.quarterlyGoal || 0}" min="0" required style="padding-left: 2rem;">
+                </div>
+            </div>
+            <div class="form-group mb-4">
+                <label class="form-label" style="font-weight: 600;">Quarterly Lead Goal</label>
+                <input type="number" id="set-lead-goal" class="form-input" value="${store.leads?.quarterlyGoal || 0}" min="0" required>
             </div>
             
             <div class="form-group mb-6">
@@ -4449,17 +4565,19 @@ function renderSettings() {
 
             </div>
 
+            ${isAdmin ? `
             <h3 class="mb-4 pt-4" style="border-top: 1px solid var(--color-border); color: #10a37f; display: flex; align-items: center; gap: 0.5rem;">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
                 Generative AI Integration
             </h3>
             <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1rem;">
-                Connect your OpenAI API key to unlock the Level 3 AI Coach. Your key is stored <b>exclusively locally</b> in this browser and never sent to our database.
+                Connect your OpenAI API key to unlock the Level 3 Executive AI Coach. Your key is stored <b>exclusively locally</b> in this browser and never sent to our database.
             </p>
             <div class="form-group">
                 <label>ChatGPT API Key</label>
                 <input type="password" id="set-openai-key" class="form-input" placeholder="sk-..." value="${localStorage.getItem('ceo_openai_key') || ''}">
             </div>
+            ` : ''}
 
             <div class="mt-8 flex justify-end">
                 <button type="submit" class="btn btn-primary">Save Preferences</button>
@@ -4555,6 +4673,9 @@ function settingsAttachEvents() {
             const bottleneck = document.getElementById('set-bottleneck').value;
             const strategyMode = document.getElementById('set-strategy').value;
 
+            const revenueGoal = parseFloat(document.getElementById('set-revenue-goal').value) || 0;
+            const leadGoal = parseFloat(document.getElementById('set-lead-goal').value) || 0;
+
             updateProfile({
                 name: name,
                 businessName: biz,
@@ -4564,6 +4685,9 @@ function settingsAttachEvents() {
                 reminderTimes: newReminders,
                 planningDay: planningDay
             });
+
+            updateRevenueSettings({ quarterlyGoal: revenueGoal });
+            updateLeadGoal(leadGoal);
 
             const openaiKeyEl = document.getElementById('set-openai-key');
             if (openaiKeyEl) {
@@ -5346,7 +5470,7 @@ function renderMondayPlan() {
                 ${store.draftMondayPlan ? `
                 <div style="background: #f0fbff; padding: 0.75rem 1rem; border-radius: 8px; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--color-primary-dark); border: 1px solid #c9efff;">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path><path d="M12 7v6"></path><path d="M12 17h.01"></path></svg>
-                    ✨ Pre-filled by your AI Coach based on Friday's Check-in. Tweak as needed!
+                    ✨ Pre-filled by your Executive AI Coach based on Friday's Check-in. Tweak as needed!
                 </div>
                 ` : (mondayPlanData.generatedPlanId ? `
                 <div style="background: #f0fbff; padding: 0.75rem 1rem; border-radius: 8px; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--color-primary-dark); border: 1px solid #c9efff;">
@@ -5843,7 +5967,7 @@ function authAttachEvents() {
         
         if (isForgot) {
             if (email) {
-                db.auth.resetPasswordForEmail(email, {
+                window.db.auth.resetPasswordForEmail(email, {
                     redirectTo: window.location.origin + window.location.pathname + '#/reset-password'
                 }).then(({ error }) => {
                     btn.innerText = originalText;
@@ -5858,7 +5982,7 @@ function authAttachEvents() {
             }
         } else if (isReset) {
             if (password) {
-                db.auth.updateUser({ password: password }).then(({ error }) => {
+                window.db.auth.updateUser({ password: password }).then(({ error }) => {
                     btn.innerText = originalText;
                     btn.style.opacity = '1';
                     if (error) {
@@ -5873,7 +5997,7 @@ function authAttachEvents() {
             const name = document.getElementById('auth-name').value;
             
             // Verify email eligibility against paid signups table
-            db.rpc('check_allowed_signup', { email_to_check: email }).then(async ({ data: isAllowed, error: rpcError }) => {
+            window.db.rpc('check_allowed_signup', { email_to_check: email }).then(async ({ data: isAllowed, error: rpcError }) => {
                 if (rpcError) {
                     console.error("Eligibility check failed:", rpcError);
                 }
@@ -5886,7 +6010,7 @@ function authAttachEvents() {
                 }
                 
                 // Real Supabase Signup
-                db.auth.signUp({
+                window.db.auth.signUp({
                     email: email,
                     password: password,
                     options: { data: { name: name } }
@@ -5903,7 +6027,7 @@ function authAttachEvents() {
                                 // Wait briefly for trigger execution to complete
                                 await new Promise(resolve => setTimeout(resolve, 500));
                                 
-                                const { data: profile } = await db
+                                const { data: profile } = await window.db
                                     .from('profiles')
                                     .select('subscription_status')
                                     .eq('id', userId)
@@ -5925,7 +6049,7 @@ function authAttachEvents() {
             });
         } else {
             // Real Supabase Login
-            db.auth.signInWithPassword({
+            window.db.auth.signInWithPassword({
                 email: email,
                 password: password
             }).then(async ({ data, error }) => {
@@ -5936,7 +6060,7 @@ function authAttachEvents() {
                 } else {
                     // Fetch user's cloud data and populate local storage
                     try {
-                        const { data: dbData, error: dbError } = await db
+                        const { data: dbData, error: dbError } = await window.db
                             .from('user_data')
                             .select('data')
                             .eq('user_id', data.user.id)
@@ -5951,7 +6075,7 @@ function authAttachEvents() {
 
                     // Fetch Subscription Status separately
                     try {
-                        const { data: profile } = await db
+                        const { data: profile } = await window.db
                             .from('profiles')
                             .select('subscription_status')
                             .eq('id', data.user.id)
@@ -6048,6 +6172,11 @@ function renderRoadmap() {
                             </div>
                         </label>
                     `).join('')}
+                </div>
+                
+                <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px dashed rgba(0, 0, 0, 0.1); font-size: 0.875rem; color: var(--color-text-muted); display: flex; align-items: center; gap: 0.5rem;">
+                    <span style="font-size: 1.2rem;">💡</span>
+                    <span>If you're unsure about anything here, need help with ideas or how to set things up, you can ask your Executive AI Coach.</span>
                 </div>
             </div>
 
@@ -6188,10 +6317,7 @@ function billingAttachEvents() {
     const btnPortal = document.getElementById('btn-portal');
     if (btnPortal) {
         btnPortal.addEventListener('click', () => {
-            // In a real app, you would hit your Supabase Edge Function to generate a Stripe Customer Portal session URL.
-            // For now, this is where the user puts their hardcoded Stripe Customer Portal link from the Stripe Dashboard.
-            // Example: https://billing.stripe.com/p/session/test_12345
-            alert("This will redirect to the Stripe Customer Portal where the user can update their card.");
+            window.location.href = 'https://billing.stripe.com/p/login/eVq3cucex8YXc1q0tk18c00';
         });
     }
 }
@@ -6217,6 +6343,17 @@ function router() {
     if (isAuthenticated) checkPushNotifications();
     
     const isAuthRoute = path === '#/login' || path === '#/signup' || path === '#/forgot-password' || path === '#/reset-password';
+    
+    // Dynamic AI Widget display toggling
+    const widget = document.getElementById('ceo-ai-widget');
+    if (widget) {
+        if (path === '#/wizard' || isAuthRoute || path === '#/billing') {
+            widget.style.display = 'none';
+        } else {
+            widget.style.display = 'block';
+        }
+    }
+
     if (!isAuthenticated && !isAuthRoute) {
         window.location.hash = '#/login';
         return;
@@ -6245,8 +6382,8 @@ function router() {
     const store = getStore();
     const isSetupComplete = store.goals && store.goals.focus !== '';
 
-    if (!isSetupComplete && path !== '#/' && path !== '#/wizard' && !isAuthRoute && path !== '#/billing') {
-        window.location.hash = '#/';
+    if (!isSetupComplete && path !== '#/wizard' && !isAuthRoute && path !== '#/billing') {
+        window.location.hash = '#/wizard';
         return;
     }
 
@@ -6270,7 +6407,7 @@ function router() {
             if (isSetupComplete) {
                 window.location.hash = '#/dashboard';
             } else {
-                appContainer.innerHTML = renderWelcome();
+                window.location.hash = '#/wizard';
             }
             break;
         case '#/wizard':
@@ -6367,6 +6504,45 @@ function checkPushNotifications() {
 
     if (store.profile.reminderTimes.includes('Friday Review Prompt') && todayName === 'Friday' && hour >= 14) {
         fireLocalNotification('friday_review', 'Friday Review', 'Time to log your wins and track your revenue for the week!');
+    }
+
+    // --- Trial Notification Sequence ---
+    const trialStartDateStr = store.profile?.trialStartDate;
+    if (trialStartDateStr) {
+        const trialStart = new Date(trialStartDateStr);
+        const diffMs = now - trialStart;
+        const elapsedDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+        
+        const fireTrialNotification = (dayNum, targetHour, notifKey, title, body) => {
+            if (elapsedDays === dayNum && hour >= targetHour) {
+                const globalKey = `trial_day_${dayNum}_${notifKey}`;
+                if (!localStorage.getItem(globalKey)) {
+                    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+                        navigator.serviceWorker.ready.then(reg => {
+                            reg.showNotification(title, { body, icon: "https://cdn-icons-png.flaticon.com/512/864/864685.png" });
+                        });
+                    } else {
+                        new Notification(title, { body });
+                    }
+                    localStorage.setItem(globalKey, 'fired');
+                }
+            }
+        };
+
+        // Day 1 - 9am
+        fireTrialNotification(0, 9, 'priorities', 'CEO Command Center', 'What are your 3 priorities this week? Your Daily 3 is waiting');
+
+        // Day 3 - 8am
+        fireTrialNotification(2, 8, 'morning_check', 'Daily CEO Check-in', "Morning CEO check-in: your Daily 3 is ready. 3 tasks. That's all it takes today.");
+
+        // Day 5 - Friday - 9am
+        fireTrialNotification(4, 9, 'friday_review', 'CEO Friday Review', "It's Friday — time for your CEO Review. 5 mins to close out the week like a pro.");
+
+        // Day 7 - 9am
+        fireTrialNotification(6, 9, 'coach_insights', 'CEO Strategy Update', "You're one week in. Your Executive AI Coach has insights ready — tap to see your Focus Score.");
+
+        // Day 12 - 10am
+        fireTrialNotification(11, 10, 'trial_ending', 'CEO Trial Ending', "2 days left on your free trial. Don't lose your plans, streaks & data — stay on as CEO");
     }
 }
 

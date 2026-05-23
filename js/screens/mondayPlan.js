@@ -76,7 +76,7 @@ export function renderMondayPlan() {
                 ${store.draftMondayPlan ? `
                 <div style="background: #f0fbff; padding: 0.75rem 1rem; border-radius: 8px; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--color-primary-dark); border: 1px solid #c9efff;">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path><path d="M12 7v6"></path><path d="M12 17h.01"></path></svg>
-                    ✨ Pre-filled by your AI Coach based on Friday's Check-in. Tweak as needed!
+                    ✨ Pre-filled by your Executive AI Coach based on Friday's Check-in. Tweak as needed!
                 </div>
                 ` : (mondayPlanData.generatedPlanId ? `
                 <div style="background: #f0fbff; padding: 0.75rem 1rem; border-radius: 8px; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; color: var(--color-primary-dark); border: 1px solid #c9efff;">

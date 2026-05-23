@@ -2,11 +2,11 @@
 
 function renderWidgetMessage(role, content) {
     const isAi = role === 'assistant';
-    const bg = isAi ? '#F8FAFC' : 'var(--color-primary)';
-    const color = isAi ? 'var(--color-text-main)' : 'white';
+    const bg = isAi ? '#F8FAFC' : 'var(--color-primary-light)';
+    const color = 'var(--color-black)';
     const align = isAi ? 'flex-start' : 'flex-end';
     const radius = isAi ? '16px 16px 16px 4px' : '16px 16px 4px 16px';
-    const border = isAi ? '1px solid var(--color-border)' : 'none';
+    const border = '1px solid var(--color-border)';
 
     let formattedContent = content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>');
 
@@ -27,6 +27,16 @@ function initChatWidget() {
     widgetContainer.style.zIndex = '9999';
     widgetContainer.style.fontFamily = "'Inter', sans-serif";
 
+    // Hide widget on wizard, auth, and billing pages initially
+    const hash = window.location.hash || '#/';
+    const path = hash.split('?')[0];
+    const isAuthRoute = path === '#/login' || path === '#/signup' || path === '#/forgot-password' || path === '#/reset-password';
+    if (path === '#/wizard' || isAuthRoute || path === '#/billing') {
+        widgetContainer.style.display = 'none';
+    } else {
+        widgetContainer.style.display = 'block';
+    }
+
     widgetContainer.innerHTML = `
         <!-- Floating Chat Window (Hidden by default) -->
         <div id="ai-chat-window" style="display: none; position: absolute; bottom: 70px; right: 0; width: 350px; height: 500px; background: white; border-radius: 16px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.1); border: 1px solid var(--color-border); flex-direction: column; overflow: hidden; transform-origin: bottom right; transition: all 0.2s ease;">
@@ -36,7 +46,7 @@ function initChatWidget() {
                 <div style="display: flex; align-items: center; gap: 0.75rem;">
                     <div style="width: 32px; height: 32px; border-radius: 50%; background: rgba(255,255,255,0.2); display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 0.85rem;">AI</div>
                     <div>
-                        <h3 style="margin: 0; font-size: 0.95rem; font-weight: 600;">CEO Advisor</h3>
+                        <h3 style="margin: 0; font-size: 0.95rem; font-weight: 600;">Executive AI Coach</h3>
                     </div>
                 </div>
                 <!-- Clear Chat Button -->
@@ -53,12 +63,23 @@ function initChatWidget() {
             <!-- Input Form -->
             <div style="padding: 0.75rem 1rem; border-top: 1px solid var(--color-border); background: #F8FAFC;">
                 <form id="ai-widget-form" style="display: flex; gap: 0.5rem; margin: 0;">
-                    <input type="text" id="ai-widget-input" placeholder="Ask your Co-Pilot..." style="flex: 1; border-radius: 20px; border: 1px solid var(--color-border); padding: 0.5rem 1rem; font-size: 0.85rem; outline: none; transition: border-color 0.2s;" autocomplete="off" required>
+                    <input type="text" id="ai-widget-input" placeholder="Ask your Co-Pilot..." style="flex: 1; border-radius: 20px; border: 1px solid var(--color-border); padding: 0.5rem 1rem; font-size: 0.85rem; color: var(--color-black); outline: none; transition: border-color 0.2s;" autocomplete="off" required>
                     <button type="submit" id="ai-widget-submit" style="background: var(--color-primary); color: white; border: none; border-radius: 50%; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; transition: transform 0.1s;">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-left: -2px;"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
                     </button>
                 </form>
             </div>
+        </div>
+
+        <!-- Onboarding Coach Tooltip Popover -->
+        <div id="ai-coach-tooltip-popover" style="display: ${localStorage.getItem('first_coach_visit_done') === 'true' ? 'none' : 'block'}; position: absolute; bottom: 75px; right: 0; width: 280px; background: white; color: var(--color-text-main); padding: 1rem; border-radius: 12px; border: 1px solid var(--color-primary-light); border-left: 4px solid var(--color-primary); box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); z-index: 9998;">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem; margin-bottom: 0.25rem;">
+                <strong style="color: var(--color-primary-dark); font-size: 0.9rem;">Meet Your Executive AI Coach</strong>
+                <button id="btn-close-coach-tooltip" style="background: none; border: none; font-size: 1.1rem; color: var(--color-text-muted); cursor: pointer; padding: 0;">&times;</button>
+            </div>
+            <p style="margin: 0; font-size: 0.85rem; line-height: 1.4;">
+                Your Executive AI Coach knows your goals and your numbers. Ask it anything — or hit 'Generate Executive Report' to see exactly where your funnel needs work.
+            </p>
         </div>
 
         <!-- Floating Toggle Button -->
@@ -83,24 +104,39 @@ function initChatWidget() {
 
     let isOpen = false;
 
+    // Dismiss Tooltip logic
+    const dismissTooltip = () => {
+        localStorage.setItem('first_coach_visit_done', 'true');
+        const tooltipPopover = document.getElementById('ai-coach-tooltip-popover');
+        if (tooltipPopover) tooltipPopover.style.display = 'none';
+    };
+
+    const closeCoachTooltipBtn = document.getElementById('btn-close-coach-tooltip');
+    if (closeCoachTooltipBtn) {
+        closeCoachTooltipBtn.addEventListener('click', (e) => {
+            e.stopPropagation(); // prevent opening chat
+            dismissTooltip();
+        });
+    }
+
     // Load History Function
     const loadMemory = () => {
         if (!window.ceoChatHistory || window.ceoChatHistory.length === 0) {
             window.ceoChatHistory = [];
-            const greeting = `Hello! I am your Executive AI Advisor. I have your 90-day goals, active bottleneck, and recent task history fully loaded in my context. How can I accelerate your productivity today?`;
+            const greeting = `Hello! I am your Executive AI Coach. I have your 90-day goals, active bottleneck, and recent task history fully loaded in my context. How can I accelerate your productivity today?`;
             
             messagesEl.innerHTML = renderWidgetMessage('assistant', greeting);
             
             // Inject Quick Prompt Chips
             messagesEl.innerHTML += `
                 <div style="display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.25rem;">
-                    <button type="button" onclick="document.getElementById('ai-widget-input').value='Critique my latest weekly plan: are there too many distractions?'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-primary); color: var(--color-primary); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
+                    <button type="button" onclick="document.getElementById('ai-widget-input').value='Critique my latest weekly plan: are there too many distractions?'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-text-muted); color: var(--color-black); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
                         🎯 <b>Plan Alignment:</b> Critique my weekly priorities.
                     </button>
-                    <button type="button" onclick="document.getElementById('ai-widget-input').value='Give me 3 specific, fast actions I can take this week to overcome my main bottleneck.'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-primary); color: var(--color-primary); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
+                    <button type="button" onclick="document.getElementById('ai-widget-input').value='Give me 3 specific, fast actions I can take this week to overcome my main bottleneck.'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-text-muted); color: var(--color-black); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
                         🚧 <b>Bottleneck Resolution:</b> Give me 3 fast actions to unblock me.
                     </button>
-                    <button type="button" onclick="document.getElementById('ai-widget-input').value='Based on my current business stage and goals, what is the #1 revenue-generating action I should focus on today?'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-primary); color: var(--color-primary); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
+                    <button type="button" onclick="document.getElementById('ai-widget-input').value='Based on my current business stage and goals, what is the #1 revenue-generating action I should focus on today?'; document.getElementById('ai-widget-submit').click();" style="text-align: left; background: white; border: 1px solid var(--color-text-muted); color: var(--color-black); padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s;">
                         💰 <b>Revenue Focus:</b> What is the #1 action I should take today?
                     </button>
                 </div>
@@ -116,6 +152,7 @@ function initChatWidget() {
 
     // Toggle Window
     toggleBtn.addEventListener('click', () => {
+        dismissTooltip();
         isOpen = !isOpen;
         if (isOpen) {
             chatWindow.style.display = 'flex';
@@ -155,7 +192,7 @@ function initChatWidget() {
 
         const loadingId = 'wid-load-' + Date.now();
         messagesEl.innerHTML += `
-            <div id="${loadingId}" style="align-self: flex-start; padding: 0.5rem 1rem; color: var(--color-text-muted); font-size: 0.8rem; font-style: italic;">
+            <div id="${loadingId}" style="align-self: flex-start; padding: 0.5rem 1rem; color: var(--color-black); font-size: 0.8rem; font-style: italic;">
                 Thinking...
             </div>
         `;

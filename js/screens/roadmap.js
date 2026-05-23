@@ -72,6 +72,11 @@ export function renderRoadmap() {
                         </label>
                     `).join('')}
                 </div>
+                
+                <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px dashed rgba(0, 0, 0, 0.1); font-size: 0.875rem; color: var(--color-text-muted); display: flex; align-items: center; gap: 0.5rem;">
+                    <span style="font-size: 1.2rem;">💡</span>
+                    <span>If you're unsure about anything here, need help with ideas or how to set things up, you can ask your Executive AI Coach.</span>
+                </div>
             </div>
 
             <!-- Red Flags -->

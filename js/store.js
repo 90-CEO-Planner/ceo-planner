@@ -12,7 +12,8 @@ const defaultState = {
         bottleneck: '',
         strategyMode: '', // Phase 2: 'First Sale Sprint', 'Offer Launch Quarter', 'Audience Growth Quarter', 'CEO Reset'
         planningDay: 'Monday',
-        reminderTimes: []
+        reminderTimes: [],
+        trialStartDate: '' // ISO timestamp for notification and banner scheduling
     },
     goals: {
         focus: '',

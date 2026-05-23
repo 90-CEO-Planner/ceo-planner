@@ -1,12 +1,34 @@
 // settings.js
 import { renderNav } from '../components/nav.js';
-import { getStore, updateProfile, updateGoals } from '../store.js';
+import { getStore, updateProfile, updateGoals, updateRevenueSettings, updateLeadGoal } from '../store.js';
+
+function getCurrentUserEmail() {
+    try {
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key.startsWith('sb-') && key.endsWith('-auth-token')) {
+                const sessionStr = localStorage.getItem(key);
+                if (sessionStr) {
+                    const session = JSON.parse(sessionStr);
+                    if (session && session.user && session.user.email) {
+                        return session.user.email;
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        console.error("Error reading session email from localStorage:", e);
+    }
+    return null;
+}
 
 export function renderSettings() {
     // We bind the event listeners after HTML is rendered using setScreenModule
     window.setScreenModule({ attachEvents: settingsAttachEvents });
     const store = getStore();
     const reminders = store.profile.reminderTimes || [];
+    const userEmail = getCurrentUserEmail();
+    const isAdmin = userEmail === 'jeanette_spencer@yahoo.com';
 
     // Quick helper to check if a reminder is active
     const isChecked = (val) => reminders.includes(val) ? 'checked' : '';
@@ -51,7 +73,7 @@ export function renderSettings() {
             <h4 class="mb-4 pt-4" style="border-top: 1px solid var(--color-border); color: var(--color-primary-dark);">CEO Business Profile</h4>
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Top Business Bottleneck</label>
-                <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">The AI Coach uses this to prioritize its Friday Advice.</p>
+                <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">The Executive AI Coach uses this to prioritize its Friday Advice.</p>
                 <select id="set-bottleneck" class="form-input" style="padding: 0.75rem;">
                     <option value="Sales Conversion" ${store.profile.bottleneck === 'Sales Conversion' ? 'selected' : ''}>Sales Conversion (Traffic is high, Sales are low)</option>
                     <option value="Audience Size" ${store.profile.bottleneck === 'Audience Size' ? 'selected' : ''}>Audience Size (Offers are great, Visibility is low)</option>
@@ -79,6 +101,17 @@ export function renderSettings() {
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Measurable Outcome</label>
                 <input type="text" id="set-outcome" class="form-input" value="${store.goals.outcome || ''}" placeholder="e.g. 10 beta clients at $1.5k" required>
+            </div>
+            <div class="form-group mb-4">
+                <label class="form-label" style="font-weight: 600;">Quarterly Revenue Goal</label>
+                <div style="position: relative; display: flex; align-items: center;">
+                    <span style="position: absolute; left: 1rem; font-weight: 600; color: var(--color-text-muted);">${store.settings?.currency || '$'}</span>
+                    <input type="number" id="set-revenue-goal" class="form-input" value="${store.revenue?.quarterlyGoal || 0}" min="0" required style="padding-left: 2rem;">
+                </div>
+            </div>
+            <div class="form-group mb-4">
+                <label class="form-label" style="font-weight: 600;">Quarterly Lead Goal</label>
+                <input type="number" id="set-lead-goal" class="form-input" value="${store.leads?.quarterlyGoal || 0}" min="0" required>
             </div>
             
             <div class="form-group mb-6">
@@ -136,17 +169,19 @@ export function renderSettings() {
 
             </div>
 
+            ${isAdmin ? `
             <h3 class="mb-4 pt-4" style="border-top: 1px solid var(--color-border); color: #10a37f; display: flex; align-items: center; gap: 0.5rem;">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
                 Generative AI Integration
             </h3>
             <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1rem;">
-                Connect your OpenAI API key to unlock the Level 3 AI Coach. Your key is stored <b>exclusively locally</b> in this browser and never sent to our database.
+                Connect your OpenAI API key to unlock the Level 3 Executive AI Coach. Your key is stored <b>exclusively locally</b> in this browser and never sent to our database.
             </p>
             <div class="form-group">
                 <label>ChatGPT API Key</label>
                 <input type="password" id="set-openai-key" class="form-input" placeholder="sk-..." value="${localStorage.getItem('ceo_openai_key') || ''}">
             </div>
+            ` : ''}
 
             <div class="mt-8 flex justify-end">
                 <button type="submit" class="btn btn-primary">Save Preferences</button>
@@ -242,6 +277,9 @@ function settingsAttachEvents() {
             const bottleneck = document.getElementById('set-bottleneck').value;
             const strategyMode = document.getElementById('set-strategy').value;
 
+            const revenueGoal = parseFloat(document.getElementById('set-revenue-goal').value) || 0;
+            const leadGoal = parseFloat(document.getElementById('set-lead-goal').value) || 0;
+
             updateProfile({
                 name: name,
                 businessName: biz,
@@ -251,6 +289,9 @@ function settingsAttachEvents() {
                 reminderTimes: newReminders,
                 planningDay: planningDay
             });
+
+            updateRevenueSettings({ quarterlyGoal: revenueGoal });
+            updateLeadGoal(leadGoal);
 
             const openaiKeyEl = document.getElementById('set-openai-key');
             if (openaiKeyEl) {

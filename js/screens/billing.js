@@ -32,10 +32,7 @@ function billingAttachEvents() {
     const btnPortal = document.getElementById('btn-portal');
     if (btnPortal) {
         btnPortal.addEventListener('click', () => {
-            // In a real app, you would hit your Supabase Edge Function to generate a Stripe Customer Portal session URL.
-            // For now, this is where the user puts their hardcoded Stripe Customer Portal link from the Stripe Dashboard.
-            // Example: https://billing.stripe.com/p/session/test_12345
-            alert("This will redirect to the Stripe Customer Portal where the user can update their card.");
+            window.location.href = 'https://billing.stripe.com/p/login/eVq3cucex8YXc1q0tk18c00';
         });
     }
 }

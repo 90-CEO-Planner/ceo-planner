@@ -33,6 +33,17 @@ function router() {
     if (isAuthenticated) checkPushNotifications();
     
     const isAuthRoute = path === '#/login' || path === '#/signup' || path === '#/forgot-password' || path === '#/reset-password';
+    
+    // Dynamic AI Widget display toggling
+    const widget = document.getElementById('ceo-ai-widget');
+    if (widget) {
+        if (path === '#/wizard' || isAuthRoute || path === '#/billing') {
+            widget.style.display = 'none';
+        } else {
+            widget.style.display = 'block';
+        }
+    }
+
     if (!isAuthenticated && !isAuthRoute) {
         window.location.hash = '#/login';
         return;
@@ -61,8 +72,8 @@ function router() {
     const store = getStore();
     const isSetupComplete = store.goals && store.goals.focus !== '';
 
-    if (!isSetupComplete && path !== '#/' && path !== '#/wizard' && !isAuthRoute && path !== '#/billing') {
-        window.location.hash = '#/';
+    if (!isSetupComplete && path !== '#/wizard' && !isAuthRoute && path !== '#/billing') {
+        window.location.hash = '#/wizard';
         return;
     }
 
@@ -86,7 +97,7 @@ function router() {
             if (isSetupComplete) {
                 window.location.hash = '#/dashboard';
             } else {
-                appContainer.innerHTML = renderWelcome();
+                window.location.hash = '#/wizard';
             }
             break;
         case '#/wizard':
@@ -183,6 +194,45 @@ function checkPushNotifications() {
 
     if (store.profile.reminderTimes.includes('Friday Review Prompt') && todayName === 'Friday' && hour >= 14) {
         fireLocalNotification('friday_review', 'Friday Review', 'Time to log your wins and track your revenue for the week!');
+    }
+
+    // --- Trial Notification Sequence ---
+    const trialStartDateStr = store.profile?.trialStartDate;
+    if (trialStartDateStr) {
+        const trialStart = new Date(trialStartDateStr);
+        const diffMs = now - trialStart;
+        const elapsedDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+        
+        const fireTrialNotification = (dayNum, targetHour, notifKey, title, body) => {
+            if (elapsedDays === dayNum && hour >= targetHour) {
+                const globalKey = `trial_day_${dayNum}_${notifKey}`;
+                if (!localStorage.getItem(globalKey)) {
+                    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+                        navigator.serviceWorker.ready.then(reg => {
+                            reg.showNotification(title, { body, icon: "https://cdn-icons-png.flaticon.com/512/864/864685.png" });
+                        });
+                    } else {
+                        new Notification(title, { body });
+                    }
+                    localStorage.setItem(globalKey, 'fired');
+                }
+            }
+        };
+
+        // Day 1 - 9am
+        fireTrialNotification(0, 9, 'priorities', 'CEO Command Center', 'What are your 3 priorities this week? Your Daily 3 is waiting');
+
+        // Day 3 - 8am
+        fireTrialNotification(2, 8, 'morning_check', 'Daily CEO Check-in', "Morning CEO check-in: your Daily 3 is ready. 3 tasks. That's all it takes today.");
+
+        // Day 5 - Friday - 9am
+        fireTrialNotification(4, 9, 'friday_review', 'CEO Friday Review', "It's Friday — time for your CEO Review. 5 mins to close out the week like a pro.");
+
+        // Day 7 - 9am
+        fireTrialNotification(6, 9, 'coach_insights', 'CEO Strategy Update', "You're one week in. Your Executive AI Coach has insights ready — tap to see your Focus Score.");
+
+        // Day 12 - 10am
+        fireTrialNotification(11, 10, 'trial_ending', 'CEO Trial Ending', "2 days left on your free trial. Don't lose your plans, streaks & data — stay on as CEO");
     }
 }
 
