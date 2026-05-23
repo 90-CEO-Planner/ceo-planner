@@ -279,6 +279,7 @@
     vertical-align: middle;
     margin-left: 0.25rem;
     cursor: help;
+    z-index: 40;
 }
 
 .tooltip-container:focus {
@@ -286,13 +287,13 @@
 }
 
 .info-icon {
-    color: var(--color-text-muted);
+    color: #CBD5E1; /* Light grey (slate-300) */
     transition: color var(--transition-fast);
 }
 
 .tooltip-container:hover .info-icon,
 .tooltip-container:focus .info-icon {
-    color: var(--color-primary-dark);
+    color: #94A3B8; /* Medium-light grey (slate-400) on hover */
 }
 
 .tooltip-content {
@@ -336,6 +337,24 @@
 .tooltip-container:focus .tooltip-content {
     visibility: visible;
     opacity: 1;
+    transform: translateX(-50%) translateY(0);
+}
+
+/* Tooltip Bottom Override */
+.tooltip-container.tooltip-bottom .tooltip-content {
+    bottom: auto;
+    top: calc(100% + 12px);
+    transform: translateX(-50%) translateY(-10px);
+}
+
+.tooltip-container.tooltip-bottom .tooltip-content::after {
+    top: auto;
+    bottom: 100%;
+    border-color: transparent transparent var(--color-black) transparent;
+}
+
+.tooltip-container.tooltip-bottom:hover .tooltip-content,
+.tooltip-container.tooltip-bottom:focus .tooltip-content {
     transform: translateX(-50%) translateY(0);
 }
 

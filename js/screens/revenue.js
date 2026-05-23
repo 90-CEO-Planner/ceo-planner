@@ -64,12 +64,12 @@ export function renderRevenue() {
                         </button>
                         <button id="btn-report-ai" class="btn btn-primary btn-sm" style="display: flex; align-items: center; gap: 0.5rem; background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark)); border: none; box-shadow: var(--shadow-sm);">
                             🤖 AI Executive Report
-                            ${renderTooltip("A comprehensive, AI-generated analysis of your business's financial health, sales pipeline, and growth bottlenecks.", "It synthesizes your traffic, calls, conversions, and revenue into a clear strategy briefing and lists specific, high-priority tasks to help you optimize your funnel.")}
+                            ${renderTooltip("A comprehensive, AI-generated analysis of your business's financial health, sales pipeline, and growth bottlenecks.", "It synthesizes your traffic, calls, conversions, and revenue into a clear strategy briefing and lists specific, high-priority tasks to help you optimize your funnel.", "bottom")}
                         </button>
                     </div>
                     <div style="background: var(--color-secondary-light); padding: 0.5rem 1rem; border-radius: var(--radius-full); display: flex; align-items: center; gap: 0.5rem; font-weight: 600; color: var(--color-secondary-dark);">
                         Quarter: ${insights.momentum}
-                        ${renderTooltip("Your quarterly revenue momentum score, comparing your current pace against your target goal.", "It tells you if you are ahead, on track, behind, or if you need to log more entries ('Not enough data') to compute a realistic projection.")}
+                        ${renderTooltip("Your quarterly revenue momentum score, comparing your current pace against your target goal.", "It tells you if you are ahead, on track, behind, or if you need to log more entries ('Not enough data') to compute a realistic projection.", "bottom")}
                     </div>
                 </div>
             </div>

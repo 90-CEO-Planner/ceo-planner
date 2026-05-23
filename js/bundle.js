@@ -1041,7 +1041,7 @@ function renderNav() {
 // --- js\components\tooltip.js ---
 // tooltip.js
 
-function renderTooltip(whatStr, whyStr) {
+function renderTooltip(whatStr, whyStr, position = 'top') {
     // Generate a unique ID for aria properties
     const id = 'tt_' + Math.random().toString(36).substr(2, 9);
 
@@ -1054,7 +1054,7 @@ function renderTooltip(whatStr, whyStr) {
     }
 
     return `
-        <span class="tooltip-container" tabindex="0" aria-describedby="${id}">
+        <span class="tooltip-container ${position === 'bottom' ? 'tooltip-bottom' : ''}" tabindex="0" aria-describedby="${id}">
             <svg class="info-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="12" cy="12" r="10"></circle>
                 <line x1="12" y1="16" x2="12" y2="12"></line>
@@ -3129,12 +3129,12 @@ function renderRevenue() {
                         </button>
                         <button id="btn-report-ai" class="btn btn-primary btn-sm" style="display: flex; align-items: center; gap: 0.5rem; background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark)); border: none; box-shadow: var(--shadow-sm);">
                             🤖 AI Executive Report
-                            ${renderTooltip("A comprehensive, AI-generated analysis of your business's financial health, sales pipeline, and growth bottlenecks.", "It synthesizes your traffic, calls, conversions, and revenue into a clear strategy briefing and lists specific, high-priority tasks to help you optimize your funnel.")}
+                            ${renderTooltip("A comprehensive, AI-generated analysis of your business's financial health, sales pipeline, and growth bottlenecks.", "It synthesizes your traffic, calls, conversions, and revenue into a clear strategy briefing and lists specific, high-priority tasks to help you optimize your funnel.", "bottom")}
                         </button>
                     </div>
                     <div style="background: var(--color-secondary-light); padding: 0.5rem 1rem; border-radius: var(--radius-full); display: flex; align-items: center; gap: 0.5rem; font-weight: 600; color: var(--color-secondary-dark);">
                         Quarter: ${insights.momentum}
-                        ${renderTooltip("Your quarterly revenue momentum score, comparing your current pace against your target goal.", "It tells you if you are ahead, on track, behind, or if you need to log more entries ('Not enough data') to compute a realistic projection.")}
+                        ${renderTooltip("Your quarterly revenue momentum score, comparing your current pace against your target goal.", "It tells you if you are ahead, on track, behind, or if you need to log more entries ('Not enough data') to compute a realistic projection.", "bottom")}
                     </div>
                 </div>
             </div>
