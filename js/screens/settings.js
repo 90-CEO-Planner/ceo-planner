@@ -35,7 +35,7 @@ export function renderSettings() {
 
     return `
         ${renderNav()}
-<div class="main-content" style="max-width: 600px;">
+<div class="main-content" style="max-width: 800px;">
     <div class="flex justify-between items-center mb-6">
         <h2>Settings</h2>
         <a href="#/progress" class="btn btn-ghost" style="font-size: 0.875rem;">← Back</a>
@@ -55,10 +55,11 @@ export function renderSettings() {
             </div>
             
             <div class="form-group mb-6">
-                <label class="form-label" style="font-weight: 600;">Business Logo</label>
+                <label class="form-label" style="font-weight: 600;">Business Logo / Image</label>
+                <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-top: -0.25rem; margin-bottom: 0.75rem;">Recommended: Square dimensions (e.g. 512x512px or 1:1 ratio) for best display.</p>
                 <div style="display: flex; gap: 1rem; align-items: flex-start; margin-bottom: 0.5rem;">
-                    <div style="width: 60px; height: 60px; border-radius: var(--radius-md); background: var(--color-bg-light); border: 1px dashed var(--color-border); display: flex; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0;">
-                        ${store.profile.logo ? `<img src="${store.profile.logo}" id="logo-preview-img" style="width: 100%; height: 100%; object-fit: contain;">` : `<span id="logo-preview-placeholder" style="color: var(--color-text-muted); font-size: 0.75rem;">No Logo</span><img src="" id="logo-preview-img" style="display: none; width: 100%; height: 100%; object-fit: contain;">`}
+                    <div style="width: 80px; height: 80px; border-radius: var(--radius-md); background: var(--color-bg-light); border: 1px dashed var(--color-border); display: flex; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0;">
+                        ${store.profile.logo ? `<img src="${store.profile.logo}" id="logo-preview-img" style="width: 100%; height: 100%; object-fit: contain;">` : `<span id="logo-preview-placeholder" style="color: var(--color-text-muted); font-size: 0.75rem; text-align: center; padding: 0.25rem;">No Image</span><img src="" id="logo-preview-img" style="display: none; width: 100%; height: 100%; object-fit: contain;">`}
                     </div>
                     <div style="flex-grow: 1;">
                         <input type="text" id="set-logo-url" class="form-input mb-2" value="${store.profile.logo && store.profile.logo.startsWith('http') ? store.profile.logo : ''}" placeholder="Paste Image URL here...">
