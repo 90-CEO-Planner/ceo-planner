@@ -103,12 +103,15 @@ export function renderSettings() {
 
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Top Business Bottleneck</label>
-                <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">The Executive AI Coach uses this to prioritize its Friday Advice.</p>
-                <select id="set-bottleneck" class="form-input" style="padding: 0.75rem;">
-                    <option value="Sales Conversion" ${store.profile.bottleneck === 'Sales Conversion' ? 'selected' : ''}>Sales Conversion (Traffic is high, Sales are low)</option>
-                    <option value="Audience Size" ${store.profile.bottleneck === 'Audience Size' ? 'selected' : ''}>Audience Size (Offers are great, Visibility is low)</option>
-                    <option value="Time & Delivery" ${store.profile.bottleneck === 'Time & Delivery' || !store.profile.bottleneck ? 'selected' : ''}>Time / Delivery (Overworked & Burnt out)</option>
-                </select>
+                <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">What is the main constraint holding your business back? The Executive AI Coach uses this to customize your strategic feedback.</p>
+                <input type="text" id="set-bottleneck" class="form-input mb-3" value="${store.profile.bottleneck || ''}" placeholder="e.g. Booking discovery calls, delivery burn-out, hiring a manager" style="padding: 0.75rem;">
+                <div class="flex gap-2" style="flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem;">
+                    <button type="button" class="btn btn-ghost btn-sm btn-bottleneck-preset" style="font-size: 0.8rem; padding: 0.25rem 0.75rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm);" data-value="Sales Conversion">Sales Conversion</button>
+                    <button type="button" class="btn btn-ghost btn-sm btn-bottleneck-preset" style="font-size: 0.8rem; padding: 0.25rem 0.75rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm);" data-value="Lead Generation">Lead Generation</button>
+                    <button type="button" class="btn btn-ghost btn-sm btn-bottleneck-preset" style="font-size: 0.8rem; padding: 0.25rem 0.75rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm);" data-value="Delivery Overwhelm">Delivery Overwhelm</button>
+                    <button type="button" class="btn btn-ghost btn-sm btn-bottleneck-preset" style="font-size: 0.8rem; padding: 0.25rem 0.75rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm);" data-value="Offer/Niche Fit">Offer/Niche Fit</button>
+                    <button type="button" class="btn btn-ghost btn-sm btn-bottleneck-preset" style="font-size: 0.8rem; padding: 0.25rem 0.75rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm);" data-value="Marketing Routine">Marketing Routine</button>
+                </div>
             </div>
 
             <div class="form-group mb-0">
@@ -395,6 +398,18 @@ function settingsAttachEvents() {
                 }
             });
         }
+    });
+
+    // Handle Bottleneck Presets
+    document.querySelectorAll('.btn-bottleneck-preset').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            const val = e.target.getAttribute('data-value');
+            const input = document.getElementById('set-bottleneck');
+            if (input) {
+                input.value = val;
+            }
+        });
     });
 
     // Handle Billing Portal Click
