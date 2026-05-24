@@ -117,7 +117,8 @@ function authAttachEvents() {
         e.preventDefault();
         
         const emailEl = document.getElementById('auth-email');
-        const email = emailEl ? emailEl.value : null;
+        const rawEmail = emailEl ? emailEl.value : null;
+        const email = rawEmail ? rawEmail.trim().toLowerCase() : null;
         
         const passwordEl = document.getElementById('auth-password');
         const password = passwordEl ? passwordEl.value : null;

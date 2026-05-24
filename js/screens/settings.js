@@ -55,7 +55,7 @@ export function renderSettings() {
                 <input type="text" id="set-biz" class="form-input" value="${store.profile.businessName || ''}" required>
             </div>
             
-            <div class="form-group mb-0">
+            <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Business Logo / Image</label>
                 <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-top: -0.25rem; margin-bottom: 0.75rem;">Recommended: Square dimensions (e.g. 512x512px or 1:1 ratio) for best display.</p>
                 <div style="display: flex; gap: 1rem; align-items: flex-start; margin-bottom: 0.5rem;">
@@ -69,6 +69,12 @@ export function renderSettings() {
                         <input type="hidden" id="set-logo-base64" value="${store.profile.logo && store.profile.logo.startsWith('data:image') ? store.profile.logo : ''}">
                     </div>
                 </div>
+            </div>
+
+            <div class="form-group mb-0">
+                <label class="form-label" style="font-weight: 600;">CEO Commitment Statement</label>
+                <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-top: -0.25rem; margin-bottom: 0.75rem;">Your daily commitment shown on the dashboard.</p>
+                <input type="text" id="set-statement" class="form-input" value="${store.goals.statement || 'I commit to prioritizing my top tasks before checking email, and trusting my strategy.'}" required>
             </div>
         </div>
 
@@ -319,6 +325,7 @@ function settingsAttachEvents() {
             const newReminders = Array.from(checkedBoxes).map(cb => cb.value);
             const name = document.getElementById('set-name').value;
             const biz = document.getElementById('set-biz').value;
+            const statement = document.getElementById('set-statement').value.trim();
 
             // Determine Logo
             const urlVal = document.getElementById('set-logo-url').value;
@@ -365,7 +372,8 @@ function settingsAttachEvents() {
             updateGoals({
                 focus: focus,
                 outcome: outcome,
-                priorities: [p1, p2, p3].filter(Boolean)
+                priorities: [p1, p2, p3].filter(Boolean),
+                statement: statement
             });
 
             alert('Settings saved successfully!');

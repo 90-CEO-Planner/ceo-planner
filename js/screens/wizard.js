@@ -3,7 +3,7 @@ import { getStore, updateGoals, updateProfile, applyGeneratedPlan, updateSetting
 import { generate90DayActionPlan } from '../aiService.js';
 
 let currentStep = 1;
-const TOTAL_STEPS = 6;
+const TOTAL_STEPS = 7;
 
 export function renderWizard() {
     window.setScreenModule({ attachEvents: wizardAttachEvents });
@@ -20,7 +20,8 @@ export function renderWizard() {
                 <div class="wizard-step ${currentStep >= 3 ? 'active' : ''} ${currentStep > 3 ? 'completed' : ''}">3</div>
                 <div class="wizard-step ${currentStep >= 4 ? 'active' : ''} ${currentStep > 4 ? 'completed' : ''}">4</div>
                 <div class="wizard-step ${currentStep >= 5 ? 'active' : ''} ${currentStep > 5 ? 'completed' : ''}">5</div>
-                <div class="wizard-step ${currentStep >= 6 ? 'active' : ''}">6</div>
+                <div class="wizard-step ${currentStep >= 6 ? 'active' : ''} ${currentStep > 6 ? 'completed' : ''}">6</div>
+                <div class="wizard-step ${currentStep >= 7 ? 'active' : ''}">7</div>
             </div>
 
             <div class="card" id="wizard-content" style="padding: 2.5rem; box-shadow: var(--shadow-md); border-radius: var(--radius-lg); background: white;">
@@ -51,10 +52,53 @@ function renderStepContent() {
 
     if (currentStep === 2) {
         return `
+            <h3 class="mb-2" style="font-family: var(--font-heading); font-weight: 700;">CEO Profile Setup</h3>
+            <p class="form-helper mb-6" style="font-size: 0.95rem; color: var(--color-text-muted); line-height: 1.5;">Set up your basic business identity and daily commitment.</p>
+            
+            <form id="wizard-form-2">
+                <div class="form-group mb-4">
+                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">Your Name</label>
+                    <input type="text" id="set-name" class="form-input" value="${store.profile.name || ''}" placeholder="Enter your name" required style="border-radius: 8px; padding: 0.75rem;">
+                </div>
+                <div class="form-group mb-4">
+                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">Business Name</label>
+                    <input type="text" id="set-biz" class="form-input" value="${store.profile.businessName || ''}" placeholder="Enter your business name" required style="border-radius: 8px; padding: 0.75rem;">
+                </div>
+                <div class="form-group mb-4">
+                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">Business Logo / Image</label>
+                    <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-top: -0.25rem; margin-bottom: 0.75rem;">Recommended: Paste an Image URL or Upload a File.</p>
+                    <div style="display: flex; gap: 1rem; align-items: flex-start; margin-bottom: 0.5rem;">
+                        <div style="width: 60px; height: 60px; border-radius: var(--radius-md); background: var(--color-bg-light); border: 1px dashed var(--color-border); display: flex; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0;">
+                            ${store.profile.logo ? `<img src="${store.profile.logo}" id="logo-preview-img" style="width: 100%; height: 100%; object-fit: contain;">` : `<span id="logo-preview-placeholder" style="color: var(--color-text-muted); font-size: 0.7rem; text-align: center; padding: 0.2rem;">No Image</span><img src="" id="logo-preview-img" style="display: none; width: 100%; height: 100%; object-fit: contain;">`}
+                        </div>
+                        <div style="flex-grow: 1;">
+                            <input type="text" id="set-logo-url" class="form-input mb-2" value="${store.profile.logo && store.profile.logo.startsWith('http') ? store.profile.logo : ''}" placeholder="Paste Image URL..." style="padding: 0.5rem; font-size: 0.85rem; border-radius: 8px; width: 100%;">
+                            <label for="set-logo-file" class="btn btn-outline btn-sm" style="display: inline-block; cursor: pointer; font-size: 0.75rem; padding: 0.2rem 0.5rem; border: 1px solid var(--color-border); border-radius: 6px;">Upload File</label>
+                            <input type="file" id="set-logo-file" accept="image/*" style="display: none;">
+                            <input type="hidden" id="set-logo-base64" value="${store.profile.logo && store.profile.logo.startsWith('data:image') ? store.profile.logo : ''}">
+                        </div>
+                    </div>
+                </div>
+                <div class="form-group mb-6">
+                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">CEO Commitment Statement</label>
+                    <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-top: -0.25rem; margin-bottom: 0.5rem;">Your daily reminder shown on the dashboard.</p>
+                    <textarea id="set-commitment" class="form-input" style="border-radius: 8px; padding: 0.75rem; min-height: 80px; width: 100%; font-family: var(--font-body); font-size: 0.95rem;" required>${store.goals.statement || 'I commit to prioritizing my top tasks before checking email, and trusting my strategy.'}</textarea>
+                </div>
+                
+                <div class="flex justify-between mt-8" style="display: flex; gap: 1rem;">
+                    <button type="button" class="btn btn-ghost" id="btn-back" style="flex: 1;">Back</button>
+                    <button type="submit" class="btn btn-primary" style="flex: 2;">Next Step</button>
+                </div>
+            </form>
+        `;
+    }
+
+    if (currentStep === 3) {
+        return `
             <h3 class="mb-2" style="font-family: var(--font-heading); font-weight: 700;">Define your 90-Day Focus</h3>
             <p class="form-helper mb-6" style="font-size: 0.95rem; color: var(--color-text-muted); line-height: 1.5;">What is the ONE main objective you are driving towards? A tight focus prevents idea-hopping.</p>
             
-            <form id="wizard-form-2">
+            <form id="wizard-form-3">
                 <div class="form-group">
                     <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">What's your main focus for the next 90 days?</label>
                     <input type="text" class="form-input" id="goal-focus" value="${g.focus || ''}" placeholder="e.g., Launch Signature Course, Double Email List" required style="border-radius: 8px; padding: 0.75rem;" />
@@ -67,12 +111,12 @@ function renderStepContent() {
         `;
     }
 
-    if (currentStep === 3) {
+    if (currentStep === 4) {
         return `
             <h3 class="mb-2" style="font-family: var(--font-heading); font-weight: 700;">Tell Us About Your Business</h3>
             <p class="form-helper mb-6" style="font-size: 0.95rem; color: var(--color-text-muted); line-height: 1.5;">Knowing your model, niche, audience, and bottleneck helps the Executive AI Coach tailor all recommendations and content hooks directly to you.</p>
             
-            <form id="wizard-form-3">
+            <form id="wizard-form-4">
                 <div class="form-group mb-4">
                     <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">Business Model / Type</label>
                     <select class="form-input" id="biz-model" required style="border-radius: 8px; padding: 0.75rem; width: 100%;">
@@ -112,12 +156,12 @@ function renderStepContent() {
         `;
     }
 
-    if (currentStep === 4) {
+    if (currentStep === 5) {
         return `
             <h3 class="mb-2" style="font-family: var(--font-heading); font-weight: 700;">Financial Target</h3>
             <p class="form-helper mb-6" style="font-size: 0.95rem; color: var(--color-text-muted); line-height: 1.5;">Set a clear, measurable revenue milestone for this 90-day period.</p>
             
-            <form id="wizard-form-4">
+            <form id="wizard-form-5">
                 <div class="form-group">
                     <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">What revenue target are you aiming for?</label>
                     <div style="position: relative; display: flex; align-items: center;">
@@ -133,12 +177,12 @@ function renderStepContent() {
         `;
     }
 
-    if (currentStep === 5) {
+    if (currentStep === 6) {
         return `
             <h3 class="mb-2" style="font-family: var(--font-heading); font-weight: 700;">Choose Your Top 3 Priorities</h3>
             <p class="form-helper mb-6" style="font-size: 0.95rem; color: var(--color-text-muted); line-height: 1.5;">To achieve your focus, what are the three big projects that will move the needle?</p>
             
-            <form id="wizard-form-5">
+            <form id="wizard-form-6">
                 <div class="form-group" style="display: flex; flex-direction: column; gap: 1rem;">
                     <div>
                         <label class="form-label" style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0.4rem; display: block;">Priority 1</label>
@@ -153,7 +197,7 @@ function renderStepContent() {
                         <input type="text" class="form-input" id="p3" value="${g.priorities[2] || ''}" placeholder="e.g., Host weekly IG live Q&As" required style="border-radius: 8px; padding: 0.75rem;" />
                     </div>
                 </div>
-                <div class="flex justify-between mt-8" id="wizard-step-5-buttons" style="display: flex; gap: 1rem;">
+                <div class="flex justify-between mt-8" id="wizard-step-6-buttons" style="display: flex; gap: 1rem;">
                     <button type="button" class="btn btn-ghost" id="btn-back" style="flex: 1;">Back</button>
                     <button type="submit" class="btn btn-primary" id="btn-complete-setup" style="flex: 2;">Generate My 90-Day Plan</button>
                 </div>
@@ -165,7 +209,7 @@ function renderStepContent() {
         `;
     }
 
-    if (currentStep === 6) {
+    if (currentStep === 7) {
         return `
             <div style="text-align: center; padding: 1rem 0;">
                 <div style="font-size: 3.5rem; margin-bottom: 1.5rem; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.05));">🎉</div>
@@ -193,6 +237,60 @@ function wizardAttachEvents() {
         });
     }
 
+    if (currentStep === 2) {
+        // Handle File Input for Logo
+        const fileInput = document.getElementById('set-logo-file');
+        const urlInput = document.getElementById('set-logo-url');
+        const base64Input = document.getElementById('set-logo-base64');
+        const previewImg = document.getElementById('logo-preview-img');
+        const previewPlaceholder = document.getElementById('logo-preview-placeholder');
+
+        if (fileInput) {
+            fileInput.addEventListener('change', function (e) {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = function (event) {
+                        const base64Str = event.target.result;
+                        base64Input.value = base64Str;
+                        urlInput.value = '';
+                        if (previewImg) {
+                            previewImg.src = base64Str;
+                            previewImg.style.display = 'block';
+                        }
+                        if (previewPlaceholder) {
+                            previewPlaceholder.style.display = 'none';
+                        }
+                    };
+                    reader.readAsDataURL(file);
+                }
+            });
+        }
+
+        if (urlInput) {
+            urlInput.addEventListener('input', function (e) {
+                const url = e.target.value;
+                if (url) {
+                    base64Input.value = '';
+                    if (previewImg) {
+                        previewImg.src = url;
+                        previewImg.style.display = 'block';
+                    }
+                    if (previewPlaceholder) {
+                        previewPlaceholder.style.display = 'none';
+                    }
+                } else if (!base64Input.value) {
+                    if (previewImg) {
+                        previewImg.style.display = 'none';
+                    }
+                    if (previewPlaceholder) {
+                        previewPlaceholder.style.display = 'block';
+                    }
+                }
+            });
+        }
+    }
+
     if (form) {
         form.addEventListener('submit', (e) => {
             e.preventDefault();
@@ -205,7 +303,21 @@ function wizardAttachEvents() {
                 wizardAttachEvents();
             }
             else if (currentStep === 2) {
-                currentGoals.focus = document.getElementById('goal-focus').value.trim();
+                const name = document.getElementById('set-name').value.trim();
+                const bizName = document.getElementById('set-biz').value.trim();
+                const commitment = document.getElementById('set-commitment').value.trim();
+                
+                const urlVal = document.getElementById('set-logo-url').value.trim();
+                const base64Val = document.getElementById('set-logo-base64').value;
+                const finalLogo = urlVal || base64Val || '';
+                
+                updateProfile({
+                    name: name,
+                    businessName: bizName,
+                    logo: finalLogo
+                });
+                
+                currentGoals.statement = commitment;
                 updateGoals(currentGoals);
 
                 currentStep++;
@@ -213,6 +325,14 @@ function wizardAttachEvents() {
                 wizardAttachEvents();
             }
             else if (currentStep === 3) {
+                currentGoals.focus = document.getElementById('goal-focus').value.trim();
+                updateGoals(currentGoals);
+
+                currentStep++;
+                document.getElementById('app-container').innerHTML = renderWizard();
+                wizardAttachEvents();
+            }
+            else if (currentStep === 4) {
                 const businessModel = document.getElementById('biz-model').value;
                 const targetAudience = document.getElementById('target-audience').value.trim();
                 const industryNiche = document.getElementById('industry-niche').value.trim();
@@ -223,7 +343,7 @@ function wizardAttachEvents() {
                 document.getElementById('app-container').innerHTML = renderWizard();
                 wizardAttachEvents();
             }
-            else if (currentStep === 4) {
+            else if (currentStep === 5) {
                 const quarterlyGoal = parseFloat(document.getElementById('rev-goal').value);
                 updateRevenueSettings({ quarterlyGoal });
 
@@ -231,7 +351,7 @@ function wizardAttachEvents() {
                 document.getElementById('app-container').innerHTML = renderWizard();
                 wizardAttachEvents();
             }
-            else if (currentStep === 5) {
+            else if (currentStep === 6) {
                 currentGoals.priorities = [
                     document.getElementById('p1').value.trim(),
                     document.getElementById('p2').value.trim(),
@@ -243,7 +363,7 @@ function wizardAttachEvents() {
                     month2: `Promote and launch ${currentGoals.priorities[1]}`,
                     month3: `Scale and stabilize ${currentGoals.priorities[2]}`
                 };
-                currentGoals.statement = "I commit to prioritizing my top tasks before checking email, and trusting my strategy.";
+                // Keeps statement already set in Step 2 instead of hard-overwriting it here
                 updateGoals(currentGoals);
 
                 // Set defaults for settings
@@ -252,12 +372,12 @@ function wizardAttachEvents() {
                 });
                 updateRevenueSettings({
                     quarterlyGoal: parseFloat(store.revenue?.quarterlyGoal || 0),
-                    averageOfferPrice: 1000 // default price representation
+                    averageOfferPrice: 1000
                 });
-                updateLeadGoal(100); // default quarterly lead target
+                updateLeadGoal(100);
 
                 // Show loading spinner
-                const buttonsDiv = document.getElementById('wizard-step-5-buttons');
+                const buttonsDiv = document.getElementById('wizard-step-6-buttons');
                 const loadingDiv = document.getElementById('wizard-loading');
                 if (buttonsDiv && loadingDiv) {
                     buttonsDiv.style.display = 'none';
@@ -269,14 +389,13 @@ function wizardAttachEvents() {
                     if (plan) {
                         applyGeneratedPlan(plan);
                         
-                        // Set trialStartDate and default profile details
                         updateProfile({
                             trialStartDate: new Date().toISOString(),
                             stage: store.profile?.stage || 'growth',
                             bottleneck: store.profile?.bottleneck || 'Lead Generation'
                         });
 
-                        currentStep = 6;
+                        currentStep = 7;
                         document.getElementById('app-container').innerHTML = renderWizard();
                         wizardAttachEvents();
                     } else {
