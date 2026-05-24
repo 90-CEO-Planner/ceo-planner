@@ -1,5 +1,4 @@
-import { getStore, addWeeklyPlan, updateWeeklyPlan, getRevenueInsights, clearDraftMondayPlan } from '../store.js';
-import { updateDailyLog } from '../store.js';
+import { getStore, addWeeklyPlan, updateWeeklyPlan, getRevenueInsights, clearDraftMondayPlan, getLocalDateString, updateDailyLog } from '../store.js';
 
 let mondayStep = 1;
 const MONDAY_TOTAL_STEPS = 5;
@@ -346,12 +345,14 @@ function mondayPlanAttachEvents() {
             const newPlan = {
                 winCondition: mondayPlanData.weeklyFocus,
                 priorities: mondayPlanData.priorities, // Local priorities for this specific week (optional if we map to global)
+                topActions: mondayPlanData.priorities, // Map to topActions for compatibility
                 revenueAction: mondayPlanData.revenueAction,
                 visibilityAction: "Integrated into priorities", // Fallback for backwards compatibility with the planner UI insights
                 followUps: mondayPlanData.revenueAction.toLowerCase().includes('follow') ? mondayPlanData.revenueAction : "Integrated into priorities",
                 daily3: mondayPlanData.daily3,
                 id: mondayPlanData.generatedPlanId ? mondayPlanData.generatedPlanId : undefined,
-                applied: mondayPlanData.generatedPlanId ? true : undefined
+                applied: mondayPlanData.generatedPlanId ? true : undefined,
+                date: new Date().toISOString() // Ensure active window starts NOW
             };
 
             // 2. Save it
@@ -362,7 +363,7 @@ function mondayPlanAttachEvents() {
             }
 
             // 2.5 Save the specific tasks for Monday immediately into the daily log
-            const todayStr = new Date().toISOString().split('T')[0];
+            const todayStr = getLocalDateString();
             const cleanTasks = mondayPlanData.daily3.map(t => ({ text: t, done: false }));
             updateDailyLog(todayStr, cleanTasks);
 

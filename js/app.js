@@ -1,5 +1,5 @@
 // app.js
-import { getStore, seedMockData } from './store.js';
+import { getStore, seedMockData, getLocalDateString } from './store.js';
 
 // Screens
 // We'll import these dynamically or define them later to handle page renders
@@ -166,7 +166,7 @@ function checkPushNotifications() {
     const hour = now.getHours();
     
     const lastFiredStore = JSON.parse(localStorage.getItem('ceo_notif_last') || '{}');
-    const todayStr = now.toISOString().split('T')[0];
+    const todayStr = getLocalDateString(now);
     
     const fireLocalNotification = (key, title, body) => {
         if (lastFiredStore[key] !== todayStr) {

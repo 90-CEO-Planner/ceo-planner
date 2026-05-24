@@ -1,6 +1,6 @@
 // revenue.js
 import { renderNav } from '../components/nav.js';
-import { getStore, updateRevenueSettings, updateQuickOffers, addRevenueEntry, deleteRevenueEntry, getRevenueInsights, updateLeadGoal, addLeadEntry, deleteLeadEntry, addMetricSnapshot, deleteMetricSnapshot } from '../store.js';
+import { getStore, updateRevenueSettings, updateQuickOffers, addRevenueEntry, deleteRevenueEntry, getRevenueInsights, updateLeadGoal, addLeadEntry, deleteLeadEntry, addMetricSnapshot, deleteMetricSnapshot, getLocalDateString } from '../store.js';
 import { renderTooltip } from '../components/tooltip.js';
 
 export function renderRevenue() {
@@ -52,7 +52,7 @@ export function renderRevenue() {
     return `
         ${renderNav()}
         <div class="main-content dashboard-layout">
-            <div class="flex justify-between items-center mb-6">
+            <div class="flex justify-between items-center mb-6" style="position: relative; z-index: 49;">
                 <div>
                     <h2>Revenue & Sales Analytics</h2>
                     <p style="color: var(--color-text-muted);">Monitor your pipeline, conversions, and growth metrics.</p>
@@ -262,8 +262,8 @@ export function renderRevenue() {
                                <input type="number" id="log-amount" min="0" step="any" class="form-control" required placeholder="0.00">
                            </div>
                            <div class="form-group">
-                               <label>Date Received</label>
-                               <input type="date" id="log-date" class="form-control" required value="${new Date().toISOString().split('T')[0]}">
+                                <label>Date Received</label>
+                                <input type="date" id="log-date" class="form-control" required value="${getLocalDateString()}">
                            </div>
                            <div class="form-group">
                                <label>Source</label>
@@ -306,8 +306,8 @@ export function renderRevenue() {
                                </div>
                            </div>
                            <div class="form-group">
-                               <label>Date</label>
-                               <input type="date" id="lead-date" class="form-control" required value="${new Date().toISOString().split('T')[0]}">
+                                <label>Date</label>
+                                <input type="date" id="lead-date" class="form-control" required value="${getLocalDateString()}">
                            </div>
                            <div class="form-group">
                                <label>Lead Source</label>
@@ -332,8 +332,8 @@ export function renderRevenue() {
                                <input type="number" id="metric-social" min="0" step="1" class="form-control" required placeholder="e.g. 4500">
                            </div>
                            <div class="form-group">
-                               <label>Snapshot Date</label>
-                               <input type="date" id="metric-date" class="form-control" required value="${new Date().toISOString().split('T')[0]}">
+                                <label>Snapshot Date</label>
+                                <input type="date" id="metric-date" class="form-control" required value="${getLocalDateString()}">
                            </div>
                            <button type="submit" class="btn btn-outline" style="width: 100%;">Save Snapshot</button>
                        </form>
@@ -808,7 +808,7 @@ function renderChart(viewMode) {
         if (viewMode === 'week') {
             const start = new Date(date); start.setDate(date.getDate() - date.getDay());
             const end = new Date(start); end.setDate(start.getDate() + 6);
-            key = start.toISOString().split('T')[0];
+            key = getLocalDateString(start);
             label = `${start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} - ${end.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
         } else if (viewMode === 'month') {
             key = `${date.getFullYear()}-${date.getMonth()}`;

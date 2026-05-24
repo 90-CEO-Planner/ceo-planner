@@ -88,7 +88,7 @@ function buildSystemPrompt() {
     const recentSalesContext = recentSales || "No recent sales logged.";
 
     // 3. Daily 3 Actions
-    const todayStrDash = new Date().toISOString().split('T')[0];
+    const todayStrDash = getLocalDateString();
     const todaysLog = store.dailyLogs && store.dailyLogs[todayStrDash] ? store.dailyLogs[todayStrDash] : [];
     let dailyActionsContext = "No daily actions defined today.";
     if (todaysLog.length > 0) {

@@ -16,6 +16,14 @@ window.db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const STORE_KEY = 'ceoPlanner_store';
 
+function getLocalDateString(date = new Date()) {
+    const d = new Date(date);
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
 const defaultState = {
     profile: {
         name: '',
@@ -412,7 +420,7 @@ function addWeeklyPlan(plan) {
 
 function updateWeeklyPlan(planId, updatedFields) {
     const store = getStore();
-    const index = store.weeklyPlans.findIndex(p => p.id === planId);
+    const index = store.weeklyPlans.findIndex(p => String(p.id) === String(planId));
     if (index !== -1) {
         store.weeklyPlans[index] = { ...store.weeklyPlans[index], ...updatedFields };
         saveStore(store);
@@ -758,7 +766,7 @@ function buildSystemPrompt() {
     const recentSalesContext = recentSales || "No recent sales logged.";
 
     // 3. Daily 3 Actions
-    const todayStrDash = new Date().toISOString().split('T')[0];
+    const todayStrDash = getLocalDateString();
     const todaysLog = store.dailyLogs && store.dailyLogs[todayStrDash] ? store.dailyLogs[todayStrDash] : [];
     let dailyActionsContext = "No daily actions defined today.";
     if (todaysLog.length > 0) {
@@ -1745,11 +1753,12 @@ function renderDashboard() {
 
     // Check if there is an active weekly plan (ignore unapplied AI-generated drafts)
     const validPlans = store.weeklyPlans.filter(p => !p.generated || p.applied);
+    validPlans.sort((a, b) => new Date(a.date) - new Date(b.date));
     let activePlan = validPlans.length > 0 ? validPlans[validPlans.length - 1] : null;
 
     if (activePlan) {
         const diffDays = Math.ceil(Math.abs(new Date() - new Date(activePlan.date)) / (1000 * 60 * 60 * 24));
-        if (diffDays > 6) {
+        if (diffDays > 7) {
             activePlan = null;
         }
     }
@@ -1954,9 +1963,13 @@ function renderDashboard() {
                        `}
                     </div>
                     
-                    <div style="margin-top: 1.5rem; background: var(--color-bg-light); padding: 1rem; border-radius: var(--radius-sm); text-align: center;">
-                        <span style="display: block; font-size: 0.8rem; color: var(--color-text-muted); font-weight: 600; text-transform: uppercase;">CEO Weekly Score</span>
-                        <div id="score-val" style="font-size: 1.5rem; font-weight: 700; margin-top: 0.25rem;">Calculating...</div>
+                    <div style="margin-top: 1.5rem; background: var(--color-bg-light); padding: 1rem; border-radius: var(--radius-sm); text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.25rem;">
+                        <div style="display: flex; align-items: center; justify-content: center; gap: 0.25rem;">
+                            <span style="font-size: 0.8rem; color: var(--color-text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">CEO Weekly Score</span>
+                            ${renderTooltip("This score tracks the completion percentage of your Daily 3 tasks for the active week.", "Consistently executing your Daily 3 tasks keeps you focused on your high-priority goals and builds momentum.")}
+                        </div>
+                        <div id="score-val" style="font-size: 1.8rem; font-weight: 700; margin-top: 0.1rem;">Calculating...</div>
+                        <div id="score-details" style="font-size: 0.75rem; color: var(--color-text-muted); font-weight: 500; margin-top: 0.1rem;">0 of 0 tasks completed</div>
                     </div>
                 </div>
             </div>
@@ -2008,7 +2021,44 @@ function renderDashboard() {
         if (!taskText || taskText.trim() === '') return fallback;
         const lower = taskText.toLowerCase();
 
-        // Context-Aware Keyword Matching for Daily Actions
+        // Check business type
+        const model = (store.profile?.businessModel || '').toLowerCase();
+        const niche = (store.profile?.industryNiche || '').toLowerCase();
+        const isPhysicalOrEcom = model.match(/e-commerce|ecommerce|product|physical|retail|shop|store|handmade|craft/) || 
+                                 niche.match(/candle|product|shop|store|handmade|craft|soap|knit|art|jewelry/);
+
+        if (isPhysicalOrEcom) {
+            if (lower.match(/launch|new|collection/)) {
+                const options = ['Draft email sequence announcing your new product collection', 'Take teaser product photos of the new items', 'Set up the new product pages or listings on your store website', 'Outline the launch day promotion timeline'];
+                return options[Math.floor(Math.random() * options.length)];
+            }
+            if (lower.match(/email|newsletter/)) {
+                const options = ['Draft the weekly newsletter highlighting one best-selling product', 'Set up an automated cart-abandonment email sequence', 'Write a welcome email for new shop signups offering a discount'];
+                return options[Math.floor(Math.random() * options.length)];
+            }
+            if (lower.match(/post|reel|tiktok|content|video/)) {
+                const options = ['Record a behind-the-scenes video showing how your products are made/poured', 'Create a photo post styling your products beautifully in a home environment', 'Engage with 15 ideal customers or decor/niche creators on Instagram'];
+                return options[Math.floor(Math.random() * options.length)];
+            }
+            if (lower.match(/lead|magnet|freebie|opt-in/)) {
+                const options = ['Design a popup signup incentive offering free shipping or 10% off', 'Create a short product guide or quiz to help buyers choose the right scent/style', 'Set up a newsletter subscription form at your checkout page'];
+                return options[Math.floor(Math.random() * options.length)];
+            }
+            if (lower.match(/sales|sell|close|revenue|income|offer/)) {
+                const options = ['Create a limited-time product bundle or special discount code', 'Pitch your product line to a local boutique or physical retail shop for wholesale', 'Optimize your checkout page by adding a simple bump or add-on product'];
+                return options[Math.floor(Math.random() * options.length)];
+            }
+            if (lower.match(/website|landing page|store/)) {
+                const options = ['Review your online store landing page on mobile and optimize the load time', 'Add customer photo reviews to your best-selling product pages', 'Test your checkout flow end-to-end to ensure zero friction for buyers'];
+                return options[Math.floor(Math.random() * options.length)];
+            }
+            if (lower.match(/market|fair|booth|local/)) {
+                const options = ['Research local craft fairs, seasonal markets, or pop-up events and submit applications', 'Design or refine your physical booth table layout and signage', 'Print a QR code display to collect email signups at your checkout counter'];
+                return options[Math.floor(Math.random() * options.length)];
+            }
+        }
+
+        // Context-Aware Keyword Matching for Daily Actions (Service-based Fallback)
         if (lower.match(/launch|beta/)) {
             const options = ['Draft the launch email sequence', 'Create a list of VIPs to invite to the beta', 'Outline the core offer for the launch', 'Set up the checkout or registration page'];
             return options[Math.floor(Math.random() * options.length)];
@@ -2064,7 +2114,7 @@ function renderDashboard() {
     }
 
     // Use the explicit Daily 3 from the actual day if available, otherwise fallback to AI generated tasks based on priorities & weekly plan.
-    const todayStrDash = new Date().toISOString().split('T')[0];
+    const todayStrDash = getLocalDateString();
     let todaysLog = store.dailyLogs[todayStrDash];
 
     if (!g.focus) {
@@ -2158,7 +2208,7 @@ function renderDashboard() {
                         </div>
                         <div class="form-group">
                             <label>Date</label>
-                            <input type="date" id="qs-date" class="form-control" required value="${new Date().toISOString().split('T')[0]}">
+                            <input type="date" id="qs-date" class="form-control" required value="${getLocalDateString()}">
                         </div>
                         <button type="submit" class="btn btn-primary" style="width: 100%;">Save</button>
                     </form>
@@ -2230,7 +2280,7 @@ function getCoachingEngineData(store, activePlan, revInsights) {
     const streak = store.streak || 0;
 
     // Check Daily Tasks completion
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getLocalDateString();
     let allDailyChecked = true;
     const todaysLog = store.dailyLogs[todayStr];
     if (!todaysLog || todaysLog.length < 3) {
@@ -2383,31 +2433,79 @@ function getCoachingEngineData(store, activePlan, revInsights) {
 }
 
 function dashboardAttachEvents() {
+    // Daily 3 state persistence using the store logic
+    const todayStr = getLocalDateString();
+    if (window._tempGeneratedTodaysLog) {
+        updateDailyLog(todayStr, window._tempGeneratedTodaysLog);
+        delete window._tempGeneratedTodaysLog;
+    }
+
     // Nav active state
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
     document.getElementById('nav-dashboard')?.classList.add('active');
 
     // CEO Focus Score calculation
     const store = getStore();
-    const activePlan = store.weeklyPlans.length > 0 ? store.weeklyPlans[store.weeklyPlans.length - 1] : null;
+    const validPlans = store.weeklyPlans.filter(p => !p.generated || p.applied);
+    validPlans.sort((a, b) => new Date(a.date) - new Date(b.date));
+    let activePlan = validPlans.length > 0 ? validPlans[validPlans.length - 1] : null;
+
+    if (activePlan) {
+        const diffDays = Math.ceil(Math.abs(new Date() - new Date(activePlan.date)) / (1000 * 60 * 60 * 24));
+        if (diffDays > 7) {
+            activePlan = null;
+        }
+    }
+
     const scoreValEl = document.getElementById('score-val');
+    const scoreDetailsEl = document.getElementById('score-details');
 
-    if (activePlan && scoreValEl) {
-        let score = 0;
-        let reasons = [];
-        if (activePlan.visibilityAction?.length > 5) { score += 33; reasons.push('Visibility Set'); }
-        if (activePlan.revenueAction?.length > 5) { score += 34; reasons.push('Revenue Action Set'); }
-        if (activePlan.followUps?.length > 2 && !activePlan.followUps.toLowerCase().includes('none')) { score += 33; reasons.push('Follow-ups Set'); }
+    if (scoreValEl) {
+        // Get start of current week (Monday)
+        const now = new Date();
+        const dayOfWeek = now.getDay();
+        const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+        const startOfWeek = new Date(now);
+        startOfWeek.setDate(now.getDate() - diffToMonday);
+        startOfWeek.setHours(0, 0, 0, 0);
 
-        let color = '#B42318'; // Red
-        if (score > 65) color = '#F2C21D'; // Yellow/Secondary
-        if (score > 90) color = '#027A48'; // Green
+        let totalTasks = 0;
+        let completedTasks = 0;
 
-        scoreValEl.textContent = `${score}%`;
-        scoreValEl.style.color = color;
-        scoreValEl.title = reasons.join(', ');
-    } else if (scoreValEl) {
-        scoreValEl.textContent = 'No Plan';
+        for (let i = 0; i < 7; i++) {
+            const checkDate = new Date(startOfWeek);
+            checkDate.setDate(startOfWeek.getDate() + i);
+            const dateStr = getLocalDateString(checkDate);
+            const log = store.dailyLogs[dateStr];
+            if (log && Array.isArray(log)) {
+                log.forEach(t => {
+                    totalTasks++;
+                    if (t.done) completedTasks++;
+                });
+            }
+        }
+
+        if (totalTasks > 0) {
+            let score = Math.round((completedTasks / totalTasks) * 100);
+            let color = '#B42318'; // Red
+            if (score > 65) color = '#F2C21D'; // Yellow/Secondary
+            if (score > 90) color = '#027A48'; // Green
+
+            scoreValEl.textContent = `${score}%`;
+            scoreValEl.style.color = color;
+            scoreValEl.title = `${completedTasks} of ${totalTasks} tasks completed this week`;
+
+            if (scoreDetailsEl) {
+                scoreDetailsEl.textContent = `${completedTasks} of ${totalTasks} tasks completed this week`;
+            }
+        } else {
+            scoreValEl.textContent = 'No Plan';
+            scoreValEl.style.color = 'var(--color-text-muted)';
+            scoreValEl.title = 'No active plan or tasks logged for this week';
+            if (scoreDetailsEl) {
+                scoreDetailsEl.textContent = 'Please plan your week to start tracking';
+            }
+        }
     }
 
     // Regenerate Plan Logic
@@ -2439,12 +2537,7 @@ function dashboardAttachEvents() {
         });
     }
 
-    // Daily 3 state persistence using the store logic
-    const todayStr = new Date().toISOString().split('T')[0];
-    if (window._tempGeneratedTodaysLog) {
-        updateDailyLog(todayStr, window._tempGeneratedTodaysLog);
-        delete window._tempGeneratedTodaysLog;
-    }
+
 
     [0, 1, 2].forEach(i => {
         const checkbox = document.getElementById(`daily-task-${i}`);
@@ -2612,11 +2705,13 @@ function dashboardAttachEvents() {
 function renderPlanner() {
     window.setScreenModule({ attachEvents: plannerAttachEvents });
     const store = getStore();
-    let activePlan = store.weeklyPlans.length > 0 ? store.weeklyPlans[store.weeklyPlans.length - 1] : null;
+    const validPlans = store.weeklyPlans.filter(p => !p.generated || p.applied);
+    validPlans.sort((a, b) => new Date(a.date) - new Date(b.date));
+    let activePlan = validPlans.length > 0 ? validPlans[validPlans.length - 1] : null;
 
     if (activePlan) {
         const diffDays = Math.ceil(Math.abs(new Date() - new Date(activePlan.date)) / (1000 * 60 * 60 * 24));
-        if (diffDays > 6) {
+        if (diffDays > 7) {
             activePlan = null;
         }
     }
@@ -2816,25 +2911,25 @@ function plannerAttachEvents() {
             const planId = form.getAttribute('data-plan-id');
             const genId = form.getAttribute('data-gen-id');
             
-            if (planId) {
+            if (planId && planId !== '') {
                 // Update date so it extends the 6-day active window if they edit it
                 plan.date = new Date().toISOString();
                 updateWeeklyPlan(planId, plan);
                 alert("Weekly plan updated!");
-            } else if (genId) {
+            } else if (genId && genId !== '') {
                 // We are applying a generated plan
                 plan.applied = true;
                 plan.date = new Date().toISOString(); // Ensure it becomes active NOW
                 updateWeeklyPlan(genId, plan);
                 
                 // Move it to the end of the array so dashboard picks it up as the latest active plan
-                const store = window.getStore ? window.getStore() : JSON.parse(localStorage.getItem('ceoPlanner_store'));
-                if (store) {
-                   const idx = store.weeklyPlans.findIndex(p => String(p.id) === String(genId));
+                const storeStateForMove = getStore();
+                if (storeStateForMove) {
+                   const idx = storeStateForMove.weeklyPlans.findIndex(p => String(p.id) === String(genId));
                    if (idx !== -1) {
-                       const p = store.weeklyPlans.splice(idx, 1)[0];
-                       store.weeklyPlans.push(p);
-                       localStorage.setItem('ceoPlanner_store', JSON.stringify(store));
+                       const p = storeStateForMove.weeklyPlans.splice(idx, 1)[0];
+                       storeStateForMove.weeklyPlans.push(p);
+                       saveStore(storeStateForMove);
                    }
                 }
                 alert("Weekly plan applied and saved! Have a great week, CEO.");
@@ -2844,11 +2939,11 @@ function plannerAttachEvents() {
             }
 
             // Clear today's daily log so the dashboard regenerates the Daily 3 based on the new plan
-            const store = window.getStore ? window.getStore() : JSON.parse(localStorage.getItem('ceoPlanner_store') || '{}');
-            if (store && store.dailyLogs) {
-                const todayStr = new Date().toISOString().split('T')[0];
-                delete store.dailyLogs[todayStr];
-                localStorage.setItem('ceoPlanner_store', JSON.stringify(store));
+            const storeState = getStore();
+            if (storeState && storeState.dailyLogs) {
+                const todayStr = getLocalDateString();
+                delete storeState.dailyLogs[todayStr];
+                saveStore(storeState);
             }
 
             // Show success and redirect
@@ -2937,117 +3032,168 @@ function generatePlanSuggestions(store) {
     // Combine all user goals into searchable text
     const allGoalText = [focus90, currentMilestone, ...priorities].join(' ').toLowerCase();
 
+    // Check if user runs a physical product / e-commerce / handmade business
+    const model = (store.profile?.businessModel || '').toLowerCase();
+    const niche = (store.profile?.industryNiche || '').toLowerCase();
+    const isPhysicalOrEcom = model.match(/e-commerce|ecommerce|product|physical|retail|shop|store|handmade|craft/) || 
+                             niche.match(/candle|product|shop|store|handmade|craft|soap|knit|art|jewelry/);
+
     let suggestions = [];
 
     // === KEYWORD-TO-ACTION MAP ===
-    // Each entry maps goal keywords to concrete tactical actions
-    const actionMap = [
-        {
-            keywords: ['testimonial', 'testimonials', 'review', 'reviews', 'case study', 'case studies', 'social proof'],
-            actions: [
-                { type: 'Action', action: 'Draft a short testimonial request email — ask one clear question like "What result did you get from working together?"' },
-                { type: 'Action', action: 'Reach out personally to 3 past clients and ask for a quick written or video testimonial.' },
-                { type: 'Action', action: 'Create a simple Google Form for collecting testimonials and share the link with your most engaged clients.' },
-            ]
-        },
-        {
-            keywords: ['launch', 'beta', 'pre-sale', 'presale', 'pre-launch', 'prelaunch', 'cart open', 'waitlist'],
-            actions: [
-                { type: 'Action', action: 'Write 3 emails for your launch sequence: a teaser, a value email, and the cart-open announcement.' },
-                { type: 'Action', action: 'Create or refine your landing page or sign-up form to capture early interest and build your waitlist.' },
-                { type: 'Action', action: 'Plan your launch timeline: set specific dates for teaser content, cart open, and cart close.' },
-                { type: 'Action', action: 'Post 2 behind-the-scenes pieces of content this week to warm up your audience before the launch.' },
-            ]
-        },
-        {
-            keywords: ['course', 'program', 'curriculum', 'module', 'lesson', 'training', 'workshop content'],
-            actions: [
-                { type: 'Action', action: 'Outline the next module or lesson — write the key learning outcome and 3-5 teaching points.' },
-                { type: 'Action', action: 'Record or write one lesson this week. Done is better than perfect — aim for 80% good enough.' },
-                { type: 'Action', action: 'Create one worksheet, template, or resource that students can use immediately after the lesson.' },
-            ]
-        },
-        {
-            keywords: ['sales page', 'landing page', 'checkout', 'sales copy', 'conversion page', 'funnel'],
-            actions: [
-                { type: 'Action', action: 'Write the headline and first 3 sections of your sales page — focus on the transformation, not features.' },
-                { type: 'Action', action: 'Add 2-3 testimonials or proof points to your sales page. If you don\'t have them yet, collect them this week.' },
-                { type: 'Action', action: 'Test your full checkout flow end-to-end: payment, confirmation email, and delivery. Fix anything broken.' },
-            ]
-        },
-        {
-            keywords: ['email', 'newsletter', 'sequence', 'nurture', 'autoresponder', 'welcome sequence'],
-            actions: [
-                { type: 'Action', action: 'Write and schedule 2 value-packed emails this week — teach something useful and include one clear call-to-action.' },
-                { type: 'Action', action: 'Review your welcome sequence: does it introduce you, deliver value, and make an offer within the first 5 emails?' },
-                { type: 'Action', action: 'Segment your email list by engagement. Send a re-engagement email to inactive subscribers.' },
-            ]
-        },
-        {
-            keywords: ['content', 'post', 'reel', 'video', 'tiktok', 'instagram', 'youtube', 'blog', 'podcast', 'social media'],
-            actions: [
-                { type: 'Action', action: 'Batch-create 3 pieces of content: 1 educational, 1 story-driven, 1 with a direct call-to-action.' },
-                { type: 'Action', action: 'Repurpose your best-performing past content into a new format (e.g., turn a post into a reel or email).' },
-                { type: 'Action', action: 'Engage intentionally: spend 20 minutes daily replying to comments and DMs to build trust with your audience.' },
-            ]
-        },
-        {
-            keywords: ['lead', 'leads', 'subscriber', 'subscribers', 'lead magnet', 'freebie', 'opt-in', 'list building', 'grow list', 'grow audience'],
-            actions: [
-                { type: 'Action', action: 'Create or refine a lead magnet that solves one specific problem for your ideal client.' },
-                { type: 'Action', action: 'Publish 2 posts this week that directly promote your lead magnet with a clear call-to-action.' },
-                { type: 'Action', action: 'Set up or optimize a simple landing page for your lead magnet — test the sign-up flow yourself.' },
-            ]
-        },
-        {
-            keywords: ['webinar', 'masterclass', 'live', 'challenge', 'event', 'speaking'],
-            actions: [
-                { type: 'Action', action: 'Plan and schedule your live event: set the date, create a registration page, and write the promo post.' },
-                { type: 'Action', action: 'Outline your talk: what is the ONE takeaway? Structure it as problem → insight → action → offer.' },
-                { type: 'Action', action: 'Promote the event daily this week — share the registration link in at least 3 different places.' },
-            ]
-        },
-        {
-            keywords: ['client', 'clients', 'onboard', 'onboarding', 'deliver', 'delivery', 'fulfillment', 'serve'],
-            actions: [
-                { type: 'Action', action: 'Create or improve your client onboarding flow: welcome email, intake form, and first-session prep.' },
-                { type: 'Action', action: 'Check in with each active client this week — ask what\'s working and where they need support.' },
-                { type: 'Action', action: 'Document one repeatable process from your delivery so you can eventually delegate or automate it.' },
-            ]
-        },
-        {
-            keywords: ['outreach', 'pitch', 'collab', 'collaboration', 'partnership', 'guest', 'networking'],
-            actions: [
-                { type: 'Action', action: 'Identify 5 people in complementary niches and send a personalized collaboration or guest pitch.' },
-                { type: 'Action', action: 'Draft a simple pitch template that highlights the mutual value of working together.' },
-                { type: 'Action', action: 'Follow up with anyone who responded to previous outreach — persistence closes partnerships.' },
-            ]
-        },
-        {
-            keywords: ['hire', 'va', 'delegate', 'team', 'outsource', 'automate', 'system', 'systems', 'process'],
-            actions: [
-                { type: 'Action', action: 'List all tasks you did last week that someone else could do. Pick 1 to delegate this week.' },
-                { type: 'Action', action: 'Write a simple SOP (step-by-step guide) for your most repetitive task so it can be handed off.' },
-                { type: 'Action', action: 'Research one automation tool (Zapier, Calendly, email scheduler) that could save you 2+ hours/week.' },
-            ]
-        },
-        {
-            keywords: ['sales', 'sell', 'selling', 'close', 'closing', 'revenue', 'income', 'money', 'offer'],
-            actions: [
-                { type: 'Action', action: 'Reach out to 5 warm leads this week with a personalized message — people who already know your work.' },
-                { type: 'Action', action: 'Create 1 piece of content that addresses the #1 objection your ideal customer has about buying.' },
-                { type: 'Action', action: 'Book 2 discovery or sales calls this week. Listen to their problem before pitching your solution.' },
-            ]
-        },
-        {
-            keywords: ['brand', 'branding', 'positioning', 'niche', 'ideal client', 'messaging'],
-            actions: [
-                { type: 'Action', action: 'Write a clear one-liner: "I help [who] achieve [result] through [method]." Test it on 3 people for clarity.' },
-                { type: 'Action', action: 'Audit your social profiles: does your bio clearly communicate who you help and how? Update if needed.' },
-                { type: 'Action', action: 'Create 1 piece of content this week that speaks directly to your ideal client\'s biggest frustration.' },
-            ]
-        }
-    ];
+    let actionMap = [];
+    if (isPhysicalOrEcom) {
+        actionMap = [
+            {
+                keywords: ['sales', 'sell', 'selling', 'revenue', 'income', 'order', 'orders', 'customer', 'customers'],
+                actions: [
+                    { type: 'Action', action: 'Create a limited-time product bundle or special discount code to share with your email list/socials.' },
+                    { type: 'Action', action: 'Pitch your physical products or seasonal bundles to 2 local boutiques or physical retail shops for wholesale/consignment.' },
+                    { type: 'Action', action: 'Optimize your online store checkout flow: add a simple bump offer (e.g. wick trimmer, gift box, or accessory).' }
+                ]
+            },
+            {
+                keywords: ['content', 'post', 'reel', 'video', 'tiktok', 'instagram', 'social'],
+                actions: [
+                    { type: 'Action', action: 'Record a 15-second behind-the-scenes video showing how your products are made/poured.' },
+                    { type: 'Action', action: 'Create a photo carousel showing your products in use, styled beautifully in a home environment.' },
+                    { type: 'Action', action: 'Engage with 15 ideal customers or complementary brands (e.g., home decor accounts) to build local/niche visibility.' }
+                ]
+            },
+            {
+                keywords: ['launch', 'new', 'scent', 'collection', 'season', 'holiday'],
+                actions: [
+                    { type: 'Action', action: 'Draft a 3-part email sequence for your next collection or seasonal product launch: teaser, VIP early access, and public shop open.' },
+                    { type: 'Action', action: 'Create a VIP sign-up landing page offering early access or a launch day discount to build anticipation.' },
+                    { type: 'Action', action: 'Post a sneak peek behind-the-scenes of the new collection products or packaging to get early feedback.' }
+                ]
+            },
+            {
+                keywords: ['email', 'newsletter', 'subscriber', 'subscribers'],
+                actions: [
+                    { type: 'Action', action: 'Write a weekly newsletter highlighting one best-selling product and sharing the story/inspiration behind it.' },
+                    { type: 'Action', action: 'Set up or optimize your automated cart-abandonment email flow to recover lost sales.' },
+                    { type: 'Action', action: 'Verify that your newsletter sign-up popup offers a clear incentive (e.g., "10% off your first order" or "Free Shipping").' }
+                ]
+            },
+            {
+                keywords: ['market', 'pop-up', 'popup', 'fair', 'booth', 'event', 'local'],
+                actions: [
+                    { type: 'Action', action: 'Research 3 local craft fairs, seasonal markets, or pop-up events and submit applications for a booth.' },
+                    { type: 'Action', action: 'Design or refine your physical table layout to ensure your branding is clear and products are easy to sample.' },
+                    { type: 'Action', action: 'Create a QR code display for your booth so physical market shoppers can easily join your email newsletter list.' }
+                ]
+            }
+        ];
+    } else {
+        actionMap = [
+            {
+                keywords: ['testimonial', 'testimonials', 'review', 'reviews', 'case study', 'case studies', 'social proof'],
+                actions: [
+                    { type: 'Action', action: 'Draft a short testimonial request email — ask one clear question like "What result did you get from working together?"' },
+                    { type: 'Action', action: 'Reach out personally to 3 past clients and ask for a quick written or video testimonial.' },
+                    { type: 'Action', action: 'Create a simple Google Form for collecting testimonials and share the link with your most engaged clients.' },
+                ]
+            },
+            {
+                keywords: ['launch', 'beta', 'pre-sale', 'presale', 'pre-launch', 'prelaunch', 'cart open', 'waitlist'],
+                actions: [
+                    { type: 'Action', action: 'Write 3 emails for your launch sequence: a teaser, a value email, and the cart-open announcement.' },
+                    { type: 'Action', action: 'Create or refine your landing page or sign-up form to capture early interest and build your waitlist.' },
+                    { type: 'Action', action: 'Plan your launch timeline: set specific dates for teaser content, cart open, and cart close.' },
+                    { type: 'Action', action: 'Post 2 behind-the-scenes pieces of content this week to warm up your audience before the launch.' },
+                ]
+            },
+            {
+                keywords: ['course', 'program', 'curriculum', 'module', 'lesson', 'training', 'workshop content'],
+                actions: [
+                    { type: 'Action', action: 'Outline the next module or lesson — write the key learning outcome and 3-5 teaching points.' },
+                    { type: 'Action', action: 'Record or write one lesson this week. Done is better than perfect — aim for 80% good enough.' },
+                    { type: 'Action', action: 'Create one worksheet, template, or resource that students can use immediately after the lesson.' },
+                ]
+            },
+            {
+                keywords: ['sales page', 'landing page', 'checkout', 'sales copy', 'conversion page', 'funnel'],
+                actions: [
+                    { type: 'Action', action: 'Write the headline and first 3 sections of your sales page — focus on the transformation, not features.' },
+                    { type: 'Action', action: 'Add 2-3 testimonials or proof points to your sales page. If you don\'t have them yet, collect them this week.' },
+                    { type: 'Action', action: 'Test your full checkout flow end-to-end: payment, confirmation email, and delivery. Fix anything broken.' },
+                ]
+            },
+            {
+                keywords: ['email', 'newsletter', 'sequence', 'nurture', 'autoresponder', 'welcome sequence'],
+                actions: [
+                    { type: 'Action', action: 'Write and schedule 2 value-packed emails this week — teach something useful and include one clear call-to-action.' },
+                    { type: 'Action', action: 'Review your welcome sequence: does it introduce you, deliver value, and make an offer within the first 5 emails?' },
+                    { type: 'Action', action: 'Segment your email list by engagement. Send a re-engagement email to inactive subscribers.' },
+                ]
+            },
+            {
+                keywords: ['content', 'post', 'reel', 'video', 'tiktok', 'instagram', 'youtube', 'blog', 'podcast', 'social media'],
+                actions: [
+                    { type: 'Action', action: 'Batch-create 3 pieces of content: 1 educational, 1 story-driven, 1 with a direct call-to-action.' },
+                    { type: 'Action', action: 'Repurpose your best-performing past content into a new format (e.g., turn a post into a reel or email).' },
+                    { type: 'Action', action: 'Engage intentionally: spend 20 minutes daily replying to comments and DMs to build trust with your audience.' },
+                ]
+            },
+            {
+                keywords: ['lead', 'leads', 'subscriber', 'subscribers', 'lead magnet', 'freebie', 'opt-in', 'list building', 'grow list', 'grow audience'],
+                actions: [
+                    { type: 'Action', action: 'Create or refine a lead magnet that solves one specific problem for your ideal client.' },
+                    { type: 'Action', action: 'Publish 2 posts this week that directly promote your lead magnet with a clear call-to-action.' },
+                    { type: 'Action', action: 'Set up or optimize a simple landing page for your lead magnet — test the sign-up flow yourself.' },
+                ]
+            },
+            {
+                keywords: ['webinar', 'masterclass', 'live', 'challenge', 'event', 'speaking'],
+                actions: [
+                    { type: 'Action', action: 'Plan and schedule your live event: set the date, create a registration page, and write the promo post.' },
+                    { type: 'Action', action: 'Outline your talk: what is the ONE takeaway? Structure it as problem → insight → action → offer.' },
+                    { type: 'Action', action: 'Promote the event daily this week — share the registration link in at least 3 different places.' },
+                ]
+            },
+            {
+                keywords: ['client', 'clients', 'onboard', 'onboarding', 'deliver', 'delivery', 'fulfillment', 'serve'],
+                actions: [
+                    { type: 'Action', action: 'Create or improve your client onboarding flow: welcome email, intake form, and first-session prep.' },
+                    { type: 'Action', action: 'Check in with each active client this week — ask what\'s working and where they need support.' },
+                    { type: 'Action', action: 'Document one repeatable process from your delivery so you can eventually delegate or automate it.' },
+                ]
+            },
+            {
+                keywords: ['outreach', 'pitch', 'collab', 'collaboration', 'partnership', 'guest', 'networking'],
+                actions: [
+                    { type: 'Action', action: 'Identify 5 people in complementary niches and send a personalized collaboration or guest pitch.' },
+                    { type: 'Action', action: 'Draft a simple pitch template that highlights the mutual value of working together.' },
+                    { type: 'Action', action: 'Follow up with anyone who responded to previous outreach — persistence closes partnerships.' },
+                ]
+            },
+            {
+                keywords: ['hire', 'va', 'delegate', 'team', 'outsource', 'automate', 'system', 'systems', 'process'],
+                actions: [
+                    { type: 'Action', action: 'List all tasks you did last week that someone else could do. Pick 1 to delegate this week.' },
+                    { type: 'Action', action: 'Write a simple SOP (step-by-step guide) for your most repetitive task so it can be handed off.' },
+                    { type: 'Action', action: 'Research one automation tool (Zapier, Calendly, email scheduler) that could save you 2+ hours/week.' },
+                ]
+            },
+            {
+                keywords: ['sales', 'sell', 'selling', 'close', 'closing', 'revenue', 'income', 'money', 'offer'],
+                actions: [
+                    { type: 'Action', action: 'Reach out to 5 warm leads this week with a personalized message — people who already know your work.' },
+                    { type: 'Action', action: 'Create 1 piece of content that addresses the #1 objection your ideal customer has about buying.' },
+                    { type: 'Action', action: 'Book 2 discovery or sales calls this week. Listen to their problem before pitching your solution.' },
+                ]
+            },
+            {
+                keywords: ['brand', 'branding', 'positioning', 'niche', 'ideal client', 'messaging'],
+                actions: [
+                    { type: 'Action', action: 'Write a clear one-liner: "I help [who] achieve [result] through [method]." Test it on 3 people for clarity.' },
+                    { type: 'Action', action: 'Audit your social profiles: does your bio clearly communicate who you help and how? Update if needed.' },
+                    { type: 'Action', action: 'Create 1 piece of content this week that speaks directly to your ideal client\'s biggest frustration.' },
+                ]
+            }
+        ];
+    }
 
     // Match user goals against keyword map
     let matchedActions = [];
@@ -3096,42 +3242,72 @@ function generatePlanSuggestions(store) {
     const p1Label = priorities[0] || focus90 || 'your goal';
 
     // Revenue suggestion
-    if (allGoalText.match(/testimonial|review|social proof|case stud/)) {
-        suggestions.push({ type: 'Revenue', action: `Turn your best testimonials into a sales asset — feature them on your sales page, in emails, or as social proof posts.` });
-    } else if (allGoalText.match(/launch|beta|pre-sale|waitlist|cart/)) {
-        suggestions.push({ type: 'Revenue', action: `Write and send a promotional email to your warmest leads — highlight the transformation and include a clear buy/join link.` });
-    } else if (allGoalText.match(/course|program|training/)) {
-        suggestions.push({ type: 'Revenue', action: `Offer an early-bird or founding-member price to your existing audience to generate first sales and validate demand.` });
-    } else if (allGoalText.match(/sales|sell|close|revenue|income|offer/)) {
-        suggestions.push({ type: 'Revenue', action: `Reach out to 5 warm leads with a personalized message — ask about their biggest challenge and offer a solution call.` });
+    if (isPhysicalOrEcom) {
+        if (allGoalText.match(/email|newsletter/)) {
+            suggestions.push({ type: 'Revenue', action: `Send a dedicated product spotlight email to your list featuring a popular product/scent and a direct shop link.` });
+        } else if (allGoalText.match(/launch|new|collection/)) {
+            suggestions.push({ type: 'Revenue', action: `Open early-access pre-orders for your new collection to VIP subscribers to secure upfront sales.` });
+        } else if (allGoalText.match(/market|fair|local/)) {
+            suggestions.push({ type: 'Revenue', action: `Follow up with organizers of local markets to secure your booth space and prepare your inventory.` });
+        } else {
+            suggestions.push({ type: 'Revenue', action: `Bundle 2-3 popular items together at a slightly discounted rate to increase your average order value.` });
+        }
     } else {
-        suggestions.push({ type: 'Revenue', action: `What is ONE thing you can do this week that directly generates income or moves a prospect closer to buying? Schedule it now.` });
+        if (allGoalText.match(/testimonial|review|social proof|case stud/)) {
+            suggestions.push({ type: 'Revenue', action: `Turn your best testimonials into a sales asset — feature them on your sales page, in emails, or as social proof posts.` });
+        } else if (allGoalText.match(/launch|beta|pre-sale|waitlist|cart/)) {
+            suggestions.push({ type: 'Revenue', action: `Write and send a promotional email to your warmest leads — highlight the transformation and include a clear buy/join link.` });
+        } else if (allGoalText.match(/course|program|training/)) {
+            suggestions.push({ type: 'Revenue', action: `Offer an early-bird or founding-member price to your existing audience to generate first sales and validate demand.` });
+        } else if (allGoalText.match(/sales|sell|close|revenue|income|offer/)) {
+            suggestions.push({ type: 'Revenue', action: `Reach out to 5 warm leads with a personalized message — ask about their biggest challenge and offer a solution call.` });
+        } else {
+            suggestions.push({ type: 'Revenue', action: `What is ONE thing you can do this week that directly generates income or moves a prospect closer to buying? Schedule it now.` });
+        }
     }
 
     // Visibility suggestion
-    if (allGoalText.match(/launch|beta|pre-launch|waitlist/)) {
-        suggestions.push({ type: 'Visibility', action: `Post 2 behind-the-scenes pieces showing your launch prep — build anticipation and let your audience feel part of the journey.` });
-    } else if (allGoalText.match(/content|post|reel|video|blog|podcast|social/)) {
-        suggestions.push({ type: 'Visibility', action: `Publish 1 educational post and 1 story-driven post this week. Educational builds trust, story builds connection.` });
-    } else if (allGoalText.match(/lead|subscriber|list|audience|grow/)) {
-        suggestions.push({ type: 'Visibility', action: `Create 2 posts that promote your lead magnet — one teaching a quick win, one sharing a client result or your own story.` });
-    } else if (allGoalText.match(/brand|positioning|niche|messaging/)) {
-        suggestions.push({ type: 'Visibility', action: `Share 1 piece of content that clearly communicates your unique perspective — what do you believe that others in your space don't?` });
+    if (isPhysicalOrEcom) {
+        if (allGoalText.match(/launch|new|collection/)) {
+            suggestions.push({ type: 'Visibility', action: `Share a teaser Reel or TikTok showing a close-up of the new product packaging and scent/design details.` });
+        } else if (allGoalText.match(/market|fair|local/)) {
+            suggestions.push({ type: 'Visibility', action: `Post a guide/map on your social channels showing exactly where your booth will be located at the upcoming market.` });
+        } else {
+            suggestions.push({ type: 'Visibility', action: `Post a video showing your product-making or packaging process. People love authentic, handmade stories.` });
+        }
     } else {
-        suggestions.push({ type: 'Visibility', action: `Show up at least twice this week where your ideal clients spend time. Teach, share a story, or start a conversation.` });
+        if (allGoalText.match(/launch|beta|pre-launch|waitlist/)) {
+            suggestions.push({ type: 'Visibility', action: `Post 2 behind-the-scenes pieces showing your launch prep — build anticipation and let your audience feel part of the journey.` });
+        } else if (allGoalText.match(/content|post|reel|video|blog|podcast|social/)) {
+            suggestions.push({ type: 'Visibility', action: `Publish 1 educational post and 1 story-driven post this week. Educational builds trust, story builds connection.` });
+        } else if (allGoalText.match(/lead|subscriber|list|audience|grow/)) {
+            suggestions.push({ type: 'Visibility', action: `Create 2 posts that promote your lead magnet — one teaching a quick win, one sharing a client result or your own story.` });
+        } else if (allGoalText.match(/brand|positioning|niche|messaging/)) {
+            suggestions.push({ type: 'Visibility', action: `Share 1 piece of content that clearly communicates your unique perspective — what do you believe that others in your space don't?` });
+        } else {
+            suggestions.push({ type: 'Visibility', action: `Show up at least twice this week where your ideal clients spend time. Teach, share a story, or start a conversation.` });
+        }
     }
 
     // Follow-up suggestion
-    if (allGoalText.match(/testimonial|review|case stud/)) {
-        suggestions.push({ type: 'Follow-up', action: `Follow up with clients who said they'd send a testimonial but haven't yet — a gentle reminder often does the trick.` });
-    } else if (allGoalText.match(/launch|beta|waitlist/)) {
-        suggestions.push({ type: 'Follow-up', action: `Personally DM or email 5 people who showed interest — ask if they have questions and invite them to join.` });
-    } else if (allGoalText.match(/outreach|collab|partnership|pitch/)) {
-        suggestions.push({ type: 'Follow-up', action: `Follow up on all pending outreach from the last 2 weeks — a polite bump email often turns silence into a yes.` });
-    } else if (allGoalText.match(/client|onboard|deliver/)) {
-        suggestions.push({ type: 'Follow-up', action: `Check in with each active client — ask what's working and if there's anything else they need from you.` });
+    if (isPhysicalOrEcom) {
+        if (allGoalText.match(/market|fair|local/)) {
+            suggestions.push({ type: 'Follow-up', action: `Email physical customers who bought at the last market, thanking them and offering a coupon for their next online order.` });
+        } else {
+            suggestions.push({ type: 'Follow-up', action: `Reach out to 3 recent customers asking if they'd be willing to post a photo review of their product/candle on your website.` });
+        }
     } else {
-        suggestions.push({ type: 'Follow-up', action: `Review your inbox, DMs, and comments. Follow up with anyone who engaged last week — a quick personal reply can close a deal.` });
+        if (allGoalText.match(/testimonial|review|case stud/)) {
+            suggestions.push({ type: 'Follow-up', action: `Follow up with clients who said they'd send a testimonial but haven't yet — a gentle reminder often does the trick.` });
+        } else if (allGoalText.match(/launch|beta|waitlist/)) {
+            suggestions.push({ type: 'Follow-up', action: `Personally DM or email 5 people who showed interest — ask if they have questions and invite them to join.` });
+        } else if (allGoalText.match(/outreach|collab|partnership|pitch/)) {
+            suggestions.push({ type: 'Follow-up', action: `Follow up on all pending outreach from the last 2 weeks — a polite bump email often turns silence into a yes.` });
+        } else if (allGoalText.match(/client|onboard|deliver/)) {
+            suggestions.push({ type: 'Follow-up', action: `Check in with each active client — ask what's working and if there's anything else they need from you.` });
+        } else {
+            suggestions.push({ type: 'Follow-up', action: `Review your inbox, DMs, and comments. Follow up with anyone who engaged last week — a quick personal reply can close a deal.` });
+        }
     }
 
     return suggestions;
@@ -3191,7 +3367,7 @@ function renderRevenue() {
     return `
         ${renderNav()}
         <div class="main-content dashboard-layout">
-            <div class="flex justify-between items-center mb-6">
+            <div class="flex justify-between items-center mb-6" style="position: relative; z-index: 49;">
                 <div>
                     <h2>Revenue & Sales Analytics</h2>
                     <p style="color: var(--color-text-muted);">Monitor your pipeline, conversions, and growth metrics.</p>
@@ -3401,8 +3577,8 @@ function renderRevenue() {
                                <input type="number" id="log-amount" min="0" step="any" class="form-control" required placeholder="0.00">
                            </div>
                            <div class="form-group">
-                               <label>Date Received</label>
-                               <input type="date" id="log-date" class="form-control" required value="${new Date().toISOString().split('T')[0]}">
+                                <label>Date Received</label>
+                                <input type="date" id="log-date" class="form-control" required value="${getLocalDateString()}">
                            </div>
                            <div class="form-group">
                                <label>Source</label>
@@ -3445,8 +3621,8 @@ function renderRevenue() {
                                </div>
                            </div>
                            <div class="form-group">
-                               <label>Date</label>
-                               <input type="date" id="lead-date" class="form-control" required value="${new Date().toISOString().split('T')[0]}">
+                                <label>Date</label>
+                                <input type="date" id="lead-date" class="form-control" required value="${getLocalDateString()}">
                            </div>
                            <div class="form-group">
                                <label>Lead Source</label>
@@ -3471,8 +3647,8 @@ function renderRevenue() {
                                <input type="number" id="metric-social" min="0" step="1" class="form-control" required placeholder="e.g. 4500">
                            </div>
                            <div class="form-group">
-                               <label>Snapshot Date</label>
-                               <input type="date" id="metric-date" class="form-control" required value="${new Date().toISOString().split('T')[0]}">
+                                <label>Snapshot Date</label>
+                                <input type="date" id="metric-date" class="form-control" required value="${getLocalDateString()}">
                            </div>
                            <button type="submit" class="btn btn-outline" style="width: 100%;">Save Snapshot</button>
                        </form>
@@ -3947,7 +4123,7 @@ function renderChart(viewMode) {
         if (viewMode === 'week') {
             const start = new Date(date); start.setDate(date.getDate() - date.getDay());
             const end = new Date(start); end.setDate(start.getDate() + 6);
-            key = start.toISOString().split('T')[0];
+            key = getLocalDateString(start);
             label = `${start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} - ${end.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
         } else if (viewMode === 'month') {
             key = `${date.getFullYear()}-${date.getMonth()}`;
@@ -5898,12 +6074,14 @@ function mondayPlanAttachEvents() {
             const newPlan = {
                 winCondition: mondayPlanData.weeklyFocus,
                 priorities: mondayPlanData.priorities, // Local priorities for this specific week (optional if we map to global)
+                topActions: mondayPlanData.priorities, // Map to topActions for compatibility
                 revenueAction: mondayPlanData.revenueAction,
                 visibilityAction: "Integrated into priorities", // Fallback for backwards compatibility with the planner UI insights
                 followUps: mondayPlanData.revenueAction.toLowerCase().includes('follow') ? mondayPlanData.revenueAction : "Integrated into priorities",
                 daily3: mondayPlanData.daily3,
                 id: mondayPlanData.generatedPlanId ? mondayPlanData.generatedPlanId : undefined,
-                applied: mondayPlanData.generatedPlanId ? true : undefined
+                applied: mondayPlanData.generatedPlanId ? true : undefined,
+                date: new Date().toISOString() // Ensure active window starts NOW
             };
 
             // 2. Save it
@@ -5914,7 +6092,7 @@ function mondayPlanAttachEvents() {
             }
 
             // 2.5 Save the specific tasks for Monday immediately into the daily log
-            const todayStr = new Date().toISOString().split('T')[0];
+            const todayStr = getLocalDateString();
             const cleanTasks = mondayPlanData.daily3.map(t => ({ text: t, done: false }));
             updateDailyLog(todayStr, cleanTasks);
 
@@ -6079,6 +6257,13 @@ function renderAuth(mode = 'login') {
                     </div>
                     ` : ''}
 
+                    ${mode === 'login' ? `
+                    <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: -0.5rem; margin-bottom: 0.5rem;">
+                        <input type="checkbox" id="auth-remember" style="width: 16px; height: 16px; cursor: pointer; accent-color: var(--color-primary);">
+                        <label for="auth-remember" style="font-size: 0.85rem; color: var(--color-text-muted); cursor: pointer; user-select: none;">Remember password</label>
+                    </div>
+                    ` : ''}
+
                     <button type="submit" class="btn btn-primary" style="width: 100%; padding: 0.75rem; font-size: 1rem; border-radius: 8px; margin-top: 0.5rem; box-shadow: 0 4px 6px -1px rgba(78, 14, 255, 0.2);">${btnText}</button>
                 </form>
 
@@ -6107,6 +6292,18 @@ function authAttachEvents() {
     const stripeEmail = urlParams.get('email');
     if (stripeEmail && document.getElementById('auth-email')) {
         document.getElementById('auth-email').value = stripeEmail;
+    } else if (!isSignup && !isForgot && !isReset) {
+        const rememberedEmail = localStorage.getItem('ceo_remembered_email');
+        const rememberedPassword = localStorage.getItem('ceo_remembered_password');
+        if (rememberedEmail && document.getElementById('auth-email')) {
+            document.getElementById('auth-email').value = rememberedEmail;
+        }
+        if (rememberedPassword && document.getElementById('auth-password')) {
+            document.getElementById('auth-password').value = rememberedPassword;
+        }
+        if (rememberedEmail && document.getElementById('auth-remember')) {
+            document.getElementById('auth-remember').checked = true;
+        }
     }
 
     form.addEventListener('submit', (e) => {
@@ -6247,6 +6444,16 @@ function authAttachEvents() {
                     } catch (err) {
                         console.log("Error fetching subscription status.", err);
                         localStorage.setItem('ceo_sub_status', 'active'); // Fallback
+                    }
+
+                    // Handle "Remember password"
+                    const rememberEl = document.getElementById('auth-remember');
+                    if (rememberEl && rememberEl.checked) {
+                        localStorage.setItem('ceo_remembered_email', email);
+                        localStorage.setItem('ceo_remembered_password', password);
+                    } else {
+                        localStorage.removeItem('ceo_remembered_email');
+                        localStorage.removeItem('ceo_remembered_password');
                     }
 
                     localStorage.setItem('ceo_auth', 'true');
@@ -6634,7 +6841,7 @@ function checkPushNotifications() {
     const hour = now.getHours();
     
     const lastFiredStore = JSON.parse(localStorage.getItem('ceo_notif_last') || '{}');
-    const todayStr = now.toISOString().split('T')[0];
+    const todayStr = getLocalDateString(now);
     
     const fireLocalNotification = (key, title, body) => {
         if (lastFiredStore[key] !== todayStr) {

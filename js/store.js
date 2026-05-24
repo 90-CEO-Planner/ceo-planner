@@ -2,6 +2,14 @@
 
 const STORE_KEY = 'ceoPlanner_store';
 
+export function getLocalDateString(date = new Date()) {
+    const d = new Date(date);
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
 const defaultState = {
     profile: {
         name: '',
@@ -398,7 +406,7 @@ export function addWeeklyPlan(plan) {
 
 export function updateWeeklyPlan(planId, updatedFields) {
     const store = getStore();
-    const index = store.weeklyPlans.findIndex(p => p.id === planId);
+    const index = store.weeklyPlans.findIndex(p => String(p.id) === String(planId));
     if (index !== -1) {
         store.weeklyPlans[index] = { ...store.weeklyPlans[index], ...updatedFields };
         saveStore(store);

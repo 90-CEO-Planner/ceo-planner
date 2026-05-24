@@ -1,10 +1,12 @@
 // sw.js
-const CACHE_NAME = 'ceo-planner-cache-v2';
+const CACHE_NAME = 'ceo-planner-cache-v8';
 const urlsToCache = [
   './',
   './index.html',
-  './js/bundle.js',
-  './css/index.css'
+  './js/bundle.js?v=7',
+  './css/variables.css?v=7',
+  './css/styles.css?v=7',
+  './css/components.css?v=7'
 ];
 
 // Install the caching background worker
@@ -14,6 +16,22 @@ self.addEventListener('install', event => {
       .then(cache => cache.addAll(urlsToCache))
   );
   self.skipWaiting();
+});
+
+// Clean up old caches on activation and claim clients immediately
+self.addEventListener('activate', event => {
+  event.waitUntil(
+    caches.keys().then(cacheNames => {
+      return Promise.all(
+        cacheNames.map(cache => {
+          if (cache !== CACHE_NAME) {
+            console.log('Service Worker: Clearing Old Cache', cache);
+            return caches.delete(cache);
+          }
+        })
+      );
+    }).then(() => self.clients.claim())
+  );
 });
 
 // Intercept fetch requests for lightning fast loading

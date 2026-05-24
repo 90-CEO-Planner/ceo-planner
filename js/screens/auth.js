@@ -64,6 +64,13 @@ export function renderAuth(mode = 'login') {
                     </div>
                     ` : ''}
 
+                    ${mode === 'login' ? `
+                    <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: -0.5rem; margin-bottom: 0.5rem;">
+                        <input type="checkbox" id="auth-remember" style="width: 16px; height: 16px; cursor: pointer; accent-color: var(--color-primary);">
+                        <label for="auth-remember" style="font-size: 0.85rem; color: var(--color-text-muted); cursor: pointer; user-select: none;">Remember password</label>
+                    </div>
+                    ` : ''}
+
                     <button type="submit" class="btn btn-primary" style="width: 100%; padding: 0.75rem; font-size: 1rem; border-radius: 8px; margin-top: 0.5rem; box-shadow: 0 4px 6px -1px rgba(78, 14, 255, 0.2);">${btnText}</button>
                 </form>
 
@@ -92,6 +99,18 @@ function authAttachEvents() {
     const stripeEmail = urlParams.get('email');
     if (stripeEmail && document.getElementById('auth-email')) {
         document.getElementById('auth-email').value = stripeEmail;
+    } else if (!isSignup && !isForgot && !isReset) {
+        const rememberedEmail = localStorage.getItem('ceo_remembered_email');
+        const rememberedPassword = localStorage.getItem('ceo_remembered_password');
+        if (rememberedEmail && document.getElementById('auth-email')) {
+            document.getElementById('auth-email').value = rememberedEmail;
+        }
+        if (rememberedPassword && document.getElementById('auth-password')) {
+            document.getElementById('auth-password').value = rememberedPassword;
+        }
+        if (rememberedEmail && document.getElementById('auth-remember')) {
+            document.getElementById('auth-remember').checked = true;
+        }
     }
 
     form.addEventListener('submit', (e) => {
@@ -232,6 +251,16 @@ function authAttachEvents() {
                     } catch (err) {
                         console.log("Error fetching subscription status.", err);
                         localStorage.setItem('ceo_sub_status', 'active'); // Fallback
+                    }
+
+                    // Handle "Remember password"
+                    const rememberEl = document.getElementById('auth-remember');
+                    if (rememberEl && rememberEl.checked) {
+                        localStorage.setItem('ceo_remembered_email', email);
+                        localStorage.setItem('ceo_remembered_password', password);
+                    } else {
+                        localStorage.removeItem('ceo_remembered_email');
+                        localStorage.removeItem('ceo_remembered_password');
                     }
 
                     localStorage.setItem('ceo_auth', 'true');

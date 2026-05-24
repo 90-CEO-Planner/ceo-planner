@@ -1,4 +1,4 @@
-import { getStore, getRevenueInsights, addRevenueEntry, updateDailyLog, addLeadEntry, applyGeneratedPlan, updateProfile } from '../store.js';
+import { getStore, getRevenueInsights, addRevenueEntry, updateDailyLog, addLeadEntry, applyGeneratedPlan, updateProfile, getLocalDateString } from '../store.js';
 import { renderNav } from '../components/nav.js';
 import { renderTooltip } from '../components/tooltip.js';
 import { generate90DayActionPlan } from '../aiService.js';
@@ -53,11 +53,12 @@ export function renderDashboard() {
 
     // Check if there is an active weekly plan (ignore unapplied AI-generated drafts)
     const validPlans = store.weeklyPlans.filter(p => !p.generated || p.applied);
+    validPlans.sort((a, b) => new Date(a.date) - new Date(b.date));
     let activePlan = validPlans.length > 0 ? validPlans[validPlans.length - 1] : null;
 
     if (activePlan) {
         const diffDays = Math.ceil(Math.abs(new Date() - new Date(activePlan.date)) / (1000 * 60 * 60 * 24));
-        if (diffDays > 6) {
+        if (diffDays > 7) {
             activePlan = null;
         }
     }
@@ -262,9 +263,13 @@ export function renderDashboard() {
                        `}
                     </div>
                     
-                    <div style="margin-top: 1.5rem; background: var(--color-bg-light); padding: 1rem; border-radius: var(--radius-sm); text-align: center;">
-                        <span style="display: block; font-size: 0.8rem; color: var(--color-text-muted); font-weight: 600; text-transform: uppercase;">CEO Weekly Score</span>
-                        <div id="score-val" style="font-size: 1.5rem; font-weight: 700; margin-top: 0.25rem;">Calculating...</div>
+                    <div style="margin-top: 1.5rem; background: var(--color-bg-light); padding: 1rem; border-radius: var(--radius-sm); text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.25rem;">
+                        <div style="display: flex; align-items: center; justify-content: center; gap: 0.25rem;">
+                            <span style="font-size: 0.8rem; color: var(--color-text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">CEO Weekly Score</span>
+                            ${renderTooltip("This score tracks the completion percentage of your Daily 3 tasks for the active week.", "Consistently executing your Daily 3 tasks keeps you focused on your high-priority goals and builds momentum.")}
+                        </div>
+                        <div id="score-val" style="font-size: 1.8rem; font-weight: 700; margin-top: 0.1rem;">Calculating...</div>
+                        <div id="score-details" style="font-size: 0.75rem; color: var(--color-text-muted); font-weight: 500; margin-top: 0.1rem;">0 of 0 tasks completed</div>
                     </div>
                 </div>
             </div>
@@ -316,7 +321,44 @@ export function renderDashboard() {
         if (!taskText || taskText.trim() === '') return fallback;
         const lower = taskText.toLowerCase();
 
-        // Context-Aware Keyword Matching for Daily Actions
+        // Check business type
+        const model = (store.profile?.businessModel || '').toLowerCase();
+        const niche = (store.profile?.industryNiche || '').toLowerCase();
+        const isPhysicalOrEcom = model.match(/e-commerce|ecommerce|product|physical|retail|shop|store|handmade|craft/) || 
+                                 niche.match(/candle|product|shop|store|handmade|craft|soap|knit|art|jewelry/);
+
+        if (isPhysicalOrEcom) {
+            if (lower.match(/launch|new|collection/)) {
+                const options = ['Draft email sequence announcing your new product collection', 'Take teaser product photos of the new items', 'Set up the new product pages or listings on your store website', 'Outline the launch day promotion timeline'];
+                return options[Math.floor(Math.random() * options.length)];
+            }
+            if (lower.match(/email|newsletter/)) {
+                const options = ['Draft the weekly newsletter highlighting one best-selling product', 'Set up an automated cart-abandonment email sequence', 'Write a welcome email for new shop signups offering a discount'];
+                return options[Math.floor(Math.random() * options.length)];
+            }
+            if (lower.match(/post|reel|tiktok|content|video/)) {
+                const options = ['Record a behind-the-scenes video showing how your products are made/poured', 'Create a photo post styling your products beautifully in a home environment', 'Engage with 15 ideal customers or decor/niche creators on Instagram'];
+                return options[Math.floor(Math.random() * options.length)];
+            }
+            if (lower.match(/lead|magnet|freebie|opt-in/)) {
+                const options = ['Design a popup signup incentive offering free shipping or 10% off', 'Create a short product guide or quiz to help buyers choose the right scent/style', 'Set up a newsletter subscription form at your checkout page'];
+                return options[Math.floor(Math.random() * options.length)];
+            }
+            if (lower.match(/sales|sell|close|revenue|income|offer/)) {
+                const options = ['Create a limited-time product bundle or special discount code', 'Pitch your product line to a local boutique or physical retail shop for wholesale', 'Optimize your checkout page by adding a simple bump or add-on product'];
+                return options[Math.floor(Math.random() * options.length)];
+            }
+            if (lower.match(/website|landing page|store/)) {
+                const options = ['Review your online store landing page on mobile and optimize the load time', 'Add customer photo reviews to your best-selling product pages', 'Test your checkout flow end-to-end to ensure zero friction for buyers'];
+                return options[Math.floor(Math.random() * options.length)];
+            }
+            if (lower.match(/market|fair|booth|local/)) {
+                const options = ['Research local craft fairs, seasonal markets, or pop-up events and submit applications', 'Design or refine your physical booth table layout and signage', 'Print a QR code display to collect email signups at your checkout counter'];
+                return options[Math.floor(Math.random() * options.length)];
+            }
+        }
+
+        // Context-Aware Keyword Matching for Daily Actions (Service-based Fallback)
         if (lower.match(/launch|beta/)) {
             const options = ['Draft the launch email sequence', 'Create a list of VIPs to invite to the beta', 'Outline the core offer for the launch', 'Set up the checkout or registration page'];
             return options[Math.floor(Math.random() * options.length)];
@@ -372,7 +414,7 @@ export function renderDashboard() {
     }
 
     // Use the explicit Daily 3 from the actual day if available, otherwise fallback to AI generated tasks based on priorities & weekly plan.
-    const todayStrDash = new Date().toISOString().split('T')[0];
+    const todayStrDash = getLocalDateString();
     let todaysLog = store.dailyLogs[todayStrDash];
 
     if (!g.focus) {
@@ -466,7 +508,7 @@ export function renderDashboard() {
                         </div>
                         <div class="form-group">
                             <label>Date</label>
-                            <input type="date" id="qs-date" class="form-control" required value="${new Date().toISOString().split('T')[0]}">
+                            <input type="date" id="qs-date" class="form-control" required value="${getLocalDateString()}">
                         </div>
                         <button type="submit" class="btn btn-primary" style="width: 100%;">Save</button>
                     </form>
@@ -538,7 +580,7 @@ function getCoachingEngineData(store, activePlan, revInsights) {
     const streak = store.streak || 0;
 
     // Check Daily Tasks completion
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getLocalDateString();
     let allDailyChecked = true;
     const todaysLog = store.dailyLogs[todayStr];
     if (!todaysLog || todaysLog.length < 3) {
@@ -691,31 +733,79 @@ function getCoachingEngineData(store, activePlan, revInsights) {
 }
 
 function dashboardAttachEvents() {
+    // Daily 3 state persistence using the store logic
+    const todayStr = getLocalDateString();
+    if (window._tempGeneratedTodaysLog) {
+        updateDailyLog(todayStr, window._tempGeneratedTodaysLog);
+        delete window._tempGeneratedTodaysLog;
+    }
+
     // Nav active state
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
     document.getElementById('nav-dashboard')?.classList.add('active');
 
     // CEO Focus Score calculation
     const store = getStore();
-    const activePlan = store.weeklyPlans.length > 0 ? store.weeklyPlans[store.weeklyPlans.length - 1] : null;
+    const validPlans = store.weeklyPlans.filter(p => !p.generated || p.applied);
+    validPlans.sort((a, b) => new Date(a.date) - new Date(b.date));
+    let activePlan = validPlans.length > 0 ? validPlans[validPlans.length - 1] : null;
+
+    if (activePlan) {
+        const diffDays = Math.ceil(Math.abs(new Date() - new Date(activePlan.date)) / (1000 * 60 * 60 * 24));
+        if (diffDays > 7) {
+            activePlan = null;
+        }
+    }
+
     const scoreValEl = document.getElementById('score-val');
+    const scoreDetailsEl = document.getElementById('score-details');
 
-    if (activePlan && scoreValEl) {
-        let score = 0;
-        let reasons = [];
-        if (activePlan.visibilityAction?.length > 5) { score += 33; reasons.push('Visibility Set'); }
-        if (activePlan.revenueAction?.length > 5) { score += 34; reasons.push('Revenue Action Set'); }
-        if (activePlan.followUps?.length > 2 && !activePlan.followUps.toLowerCase().includes('none')) { score += 33; reasons.push('Follow-ups Set'); }
+    if (scoreValEl) {
+        // Get start of current week (Monday)
+        const now = new Date();
+        const dayOfWeek = now.getDay();
+        const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+        const startOfWeek = new Date(now);
+        startOfWeek.setDate(now.getDate() - diffToMonday);
+        startOfWeek.setHours(0, 0, 0, 0);
 
-        let color = '#B42318'; // Red
-        if (score > 65) color = '#F2C21D'; // Yellow/Secondary
-        if (score > 90) color = '#027A48'; // Green
+        let totalTasks = 0;
+        let completedTasks = 0;
 
-        scoreValEl.textContent = `${score}%`;
-        scoreValEl.style.color = color;
-        scoreValEl.title = reasons.join(', ');
-    } else if (scoreValEl) {
-        scoreValEl.textContent = 'No Plan';
+        for (let i = 0; i < 7; i++) {
+            const checkDate = new Date(startOfWeek);
+            checkDate.setDate(startOfWeek.getDate() + i);
+            const dateStr = getLocalDateString(checkDate);
+            const log = store.dailyLogs[dateStr];
+            if (log && Array.isArray(log)) {
+                log.forEach(t => {
+                    totalTasks++;
+                    if (t.done) completedTasks++;
+                });
+            }
+        }
+
+        if (totalTasks > 0) {
+            let score = Math.round((completedTasks / totalTasks) * 100);
+            let color = '#B42318'; // Red
+            if (score > 65) color = '#F2C21D'; // Yellow/Secondary
+            if (score > 90) color = '#027A48'; // Green
+
+            scoreValEl.textContent = `${score}%`;
+            scoreValEl.style.color = color;
+            scoreValEl.title = `${completedTasks} of ${totalTasks} tasks completed this week`;
+
+            if (scoreDetailsEl) {
+                scoreDetailsEl.textContent = `${completedTasks} of ${totalTasks} tasks completed this week`;
+            }
+        } else {
+            scoreValEl.textContent = 'No Plan';
+            scoreValEl.style.color = 'var(--color-text-muted)';
+            scoreValEl.title = 'No active plan or tasks logged for this week';
+            if (scoreDetailsEl) {
+                scoreDetailsEl.textContent = 'Please plan your week to start tracking';
+            }
+        }
     }
 
     // Regenerate Plan Logic
@@ -747,12 +837,7 @@ function dashboardAttachEvents() {
         });
     }
 
-    // Daily 3 state persistence using the store logic
-    const todayStr = new Date().toISOString().split('T')[0];
-    if (window._tempGeneratedTodaysLog) {
-        updateDailyLog(todayStr, window._tempGeneratedTodaysLog);
-        delete window._tempGeneratedTodaysLog;
-    }
+
 
     [0, 1, 2].forEach(i => {
         const checkbox = document.getElementById(`daily-task-${i}`);
