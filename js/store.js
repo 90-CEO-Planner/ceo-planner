@@ -9,6 +9,8 @@ const defaultState = {
         logo: '',
         stage: '', // e.g., 'beginner', 'growth'
         businessModel: '',
+        targetAudience: '',
+        industryNiche: '',
         bottleneck: '',
         strategyMode: '', // Phase 2: 'First Sale Sprint', 'Offer Launch Quarter', 'Audience Growth Quarter', 'CEO Reset'
         planningDay: 'Monday',

@@ -41,10 +41,11 @@ export function renderSettings() {
         <a href="#/progress" class="btn btn-ghost" style="font-size: 0.875rem;">← Back</a>
     </div>
 
-    <div class="card">
-        <h3 class="mb-4">Profile & Goals</h3>
-        <form id="settings-form">
-            <!-- Profile Info -->
+    <form id="settings-form" style="display: flex; flex-direction: column; gap: 1.5rem;">
+        <!-- Card 1: CEO & Business Profile Info -->
+        <div class="card">
+            <h3 class="mb-4" style="color: var(--color-black);">CEO & Business Info</h3>
+            
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Your Name</label>
                 <input type="text" id="set-name" class="form-input" value="${store.profile.name || ''}" required>
@@ -54,7 +55,7 @@ export function renderSettings() {
                 <input type="text" id="set-biz" class="form-input" value="${store.profile.businessName || ''}" required>
             </div>
             
-            <div class="form-group mb-6">
+            <div class="form-group mb-0">
                 <label class="form-label" style="font-weight: 600;">Business Logo / Image</label>
                 <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-top: -0.25rem; margin-bottom: 0.75rem;">Recommended: Square dimensions (e.g. 512x512px or 1:1 ratio) for best display.</p>
                 <div style="display: flex; gap: 1rem; align-items: flex-start; margin-bottom: 0.5rem;">
@@ -69,9 +70,37 @@ export function renderSettings() {
                     </div>
                 </div>
             </div>
+        </div>
 
-            <!-- CEO Profiling -->
-            <h4 class="mb-4 pt-4" style="border-top: 1px solid var(--color-border); color: var(--color-primary-dark);">CEO Business Profile</h4>
+        <!-- Card 2: CEO Strategy & Niche -->
+        <div class="card">
+            <h3 class="mb-4" style="color: var(--color-black);">CEO Business Profile</h3>
+            
+            <div class="form-group mb-4">
+                <label class="form-label" style="font-weight: 600;">Business Model / Type</label>
+                <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Helps the Executive AI Coach tailor content and strategies directly to your business model.</p>
+                <select id="set-business-model" class="form-input" style="padding: 0.75rem;">
+                    <option value="Coaching/Consulting" ${store.profile.businessModel === 'Coaching/Consulting' ? 'selected' : ''}>Coaching / Consulting</option>
+                    <option value="Agency/Service Provider" ${store.profile.businessModel === 'Agency/Service Provider' ? 'selected' : ''}>Agency / Service Provider</option>
+                    <option value="SaaS/Software" ${store.profile.businessModel === 'SaaS/Software' ? 'selected' : ''}>SaaS / Software</option>
+                    <option value="E-commerce/Physical Products" ${store.profile.businessModel === 'E-commerce/Physical Products' ? 'selected' : ''}>E-commerce / Physical Products</option>
+                    <option value="Creator/Info Products" ${store.profile.businessModel === 'Creator/Info Products' ? 'selected' : ''}>Creator / Info Products</option>
+                    <option value="Other" ${store.profile.businessModel === 'Other' ? 'selected' : ''}>Other</option>
+                </select>
+            </div>
+            
+            <div class="form-group mb-4">
+                <label class="form-label" style="font-weight: 600;">Industry / Niche</label>
+                <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">What is your industry or specific market niche?</p>
+                <input type="text" id="set-industry-niche" class="form-input" value="${store.profile.industryNiche || ''}" placeholder="e.g., Business Coaching, Fitness, B2B Copywriting, E-commerce Fashion" style="padding: 0.75rem;">
+            </div>
+            
+            <div class="form-group mb-4">
+                <label class="form-label" style="font-weight: 600;">Target Audience / Ideal Client</label>
+                <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Who is your ideal client? (e.g. female founders making $3k-$10k/mo, busy moms wanting to lose weight)</p>
+                <input type="text" id="set-target-audience" class="form-input" value="${store.profile.targetAudience || ''}" placeholder="e.g., female founders making $3k-10k/mo" style="padding: 0.75rem;">
+            </div>
+
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Top Business Bottleneck</label>
                 <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">The Executive AI Coach uses this to prioritize its Friday Advice.</p>
@@ -82,7 +111,7 @@ export function renderSettings() {
                 </select>
             </div>
 
-            <div class="form-group mb-6">
+            <div class="form-group mb-0">
                 <label class="form-label" style="font-weight: 600;">CEO Strategy Mode</label>
                 <p style="color: #6941C6; font-size: 0.85rem; margin-bottom: 0.5rem;"><strong>Important:</strong> Changing this completely rewrites the AI Planning Assistant and Smart Prompts to focus on this strict trajectory.</p>
                 <select id="set-strategy" class="form-input" style="padding: 0.75rem;">
@@ -92,9 +121,12 @@ export function renderSettings() {
                     <option value="CEO Reset" ${store.profile.strategyMode === 'CEO Reset' || !store.profile.strategyMode ? 'selected' : ''}>CEO Reset (Focus: Systems, Automating & Hiring)</option>
                 </select>
             </div>
+        </div>
 
-            <!-- 90 Day Goals -->
-            <h4 class="mb-4 pt-4" style="border-top: 1px solid var(--color-border); color: var(--color-primary-dark);">90-Day Vision</h4>
+        <!-- Card 3: 90-Day Vision & Targets -->
+        <div class="card">
+            <h3 class="mb-4" style="color: var(--color-black);">90-Day Vision</h3>
+            
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Main Focus</label>
                 <input type="text" id="set-focus" class="form-input" value="${store.goals.focus || ''}" placeholder="e.g. Launch new coaching program" required>
@@ -115,16 +147,20 @@ export function renderSettings() {
                 <input type="number" id="set-lead-goal" class="form-input" value="${store.leads?.quarterlyGoal || 0}" min="0" required>
             </div>
             
-            <div class="form-group mb-6">
+            <div class="form-group mb-0">
                 <label class="form-label" style="font-weight: 600;">Top 3 Priorities</label>
                 <input type="text" id="set-p1" class="form-input mb-2" value="${store.goals.priorities?.[0] || ''}" placeholder="Priority 1" required>
                 <input type="text" id="set-p2" class="form-input mb-2" value="${store.goals.priorities?.[1] || ''}" placeholder="Priority 2">
                 <input type="text" id="set-p3" class="form-input" value="${store.goals.priorities?.[2] || ''}" placeholder="Priority 3">
             </div>
+        </div>
 
-            <h4 class="mb-4 pt-4" style="border-top: 1px solid var(--color-border); color: var(--color-secondary-dark);">Weekly Setup</h4>
-            <div class="form-group mb-6">
-                <label class="form-label" style="font-size: 1.05rem; color: var(--color-black);">Planning Day</label>
+        <!-- Card 4: Weekly Setup & Reminders -->
+        <div class="card">
+            <h3 class="mb-4" style="color: var(--color-black);">Weekly Setup & Reminders</h3>
+            
+            <div class="form-group mb-4">
+                <label class="form-label" style="font-weight: 600;">Planning Day</label>
                 <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Select the day you want the guided weekly CEO Planner flow to appear.</p>
                 <select id="planning-day-select" class="form-input" style="padding: 0.75rem;">
                     <option value="Sunday" ${store.profile.planningDay === 'Sunday' ? 'selected' : ''}>Sunday</option>
@@ -137,59 +173,77 @@ export function renderSettings() {
                 </select>
             </div>
 
-            <h3 class="mb-4 pt-4" style="border-top: 1px solid var(--color-border);">Reminders & Prompts</h3>
-            <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1.5rem;">
-                Select when you'd like the app to remind you about CEO tasks.
-                <i>(Note: In this MVP, this visually sets your preferences. Full push notifications require backend infra).</i>
-            </p>
-            <div style="display: flex; flex-direction: column; gap: 1rem;">
-
-                <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer;">
-                    <input type="checkbox" name="reminder" value="weekly_plan" ${isChecked('weekly_plan')} style="margin-top: 0.25rem;">
+            <div class="form-group mb-0">
+                <label class="form-label" style="font-weight: 600; margin-bottom: 0.5rem;">Reminders & Prompts</label>
+                <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
+                    Select when you'd like the app to remind you about CEO tasks.
+                    <i>(Note: Push notifications require browser permissions).</i>
+                </p>
+                <div style="display: flex; flex-direction: column; gap: 1rem;">
+                    <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer;">
+                        <input type="checkbox" name="reminder" value="weekly_plan" ${isChecked('weekly_plan')} style="margin-top: 0.25rem;">
                         <div>
                             <span style="font-weight: 500; display: block; color: var(--color-black);">Weekly Planning Prompt</span>
                             <span style="font-size: 0.8rem; color: var(--color-text-muted);">Reminds you to set your weekly goals (Usually Sunday or Monday)</span>
                         </div>
-                </label>
+                    </label>
 
-                <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer;">
-                    <input type="checkbox" name="reminder" value="daily_priority" ${isChecked('daily_priority')} style="margin-top: 0.25rem;">
+                    <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer;">
+                        <input type="checkbox" name="reminder" value="daily_priority" ${isChecked('daily_priority')} style="margin-top: 0.25rem;">
                         <div>
                             <span style="font-weight: 500; display: block; color: var(--color-black);">Daily Priority Check</span>
                             <span style="font-size: 0.8rem; color: var(--color-text-muted);">A morning nudge to review your top 3 priorities</span>
                         </div>
-                </label>
+                    </label>
 
-                <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer;">
-                    <input type="checkbox" name="reminder" value="friday_review" ${isChecked('friday_review')} style="margin-top: 0.25rem;">
+                    <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer;">
+                        <input type="checkbox" name="reminder" value="friday_review" ${isChecked('friday_review')} style="margin-top: 0.25rem;">
                         <div>
                             <span style="font-weight: 500; display: block; color: var(--color-black);">Friday CEO Review</span>
                             <span style="font-size: 0.8rem; color: var(--color-text-muted);">Afternoon prompt to log wins and close out the week</span>
                         </div>
-                </label>
-
+                    </label>
+                </div>
             </div>
+        </div>
 
-            ${isAdmin ? `
-            <h3 class="mb-4 pt-4" style="border-top: 1px solid var(--color-border); color: #10a37f; display: flex; align-items: center; gap: 0.5rem;">
+        <!-- Card 5: Generative AI Integration (Admin Only) -->
+        ${isAdmin ? `
+        <div class="card">
+            <h3 class="mb-4" style="color: #10a37f; display: flex; align-items: center; gap: 0.5rem;">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
                 Generative AI Integration
             </h3>
             <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1rem;">
-                Connect your OpenAI API key to unlock the Level 3 Executive AI Coach. Your key is stored <b>exclusively locally</b> in this browser and never sent to our database.
+                Connect your OpenAI API key to unlock the Level 3 Executive AI Coach. Your key is stored <b>exclusively locally</b> in this browser.
             </p>
-            <div class="form-group">
-                <label>ChatGPT API Key</label>
+            <div class="form-group mb-0">
+                <label class="form-label" style="font-weight: 600;">ChatGPT API Key</label>
                 <input type="password" id="set-openai-key" class="form-input" placeholder="sk-..." value="${localStorage.getItem('ceo_openai_key') || ''}">
             </div>
-            ` : ''}
+        </div>
+        ` : ''}
 
-            <div class="mt-8 flex justify-end">
-                <button type="submit" class="btn btn-primary">Save Preferences</button>
-            </div>
-        </form>
+        <div class="mt-4 flex justify-end">
+            <button type="submit" class="btn btn-primary" style="padding: 0.75rem 2.5rem; font-size: 1.05rem;">Save Preferences</button>
+        </div>
+    </form>
+
+    <!-- Card 6: Billing & Subscription -->
+    <div class="card mt-8">
+        <h3 class="mb-4" style="display: flex; align-items: center; gap: 0.5rem; color: var(--color-black);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg>
+            Billing & Subscription
+        </h3>
+        <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1.5rem;">
+            Manage your payment method, view invoices, or cancel your subscription at any time.
+        </p>
+        <button type="button" id="btn-manage-subscription" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600; display: inline-flex; align-items: center; gap: 0.5rem;">
+            Manage Subscription / Cancel
+        </button>
     </div>
 
+    <!-- Card 7: Danger Zone -->
     <div class="card mt-6" style="border: 1px solid #FEE4E2;">
         <h3 class="mb-2" style="color: #B42318;">Danger Zone</h3>
         <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1rem;">Resetting your account will delete all your local data, plans, and historical reviews permanently.</p>
@@ -277,6 +331,9 @@ function settingsAttachEvents() {
             const planningDay = document.getElementById('planning-day-select').value;
             const bottleneck = document.getElementById('set-bottleneck').value;
             const strategyMode = document.getElementById('set-strategy').value;
+            const businessModel = document.getElementById('set-business-model').value;
+            const targetAudience = document.getElementById('set-target-audience').value.trim();
+            const industryNiche = document.getElementById('set-industry-niche').value.trim();
 
             const revenueGoal = parseFloat(document.getElementById('set-revenue-goal').value) || 0;
             const leadGoal = parseFloat(document.getElementById('set-lead-goal').value) || 0;
@@ -287,6 +344,9 @@ function settingsAttachEvents() {
                 logo: finalLogo,
                 bottleneck: bottleneck,
                 strategyMode: strategyMode,
+                businessModel: businessModel,
+                targetAudience: targetAudience,
+                industryNiche: industryNiche,
                 reminderTimes: newReminders,
                 planningDay: planningDay
             });
@@ -336,6 +396,14 @@ function settingsAttachEvents() {
             });
         }
     });
+
+    // Handle Billing Portal Click
+    const btnManageSub = document.getElementById('btn-manage-subscription');
+    if (btnManageSub) {
+        btnManageSub.addEventListener('click', () => {
+            window.location.href = 'https://billing.stripe.com/p/login/eVq3cucex8YXc1q0tk18c00';
+        });
+    }
 
     // Handle Factory Reset
     const resetBtn = document.getElementById('btn-reset-data');

@@ -3,7 +3,7 @@ import { getStore, updateGoals, updateProfile, applyGeneratedPlan, updateSetting
 import { generate90DayActionPlan } from '../aiService.js';
 
 let currentStep = 1;
-const TOTAL_STEPS = 5;
+const TOTAL_STEPS = 6;
 
 export function renderWizard() {
     window.setScreenModule({ attachEvents: wizardAttachEvents });
@@ -19,7 +19,8 @@ export function renderWizard() {
                 <div class="wizard-step ${currentStep >= 2 ? 'active' : ''} ${currentStep > 2 ? 'completed' : ''}">2</div>
                 <div class="wizard-step ${currentStep >= 3 ? 'active' : ''} ${currentStep > 3 ? 'completed' : ''}">3</div>
                 <div class="wizard-step ${currentStep >= 4 ? 'active' : ''} ${currentStep > 4 ? 'completed' : ''}">4</div>
-                <div class="wizard-step ${currentStep >= 5 ? 'active' : ''}">5</div>
+                <div class="wizard-step ${currentStep >= 5 ? 'active' : ''} ${currentStep > 5 ? 'completed' : ''}">5</div>
+                <div class="wizard-step ${currentStep >= 6 ? 'active' : ''}">6</div>
             </div>
 
             <div class="card" id="wizard-content" style="padding: 2.5rem; box-shadow: var(--shadow-md); border-radius: var(--radius-lg); background: white;">
@@ -68,10 +69,43 @@ function renderStepContent() {
 
     if (currentStep === 3) {
         return `
+            <h3 class="mb-2" style="font-family: var(--font-heading); font-weight: 700;">Tell Us About Your Business</h3>
+            <p class="form-helper mb-6" style="font-size: 0.95rem; color: var(--color-text-muted); line-height: 1.5;">Knowing your model, niche, and audience helps the Executive AI Coach tailor all recommendations and content hooks directly to you.</p>
+            
+            <form id="wizard-form-3">
+                <div class="form-group mb-4">
+                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">Business Model / Type</label>
+                    <select class="form-input" id="biz-model" required style="border-radius: 8px; padding: 0.75rem; width: 100%;">
+                        <option value="Coaching/Consulting" ${store.profile.businessModel === 'Coaching/Consulting' ? 'selected' : ''}>Coaching / Consulting</option>
+                        <option value="Agency/Service Provider" ${store.profile.businessModel === 'Agency/Service Provider' ? 'selected' : ''}>Agency / Service Provider</option>
+                        <option value="SaaS/Software" ${store.profile.businessModel === 'SaaS/Software' ? 'selected' : ''}>SaaS / Software</option>
+                        <option value="E-commerce/Physical Products" ${store.profile.businessModel === 'E-commerce/Physical Products' ? 'selected' : ''}>E-commerce / Physical Products</option>
+                        <option value="Creator/Info Products" ${store.profile.businessModel === 'Creator/Info Products' ? 'selected' : ''}>Creator / Info Products</option>
+                        <option value="Other" ${store.profile.businessModel === 'Other' ? 'selected' : ''}>Other</option>
+                    </select>
+                </div>
+                <div class="form-group mb-4">
+                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">What is your Industry / Niche?</label>
+                    <input type="text" class="form-input" id="industry-niche" value="${store.profile.industryNiche || ''}" placeholder="e.g., Business Coaching, Fitness, B2B Copywriting, E-commerce Fashion" required style="border-radius: 8px; padding: 0.75rem;" />
+                </div>
+                <div class="form-group mb-6">
+                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">Who is your ideal client / target audience?</label>
+                    <input type="text" class="form-input" id="target-audience" value="${store.profile.targetAudience || ''}" placeholder="e.g., female founders making $3k-10k/mo, busy moms wanting to lose weight" required style="border-radius: 8px; padding: 0.75rem;" />
+                </div>
+                <div class="flex justify-between mt-8" style="display: flex; gap: 1rem;">
+                    <button type="button" class="btn btn-ghost" id="btn-back" style="flex: 1;">Back</button>
+                    <button type="submit" class="btn btn-primary" style="flex: 2;">Next Step</button>
+                </div>
+            </form>
+        `;
+    }
+
+    if (currentStep === 4) {
+        return `
             <h3 class="mb-2" style="font-family: var(--font-heading); font-weight: 700;">Financial Target</h3>
             <p class="form-helper mb-6" style="font-size: 0.95rem; color: var(--color-text-muted); line-height: 1.5;">Set a clear, measurable revenue milestone for this 90-day period.</p>
             
-            <form id="wizard-form-3">
+            <form id="wizard-form-4">
                 <div class="form-group">
                     <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">What revenue target are you aiming for?</label>
                     <div style="position: relative; display: flex; align-items: center;">
@@ -87,12 +121,12 @@ function renderStepContent() {
         `;
     }
 
-    if (currentStep === 4) {
+    if (currentStep === 5) {
         return `
             <h3 class="mb-2" style="font-family: var(--font-heading); font-weight: 700;">Choose Your Top 3 Priorities</h3>
             <p class="form-helper mb-6" style="font-size: 0.95rem; color: var(--color-text-muted); line-height: 1.5;">To achieve your focus, what are the three big projects that will move the needle?</p>
             
-            <form id="wizard-form-4">
+            <form id="wizard-form-5">
                 <div class="form-group" style="display: flex; flex-direction: column; gap: 1rem;">
                     <div>
                         <label class="form-label" style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0.4rem; display: block;">Priority 1</label>
@@ -107,7 +141,7 @@ function renderStepContent() {
                         <input type="text" class="form-input" id="p3" value="${g.priorities[2] || ''}" placeholder="e.g., Host weekly IG live Q&As" required style="border-radius: 8px; padding: 0.75rem;" />
                     </div>
                 </div>
-                <div class="flex justify-between mt-8" id="wizard-step-4-buttons" style="display: flex; gap: 1rem;">
+                <div class="flex justify-between mt-8" id="wizard-step-5-buttons" style="display: flex; gap: 1rem;">
                     <button type="button" class="btn btn-ghost" id="btn-back" style="flex: 1;">Back</button>
                     <button type="submit" class="btn btn-primary" id="btn-complete-setup" style="flex: 2;">Generate My 90-Day Plan</button>
                 </div>
@@ -119,7 +153,7 @@ function renderStepContent() {
         `;
     }
 
-    if (currentStep === 5) {
+    if (currentStep === 6) {
         return `
             <div style="text-align: center; padding: 1rem 0;">
                 <div style="font-size: 3.5rem; margin-bottom: 1.5rem; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.05));">🎉</div>
@@ -167,6 +201,16 @@ function wizardAttachEvents() {
                 wizardAttachEvents();
             }
             else if (currentStep === 3) {
+                const businessModel = document.getElementById('biz-model').value;
+                const targetAudience = document.getElementById('target-audience').value.trim();
+                const industryNiche = document.getElementById('industry-niche').value.trim();
+                updateProfile({ businessModel, targetAudience, industryNiche });
+
+                currentStep++;
+                document.getElementById('app-container').innerHTML = renderWizard();
+                wizardAttachEvents();
+            }
+            else if (currentStep === 4) {
                 const quarterlyGoal = parseFloat(document.getElementById('rev-goal').value);
                 updateRevenueSettings({ quarterlyGoal });
 
@@ -174,7 +218,7 @@ function wizardAttachEvents() {
                 document.getElementById('app-container').innerHTML = renderWizard();
                 wizardAttachEvents();
             }
-            else if (currentStep === 4) {
+            else if (currentStep === 5) {
                 currentGoals.priorities = [
                     document.getElementById('p1').value.trim(),
                     document.getElementById('p2').value.trim(),
@@ -200,7 +244,7 @@ function wizardAttachEvents() {
                 updateLeadGoal(100); // default quarterly lead target
 
                 // Show loading spinner
-                const buttonsDiv = document.getElementById('wizard-step-4-buttons');
+                const buttonsDiv = document.getElementById('wizard-step-5-buttons');
                 const loadingDiv = document.getElementById('wizard-loading');
                 if (buttonsDiv && loadingDiv) {
                     buttonsDiv.style.display = 'none';
@@ -216,11 +260,10 @@ function wizardAttachEvents() {
                         updateProfile({
                             trialStartDate: new Date().toISOString(),
                             stage: store.profile?.stage || 'growth',
-                            businessModel: store.profile?.businessModel || 'Coaching/Consulting',
                             bottleneck: store.profile?.bottleneck || 'Lead Generation'
                         });
 
-                        currentStep = 5;
+                        currentStep = 6;
                         document.getElementById('app-container').innerHTML = renderWizard();
                         wizardAttachEvents();
                     } else {
