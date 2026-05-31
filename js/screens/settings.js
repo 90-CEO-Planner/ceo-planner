@@ -41,6 +41,20 @@ export function renderSettings() {
         <a href="#/progress" class="btn btn-ghost" style="font-size: 0.875rem;">← Back</a>
     </div>
 
+    <!-- Walkthrough Video Section -->
+    <div class="card mb-6" style="padding: 2rem; background: linear-gradient(135deg, rgba(255, 255, 255, 0.6) 0%, rgba(255, 255, 255, 0.3) 100%); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.4); box-shadow: var(--shadow-sm); border-radius: var(--radius-lg);">
+        <h3 class="mb-2" style="color: var(--color-black); display: flex; align-items: center; gap: 0.5rem; font-family: var(--font-heading); font-weight: 700;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--color-primary);"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+            CEO Planner Walkthrough
+        </h3>
+        <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1.25rem;">
+            Watch this step-by-step walkthrough tutorial to learn how to navigate the signup flow, complete the onboarding wizard, set your 90-day plan, and leverage the AI Coach.
+        </p>
+        <div style="position: relative; width: 100%; border-radius: var(--radius-md); overflow: hidden; box-shadow: var(--shadow-md); background: #ffffff; aspect-ratio: 16/9;">
+            <iframe src="https://www.youtube.com/embed/ftUBDlChE-E" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0;"></iframe>
+        </div>
+    </div>
+
     <form id="settings-form" style="display: flex; flex-direction: column; gap: 1.5rem;">
         <!-- Card 1: CEO & Business Profile Info -->
         <div class="card">
