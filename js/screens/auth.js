@@ -60,7 +60,12 @@ export function renderAuth(mode = 'login') {
                             ${mode === 'reset' ? 'New Password' : 'Password'}
                             ${mode === 'login' ? `<a href="#/forgot-password" style="color: var(--color-primary); text-decoration: none; font-size: 0.8rem;">Forgot password?</a>` : ''}
                         </label>
-                        <input type="password" id="auth-password" class="form-input" placeholder="••••••••" required style="border-radius: 8px;" minlength="6">
+                        <input type="password" id="auth-password" class="form-input" placeholder="••••••••" required style="border-radius: 8px;" minlength="${mode === 'login' ? 6 : 8}">
+                        ${mode === 'signup' || mode === 'reset' ? `
+                        <p style="font-size: 0.8rem; color: var(--color-text-muted); margin: 0.4rem 0 0;">
+                            At least 8 characters.
+                        </p>
+                        ` : ''}
                     </div>
                     ` : ''}
 
