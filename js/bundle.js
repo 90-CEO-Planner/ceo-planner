@@ -10,6 +10,70 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 // Initialize the Supabase client attached to the global window
 window.db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// Stripe checkout links for when a trial runs out
+window.CEO_CHECKOUT_MONTHLY = 'https://buy.stripe.com/4gMaEWdiBa31c1q1xo18c05';
+window.CEO_CHECKOUT_ANNUAL = 'https://buy.stripe.com/cNicN40vP1wvaXm7VM18c07';
+// Existing customers whose card failed manage themselves here
+window.CEO_BILLING_PORTAL = 'https://billing.stripe.com/p/login/eVq3cucex8YXc1q0tk18c00';
+
+// Reads the user's real subscription state from the database and caches it locally.
+// The cached copy is only ever used to render the UI. The database is the source
+// of truth, and the chat function checks it server side.
+window.refreshAccessState = async function refreshAccessState() {
+    try {
+        const { data: { session } } = await window.db.auth.getSession();
+        if (!session || !session.user) return null;
+
+        const { data: profile, error } = await window.db
+            .from('profiles')
+            .select('subscription_status, trial_ends_at')
+            .eq('id', session.user.id)
+            .maybeSingle();
+
+        // Couldn't reach the server. Leave the cached value alone rather than
+        // locking someone out over a dropped connection.
+        if (error) {
+            console.warn('Could not refresh access state:', error.message);
+            return null;
+        }
+
+        // No profile row means the account was never provisioned properly.
+        if (!profile) {
+            localStorage.setItem('ceo_sub_status', 'incomplete');
+            localStorage.removeItem('ceo_trial_ends_at');
+            return { status: 'incomplete', daysLeft: 0, trialEndsAt: null };
+        }
+
+        const trialEndsAt = profile.trial_ends_at ? new Date(profile.trial_ends_at) : null;
+        let status = profile.subscription_status || 'incomplete';
+        let daysLeft = null;
+
+        if (status === 'trialing' && trialEndsAt) {
+            const msLeft = trialEndsAt.getTime() - Date.now();
+            daysLeft = Math.max(0, Math.ceil(msLeft / 86400000));
+            if (msLeft <= 0) status = 'trial_expired';
+        }
+
+        localStorage.setItem('ceo_sub_status', status);
+        if (trialEndsAt) {
+            localStorage.setItem('ceo_trial_ends_at', trialEndsAt.toISOString());
+        } else {
+            localStorage.removeItem('ceo_trial_ends_at');
+        }
+
+        return { status, daysLeft, trialEndsAt };
+    } catch (err) {
+        console.warn('Could not refresh access state:', err.message);
+        return null;
+    }
+};
+
+// The statuses that lock someone out of the app.
+window.CEO_LOCKED_STATUSES = ['incomplete', 'past_due', 'canceled', 'unpaid', 'trial_expired'];
+window.isLockedOut = function isLockedOut(status) {
+    return window.CEO_LOCKED_STATUSES.includes(status);
+};
+
 
 // --- js\store.js ---
 // store.js
@@ -816,9 +880,6 @@ async function generateAIResponse(messageHistory) {
     try {
         const { data, error } = await window.db.functions.invoke('chat', {
             body: { messages: messages },
-            headers: {
-                Authorization: `Bearer ${window.db.supabaseKey}`
-            }
         });
 
         if (error) {
@@ -868,9 +929,6 @@ You MUST return ONLY a raw JSON strictly following this schema with no markdown 
     try {
         const { data, error } = await window.db.functions.invoke('chat', {
             body: { messages: [{ role: 'user', content: prompt }] },
-            headers: {
-                Authorization: `Bearer ${window.db.supabaseKey}`
-            }
         });
 
         if (error) throw new Error(error.message);
@@ -989,9 +1047,6 @@ CRITICAL: Return ONLY the JSON object above. No explanation, no preamble, no cod
                     { role: 'user', content: 'Generate my 90-day action plan now. Return only the JSON object, no prose, no markdown fences.' }
                 ] 
             },
-            headers: {
-                Authorization: `Bearer ${window.db.supabaseKey}`
-            }
         });
 
         if (error) throw new Error(error.message);
@@ -1849,21 +1904,25 @@ function renderDashboard() {
         `;
     }
 
+    // Trial countdown, driven by the real expiry date from the database rather
+    // than a locally stored start date. Nobody is charged automatically now,
+    // because there is no card on file, so this has to be an invitation.
     let trialWarningHtml = '';
-    const trialStartDateStr = store.profile?.trialStartDate;
-    if (trialStartDateStr && store.profile?.subscription_status === 'trialing') {
-        const trialStart = new Date(trialStartDateStr);
-        const diffMs = new Date() - trialStart;
-        const elapsedDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-        const remainingDays = 14 - elapsedDays;
-        
-        // Show banner on Day 12, 13, 14
-        if (elapsedDays >= 11 && elapsedDays <= 14) {
-            const endDate = new Date(trialStart.getTime() + 14 * 24 * 60 * 60 * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    const trialEndsAtStr = localStorage.getItem('ceo_trial_ends_at');
+    const subStatus = localStorage.getItem('ceo_sub_status');
+
+    if (trialEndsAtStr && subStatus === 'trialing') {
+        const trialEnd = new Date(trialEndsAtStr);
+        const daysLeft = Math.max(0, Math.ceil((trialEnd.getTime() - Date.now()) / 86400000));
+
+        // Start nudging in the last five days
+        if (daysLeft <= 5) {
+            const endDate = trialEnd.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+            const dayWord = daysLeft === 1 ? 'day' : 'days';
             trialWarningHtml = `
-                <div style="background: #FFF3CD; border-bottom: 1px solid #FFEBAA; color: #856404; padding: 0.75rem 1.5rem; text-align: center; font-size: 0.95rem; font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 0.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); position: relative; z-index: 10;">
-                    <span>Your 14-day free trial is ending in ${remainingDays} days (on ${endDate}). You will be automatically moved to your paid plan to keep uninterrupted access.</span>
-                    <a href="#/settings" style="color: #533F03; text-decoration: underline; font-weight: 700; display: inline-flex; align-items: center; gap: 0.25rem;">Manage Subscription</a>
+                <div style="background: #FFF3CD; border-bottom: 1px solid #FFEBAA; color: #856404; padding: 0.75rem 1.5rem; text-align: center; font-size: 0.95rem; font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 0.5rem; flex-wrap: wrap; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); position: relative; z-index: 10;">
+                    <span>Your free trial ends in ${daysLeft} ${dayWord}, on ${endDate}. Your plans and streaks stay safe, you just need a plan to keep using them.</span>
+                    <a href="#/billing" style="color: #533F03; text-decoration: underline; font-weight: 700; display: inline-flex; align-items: center; gap: 0.25rem;">Choose your plan</a>
                 </div>
             `;
         }
@@ -3951,9 +4010,6 @@ window.generateAiReport = async function() {
 
         const { data, error } = await window.db.functions.invoke('chat', {
             body: { messages: [{ role: 'user', content: prompt }] },
-            headers: {
-                Authorization: `Bearer ${window.db.supabaseKey}`
-            }
         });
 
         if (error) throw new Error(error.message);
@@ -5024,10 +5080,12 @@ function renderSettings() {
             Billing & Subscription
         </h3>
         <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1.5rem;">
-            Manage your payment method, view invoices, or cancel your subscription at any time.
+            ${localStorage.getItem('ceo_sub_status') === 'trialing'
+                ? "You're on the free trial, so there's nothing to pay and nothing to cancel. Whenever you're ready, you can choose a plan here."
+                : 'Manage your payment method, view invoices, or cancel your subscription at any time.'}
         </p>
         <button type="button" id="btn-manage-subscription" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600; display: inline-flex; align-items: center; gap: 0.5rem;">
-            Manage Subscription / Cancel
+            ${localStorage.getItem('ceo_sub_status') === 'trialing' ? 'Choose Your Plan' : 'Manage Subscription / Cancel'}
         </button>
     </div>
 
@@ -5199,11 +5257,17 @@ function settingsAttachEvents() {
         });
     });
 
-    // Handle Billing Portal Click
+    // Handle Billing Click. Someone on the free trial has no Stripe record yet,
+    // so the customer portal would be a dead end for them. Send them to the
+    // plan picker instead.
     const btnManageSub = document.getElementById('btn-manage-subscription');
     if (btnManageSub) {
         btnManageSub.addEventListener('click', () => {
-            window.location.href = 'https://billing.stripe.com/p/login/eVq3cucex8YXc1q0tk18c00';
+            if (localStorage.getItem('ceo_sub_status') === 'trialing') {
+                window.location.hash = '#/billing';
+            } else {
+                window.location.href = window.CEO_BILLING_PORTAL;
+            }
         });
     }
 
@@ -6344,11 +6408,11 @@ function renderAuth(mode = 'login') {
     let title = "Log in to your account";
     let subtitle = "Welcome back! Please enter your details.";
     let btnText = "Sign In";
-    let switchText = "Just purchased? <a href='#/signup' style='color: var(--color-primary-dark); text-decoration: none; font-weight: 600;'>Create your account here</a>";
+    let switchText = "New here? <a href='#/signup' style='color: var(--color-primary-dark); text-decoration: none; font-weight: 600;'>Start your free trial</a>";
 
     if (mode === 'signup') {
-        title = "Create your account";
-        subtitle = "Start your 90-day CEO journey today.";
+        title = "Start your free trial";
+        subtitle = "14 days free. No card needed.";
         btnText = "Create Account";
         switchText = "Already have an account? <a href='#/login' style='color: var(--color-primary-dark); text-decoration: none; font-weight: 600;'>Log in</a>";
     } else if (mode === 'forgot') {
@@ -6406,6 +6470,12 @@ function renderAuth(mode = 'login') {
                     ` : ''}
 
                     <button type="submit" class="btn btn-primary" style="width: 100%; padding: 0.75rem; font-size: 1rem; border-radius: 8px; margin-top: 0.5rem; box-shadow: 0 4px 6px -1px rgba(78, 14, 255, 0.2);">${btnText}</button>
+
+                    ${mode === 'signup' ? `
+                    <p style="text-align: center; font-size: 0.85rem; color: var(--color-text-muted); margin: 0;">
+                        No card required. We'll only ask for payment details if you decide to stay after 14 days.
+                    </p>
+                    ` : ''}
                 </form>
 
                 ${switchText ? `
@@ -6492,57 +6562,42 @@ function authAttachEvents() {
             }
         } else if (isSignup) {
             const name = document.getElementById('auth-name').value;
-            
-            // Verify email eligibility against paid signups table
-            window.db.rpc('check_allowed_signup', { email_to_check: email }).then(async ({ data: isAllowed, error: rpcError }) => {
-                if (rpcError) {
-                    console.error("Eligibility check failed:", rpcError);
-                }
-                
-                if (!isAllowed) {
-                    alert("Sign up is only available for customers who have purchased a subscription. Please purchase a plan first, or verify you are using the same email address used during purchase.");
+
+            // Signup is open to everyone. The database trigger starts a 14-day
+            // trial, so no card and no payment is needed to get in.
+            window.db.auth.signUp({
+                email: email,
+                password: password,
+                options: { data: { name: name } }
+            }).then(async ({ data: signUpData, error: signUpError }) => {
+                if (signUpError) {
+                    alert("Sign up failed: " + signUpError.message);
                     btn.innerText = originalText;
                     btn.style.opacity = '1';
                     return;
                 }
-                
-                // Real Supabase Signup
-                window.db.auth.signUp({
-                    email: email,
-                    password: password,
-                    options: { data: { name: name } }
-                }).then(async ({ data: signUpData, error: signUpError }) => {
-                    if (signUpError) {
-                        alert("Sign up failed: " + signUpError.message);
-                        btn.innerText = originalText;
-                        btn.style.opacity = '1';
-                    } else {
-                        let fetchedStatus = 'trialing'; // default fallback
-                        const userId = signUpData.user ? signUpData.user.id : null;
-                        if (userId) {
-                            try {
-                                // Wait briefly for trigger execution to complete
-                                await new Promise(resolve => setTimeout(resolve, 500));
-                                
-                                const { data: profile } = await window.db
-                                    .from('profiles')
-                                    .select('subscription_status')
-                                    .eq('id', userId)
-                                    .single();
-                                if (profile && profile.subscription_status) {
-                                    fetchedStatus = profile.subscription_status;
-                                }
-                            } catch (err) {
-                                console.log("Error fetching subscription status on signup, defaulting to trialing.", err);
-                            }
-                        }
-                        
-                        localStorage.setItem('ceo_auth', 'true');
-                        localStorage.setItem('ceo_sub_status', fetchedStatus);
-                        window.location.hash = '#/';
-                        window.location.reload();
-                    }
-                });
+
+                // Give the profile trigger a moment, then read back the real trial state
+                await new Promise(resolve => setTimeout(resolve, 600));
+                const access = await window.refreshAccessState();
+                if (!access) {
+                    // Couldn't read it back (e.g. email confirmation required).
+                    // Assume a fresh trial so they aren't bounced to billing.
+                    localStorage.setItem('ceo_sub_status', 'trialing');
+                }
+
+                // Card-free signups never touch Stripe, so this is what puts them
+                // into Loops for the welcome and trial-ending emails.
+                try {
+                    await window.db.functions.invoke('signup-sync');
+                } catch (err) {
+                    // Never block someone getting into the app over an email sync
+                    console.warn('Loops sync failed at signup:', err.message);
+                }
+
+                localStorage.setItem('ceo_auth', 'true');
+                window.location.hash = '#/';
+                window.location.reload();
             });
         } else {
             // Real Supabase Login
@@ -6570,22 +6625,12 @@ function authAttachEvents() {
                         console.log("No cloud profile found or error fetching. Starting fresh.", err);
                     }
 
-                    // Fetch Subscription Status separately
-                    try {
-                        const { data: profile } = await window.db
-                            .from('profiles')
-                            .select('subscription_status')
-                            .eq('id', data.user.id)
-                            .single();
-                        
-                        if (profile && profile.subscription_status) {
-                            localStorage.setItem('ceo_sub_status', profile.subscription_status);
-                        } else {
-                            localStorage.setItem('ceo_sub_status', 'active'); // Fallback
-                        }
-                    } catch (err) {
-                        console.log("Error fetching subscription status.", err);
-                        localStorage.setItem('ceo_sub_status', 'active'); // Fallback
+                    // Read the real subscription and trial state from the database
+                    const access = await window.refreshAccessState();
+                    if (!access) {
+                        // Couldn't reach the server. Let them in rather than locking
+                        // them out over a blip. The AI is protected server side anyway.
+                        localStorage.setItem('ceo_sub_status', 'trialing');
                     }
 
                     // Handle "Remember password"
@@ -6795,36 +6840,144 @@ function roadmapAttachEvents() {
 function renderBilling() {
     window.setScreenModule({ attachEvents: billingAttachEvents });
 
+    const status = localStorage.getItem('ceo_sub_status');
+
+    // Still inside the trial and choosing to subscribe early
+    if (status === 'trialing') return renderTrialEnded(true);
+
+    // Trial ran out, or the account was never provisioned
+    if (status === 'trial_expired' || status === 'incomplete') return renderTrialEnded(false);
+
+    // An existing customer whose card failed
+    return renderPaymentProblem();
+}
+
+// The card-free trial ran out, or they're subscribing early. Nothing has gone
+// wrong in either case, so the tone here is an invitation rather than a warning.
+function renderTrialEnded(stillInTrial) {
+    const trialEndsAtStr = localStorage.getItem('ceo_trial_ends_at');
+    let daysLeft = null;
+    if (stillInTrial && trialEndsAtStr) {
+        daysLeft = Math.max(0, Math.ceil((new Date(trialEndsAtStr).getTime() - Date.now()) / 86400000));
+    }
+
+    const heading = stillInTrial ? 'Ready to make it official?' : 'Your 14 days are up';
+    const blurb = stillInTrial
+        ? `You've still got ${daysLeft !== null ? daysLeft : 'a few'} ${daysLeft === 1 ? 'day' : 'days'} left, so there's no rush.
+           Pick a plan whenever you're ready and nothing will be interrupted.`
+        : `Your plans, streaks and revenue history are all still here, safe and waiting.
+           Pick a plan below and you'll pick up exactly where you left off.`;
+
+    const backLink = stillInTrial
+        ? `<a href="#/dashboard" style="color: var(--color-text-muted); font-size: 0.875rem; text-decoration: underline;">Back to my dashboard</a>`
+        : `<a href="#" id="btn-signout" style="color: var(--color-text-muted); font-size: 0.875rem; text-decoration: underline;">Sign out</a>`;
+
+    return `
+        <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--color-primary-light) 0%, var(--color-bg-main) 100%); padding: 1.5rem;">
+            <div class="card fade-up" style="width: 100%; max-width: 520px; padding: 3rem 2.5rem; text-align: center; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); border: 1px solid rgba(255,255,255,0.5); backdrop-filter: blur(10px);">
+
+                <div style="display: inline-flex; align-items: center; justify-content: center; width: 64px; height: 64px; background: var(--color-primary-light); color: var(--color-primary-dark); border-radius: 16px; margin-bottom: 1.5rem;">
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                </div>
+
+                <h2 style="font-size: 1.75rem; color: var(--color-black); margin-bottom: 1rem; letter-spacing: -0.02em;">${heading}</h2>
+
+                <p style="color: var(--color-text-muted); font-size: 1.05rem; margin-bottom: 2rem; line-height: 1.6;">
+                    ${blurb}
+                </p>
+
+                <button id="btn-annual" class="btn btn-primary" style="width: 100%; padding: 1rem; font-size: 1.05rem; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(78, 14, 255, 0.2); margin-bottom: 0.75rem;">
+                    Continue yearly, best value
+                </button>
+
+                <button id="btn-monthly" class="btn btn-secondary" style="width: 100%; padding: 1rem; font-size: 1.05rem; border-radius: 12px; margin-bottom: 1.5rem;">
+                    Continue monthly
+                </button>
+
+                <p style="color: var(--color-text-muted); font-size: 0.8rem; margin-bottom: 1.5rem; line-height: 1.5;">
+                    Please check out with the same email address you signed up with,
+                    otherwise we won't be able to match your account.
+                </p>
+
+                ${backLink}
+            </div>
+        </div>
+    `;
+}
+
+// An existing paying customer whose card has failed. They already have a Stripe
+// record, so the customer portal is the right destination.
+function renderPaymentProblem() {
     return `
         <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--color-primary-light) 0%, var(--color-bg-main) 100%); padding: 1.5rem;">
             <div class="card fade-up" style="width: 100%; max-width: 480px; padding: 3rem 2.5rem; text-align: center; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); border: 1px solid rgba(255,255,255,0.5); backdrop-filter: blur(10px);">
-                
+
                 <div style="display: inline-flex; align-items: center; justify-content: center; width: 64px; height: 64px; background: rgba(252, 165, 165, 0.2); color: #DC2626; border-radius: 16px; margin-bottom: 1.5rem;">
                     <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
                 </div>
-                
-                <h2 style="font-size: 1.75rem; color: var(--color-black); margin-bottom: 1rem; letter-spacing: -0.02em;">Command Center Locked</h2>
-                
+
+                <h2 style="font-size: 1.75rem; color: var(--color-black); margin-bottom: 1rem; letter-spacing: -0.02em;">There's a problem with your payment</h2>
+
                 <p style="color: var(--color-text-muted); font-size: 1.05rem; margin-bottom: 2rem; line-height: 1.6;">
-                    Your trial has ended or your payment method failed. Please update your billing information to regain access to your dashboard and 90-day plan.
+                    Your last payment didn't go through, so your Command Center is paused.
+                    Update your card and everything comes straight back.
                 </p>
 
-                <!-- This will be dynamically replaced with the Stripe Customer Portal link -->
                 <button id="btn-portal" class="btn btn-primary" style="width: 100%; padding: 1rem; font-size: 1.1rem; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(78, 14, 255, 0.2); margin-bottom: 1rem;">
                     Update Payment Method
                 </button>
-                
-                <a href="#" onclick="localStorage.removeItem('ceo_auth'); localStorage.removeItem('ceoPlanner_store'); window.location.hash='#/login'; window.location.reload(); return false;" style="color: var(--color-text-muted); font-size: 0.875rem; text-decoration: underline;">Sign out</a>
+
+                <a href="#" id="btn-signout" style="color: var(--color-text-muted); font-size: 0.875rem; text-decoration: underline;">Sign out</a>
             </div>
         </div>
     `;
 }
 
 function billingAttachEvents() {
+    // Send them to Stripe with their email already filled in, so the webhook can
+    // match the payment back to the account they already have.
+    const checkout = async (baseUrl) => {
+        let url = baseUrl;
+        try {
+            const { data: { session } } = await window.db.auth.getSession();
+            const email = session && session.user ? session.user.email : null;
+            if (email) {
+                url += (baseUrl.includes('?') ? '&' : '?') + 'prefilled_email=' + encodeURIComponent(email);
+            }
+        } catch (err) {
+            console.warn('Could not read email for checkout prefill:', err.message);
+        }
+        window.location.href = url;
+    };
+
+    const btnAnnual = document.getElementById('btn-annual');
+    if (btnAnnual) {
+        btnAnnual.addEventListener('click', () => checkout(window.CEO_CHECKOUT_ANNUAL));
+    }
+
+    const btnMonthly = document.getElementById('btn-monthly');
+    if (btnMonthly) {
+        btnMonthly.addEventListener('click', () => checkout(window.CEO_CHECKOUT_MONTHLY));
+    }
+
     const btnPortal = document.getElementById('btn-portal');
     if (btnPortal) {
         btnPortal.addEventListener('click', () => {
-            window.location.href = 'https://billing.stripe.com/p/login/eVq3cucex8YXc1q0tk18c00';
+            window.location.href = window.CEO_BILLING_PORTAL;
+        });
+    }
+
+    const btnSignout = document.getElementById('btn-signout');
+    if (btnSignout) {
+        btnSignout.addEventListener('click', async (e) => {
+            e.preventDefault();
+            try { await window.db.auth.signOut(); } catch (err) { /* sign out locally regardless */ }
+            localStorage.removeItem('ceo_auth');
+            localStorage.removeItem('ceo_sub_status');
+            localStorage.removeItem('ceo_trial_ends_at');
+            localStorage.removeItem('ceoPlanner_store');
+            window.location.hash = '#/login';
+            window.location.reload();
         });
     }
 }
@@ -6873,11 +7026,14 @@ function router() {
     // Paywall Intercept
     if (isAuthenticated) {
         const subStatus = localStorage.getItem('ceo_sub_status');
-        if ((subStatus === 'incomplete' || subStatus === 'past_due' || subStatus === 'canceled' || subStatus === 'unpaid') && path !== '#/billing') {
+        const locked = window.isLockedOut(subStatus);
+        if (locked && path !== '#/billing') {
             window.location.hash = '#/billing';
             return;
         }
-        if (subStatus !== 'incomplete' && subStatus !== 'past_due' && subStatus !== 'canceled' && subStatus !== 'unpaid' && path === '#/billing') {
+        // Someone still in their trial is allowed to visit billing to subscribe
+        // early. Only send paying subscribers away from it.
+        if (!locked && subStatus === 'active' && path === '#/billing') {
             window.location.hash = '#/';
             return;
         }
@@ -7053,11 +7209,29 @@ function checkPushNotifications() {
     }
 }
 
+// Re-checks the trial against the database and re-routes if it has expired.
+// Without this, someone who signs up and stays logged in would never be
+// re-checked, because the cached status is only written at login.
+async function revalidateAccess() {
+    if (localStorage.getItem('ceo_auth') !== 'true') return;
+
+    const before = localStorage.getItem('ceo_sub_status');
+    const access = await window.refreshAccessState();
+    if (!access) return; // Offline or unreachable. Leave them as they were.
+
+    if (access.status !== before) router();
+}
+
 // Initialize
 window.addEventListener('hashchange', router);
 window.addEventListener('load', () => {
     router();
-    
+
+    // Confirm the trial is still valid against the database, not just localStorage
+    revalidateAccess();
+    // And re-check hourly, so a long-open tab doesn't outlive the trial
+    setInterval(revalidateAccess, 3600000);
+
     // Start background notification polling engine
     setInterval(checkPushNotifications, 60000);
     checkPushNotifications();

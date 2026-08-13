@@ -259,10 +259,12 @@ export function renderSettings() {
             Billing & Subscription
         </h3>
         <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1.5rem;">
-            Manage your payment method, view invoices, or cancel your subscription at any time.
+            ${localStorage.getItem('ceo_sub_status') === 'trialing'
+                ? "You're on the free trial, so there's nothing to pay and nothing to cancel. Whenever you're ready, you can choose a plan here."
+                : 'Manage your payment method, view invoices, or cancel your subscription at any time.'}
         </p>
         <button type="button" id="btn-manage-subscription" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600; display: inline-flex; align-items: center; gap: 0.5rem;">
-            Manage Subscription / Cancel
+            ${localStorage.getItem('ceo_sub_status') === 'trialing' ? 'Choose Your Plan' : 'Manage Subscription / Cancel'}
         </button>
     </div>
 
@@ -434,11 +436,17 @@ function settingsAttachEvents() {
         });
     });
 
-    // Handle Billing Portal Click
+    // Handle Billing Click. Someone on the free trial has no Stripe record yet,
+    // so the customer portal would be a dead end for them. Send them to the
+    // plan picker instead.
     const btnManageSub = document.getElementById('btn-manage-subscription');
     if (btnManageSub) {
         btnManageSub.addEventListener('click', () => {
-            window.location.href = 'https://billing.stripe.com/p/login/eVq3cucex8YXc1q0tk18c00';
+            if (localStorage.getItem('ceo_sub_status') === 'trialing') {
+                window.location.hash = '#/billing';
+            } else {
+                window.location.href = window.CEO_BILLING_PORTAL;
+            }
         });
     }
 

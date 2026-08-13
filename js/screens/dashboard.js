@@ -30,21 +30,25 @@ export function renderDashboard() {
         `;
     }
 
+    // Trial countdown, driven by the real expiry date from the database rather
+    // than a locally stored start date. Nobody is charged automatically now,
+    // because there is no card on file, so this has to be an invitation.
     let trialWarningHtml = '';
-    const trialStartDateStr = store.profile?.trialStartDate;
-    if (trialStartDateStr && store.profile?.subscription_status === 'trialing') {
-        const trialStart = new Date(trialStartDateStr);
-        const diffMs = new Date() - trialStart;
-        const elapsedDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-        const remainingDays = 14 - elapsedDays;
-        
-        // Show banner on Day 12, 13, 14
-        if (elapsedDays >= 11 && elapsedDays <= 14) {
-            const endDate = new Date(trialStart.getTime() + 14 * 24 * 60 * 60 * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    const trialEndsAtStr = localStorage.getItem('ceo_trial_ends_at');
+    const subStatus = localStorage.getItem('ceo_sub_status');
+
+    if (trialEndsAtStr && subStatus === 'trialing') {
+        const trialEnd = new Date(trialEndsAtStr);
+        const daysLeft = Math.max(0, Math.ceil((trialEnd.getTime() - Date.now()) / 86400000));
+
+        // Start nudging in the last five days
+        if (daysLeft <= 5) {
+            const endDate = trialEnd.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+            const dayWord = daysLeft === 1 ? 'day' : 'days';
             trialWarningHtml = `
-                <div style="background: #FFF3CD; border-bottom: 1px solid #FFEBAA; color: #856404; padding: 0.75rem 1.5rem; text-align: center; font-size: 0.95rem; font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 0.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); position: relative; z-index: 10;">
-                    <span>Your 14-day free trial is ending in ${remainingDays} days (on ${endDate}). You will be automatically moved to your paid plan to keep uninterrupted access.</span>
-                    <a href="#/settings" style="color: #533F03; text-decoration: underline; font-weight: 700; display: inline-flex; align-items: center; gap: 0.25rem;">Manage Subscription</a>
+                <div style="background: #FFF3CD; border-bottom: 1px solid #FFEBAA; color: #856404; padding: 0.75rem 1.5rem; text-align: center; font-size: 0.95rem; font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 0.5rem; flex-wrap: wrap; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); position: relative; z-index: 10;">
+                    <span>Your free trial ends in ${daysLeft} ${dayWord}, on ${endDate}. Your plans and streaks stay safe, you just need a plan to keep using them.</span>
+                    <a href="#/billing" style="color: #533F03; text-decoration: underline; font-weight: 700; display: inline-flex; align-items: center; gap: 0.25rem;">Choose your plan</a>
                 </div>
             `;
         }

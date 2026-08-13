@@ -56,11 +56,14 @@ function router() {
     // Paywall Intercept
     if (isAuthenticated) {
         const subStatus = localStorage.getItem('ceo_sub_status');
-        if ((subStatus === 'incomplete' || subStatus === 'past_due' || subStatus === 'canceled' || subStatus === 'unpaid') && path !== '#/billing') {
+        const locked = window.isLockedOut(subStatus);
+        if (locked && path !== '#/billing') {
             window.location.hash = '#/billing';
             return;
         }
-        if (subStatus !== 'incomplete' && subStatus !== 'past_due' && subStatus !== 'canceled' && subStatus !== 'unpaid' && path === '#/billing') {
+        // Someone still in their trial is allowed to visit billing to subscribe
+        // early. Only send paying subscribers away from it.
+        if (!locked && subStatus === 'active' && path === '#/billing') {
             window.location.hash = '#/';
             return;
         }
@@ -236,11 +239,29 @@ function checkPushNotifications() {
     }
 }
 
+// Re-checks the trial against the database and re-routes if it has expired.
+// Without this, someone who signs up and stays logged in would never be
+// re-checked, because the cached status is only written at login.
+async function revalidateAccess() {
+    if (localStorage.getItem('ceo_auth') !== 'true') return;
+
+    const before = localStorage.getItem('ceo_sub_status');
+    const access = await window.refreshAccessState();
+    if (!access) return; // Offline or unreachable. Leave them as they were.
+
+    if (access.status !== before) router();
+}
+
 // Initialize
 window.addEventListener('hashchange', router);
 window.addEventListener('load', () => {
     router();
-    
+
+    // Confirm the trial is still valid against the database, not just localStorage
+    revalidateAccess();
+    // And re-check hourly, so a long-open tab doesn't outlive the trial
+    setInterval(revalidateAccess, 3600000);
+
     // Start background notification polling engine
     setInterval(checkPushNotifications, 60000);
     checkPushNotifications();

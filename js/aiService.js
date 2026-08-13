@@ -138,9 +138,6 @@ export async function generateAIResponse(messageHistory) {
     try {
         const { data, error } = await window.db.functions.invoke('chat', {
             body: { messages: messages },
-            headers: {
-                Authorization: `Bearer ${window.db.supabaseKey}`
-            }
         });
 
         if (error) {
@@ -190,9 +187,6 @@ You MUST return ONLY a raw JSON strictly following this schema with no markdown 
     try {
         const { data, error } = await window.db.functions.invoke('chat', {
             body: { messages: [{ role: 'user', content: prompt }] },
-            headers: {
-                Authorization: `Bearer ${window.db.supabaseKey}`
-            }
         });
 
         if (error) throw new Error(error.message);
@@ -311,9 +305,6 @@ CRITICAL: Return ONLY the JSON object above. No explanation, no preamble, no cod
                     { role: 'user', content: 'Generate my 90-day action plan now. Return only the JSON object, no prose, no markdown fences.' }
                 ] 
             },
-            headers: {
-                Authorization: `Bearer ${window.db.supabaseKey}`
-            }
         });
 
         if (error) throw new Error(error.message);

@@ -517,9 +517,6 @@ window.generateAiReport = async function() {
 
         const { data, error } = await window.db.functions.invoke('chat', {
             body: { messages: [{ role: 'user', content: prompt }] },
-            headers: {
-                Authorization: `Bearer ${window.db.supabaseKey}`
-            }
         });
 
         if (error) throw new Error(error.message);

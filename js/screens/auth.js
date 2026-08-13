@@ -10,11 +10,11 @@ export function renderAuth(mode = 'login') {
     let title = "Log in to your account";
     let subtitle = "Welcome back! Please enter your details.";
     let btnText = "Sign In";
-    let switchText = "Just purchased? <a href='#/signup' style='color: var(--color-primary-dark); text-decoration: none; font-weight: 600;'>Create your account here</a>";
+    let switchText = "New here? <a href='#/signup' style='color: var(--color-primary-dark); text-decoration: none; font-weight: 600;'>Start your free trial</a>";
 
     if (mode === 'signup') {
-        title = "Create your account";
-        subtitle = "Start your 90-day CEO journey today.";
+        title = "Start your free trial";
+        subtitle = "14 days free. No card needed.";
         btnText = "Create Account";
         switchText = "Already have an account? <a href='#/login' style='color: var(--color-primary-dark); text-decoration: none; font-weight: 600;'>Log in</a>";
     } else if (mode === 'forgot') {
@@ -72,6 +72,12 @@ export function renderAuth(mode = 'login') {
                     ` : ''}
 
                     <button type="submit" class="btn btn-primary" style="width: 100%; padding: 0.75rem; font-size: 1rem; border-radius: 8px; margin-top: 0.5rem; box-shadow: 0 4px 6px -1px rgba(78, 14, 255, 0.2);">${btnText}</button>
+
+                    ${mode === 'signup' ? `
+                    <p style="text-align: center; font-size: 0.85rem; color: var(--color-text-muted); margin: 0;">
+                        No card required. We'll only ask for payment details if you decide to stay after 14 days.
+                    </p>
+                    ` : ''}
                 </form>
 
                 ${switchText ? `
@@ -158,57 +164,42 @@ function authAttachEvents() {
             }
         } else if (isSignup) {
             const name = document.getElementById('auth-name').value;
-            
-            // Verify email eligibility against paid signups table
-            window.db.rpc('check_allowed_signup', { email_to_check: email }).then(async ({ data: isAllowed, error: rpcError }) => {
-                if (rpcError) {
-                    console.error("Eligibility check failed:", rpcError);
-                }
-                
-                if (!isAllowed) {
-                    alert("Sign up is only available for customers who have purchased a subscription. Please purchase a plan first, or verify you are using the same email address used during purchase.");
+
+            // Signup is open to everyone. The database trigger starts a 14-day
+            // trial, so no card and no payment is needed to get in.
+            window.db.auth.signUp({
+                email: email,
+                password: password,
+                options: { data: { name: name } }
+            }).then(async ({ data: signUpData, error: signUpError }) => {
+                if (signUpError) {
+                    alert("Sign up failed: " + signUpError.message);
                     btn.innerText = originalText;
                     btn.style.opacity = '1';
                     return;
                 }
-                
-                // Real Supabase Signup
-                window.db.auth.signUp({
-                    email: email,
-                    password: password,
-                    options: { data: { name: name } }
-                }).then(async ({ data: signUpData, error: signUpError }) => {
-                    if (signUpError) {
-                        alert("Sign up failed: " + signUpError.message);
-                        btn.innerText = originalText;
-                        btn.style.opacity = '1';
-                    } else {
-                        let fetchedStatus = 'trialing'; // default fallback
-                        const userId = signUpData.user ? signUpData.user.id : null;
-                        if (userId) {
-                            try {
-                                // Wait briefly for trigger execution to complete
-                                await new Promise(resolve => setTimeout(resolve, 500));
-                                
-                                const { data: profile } = await window.db
-                                    .from('profiles')
-                                    .select('subscription_status')
-                                    .eq('id', userId)
-                                    .single();
-                                if (profile && profile.subscription_status) {
-                                    fetchedStatus = profile.subscription_status;
-                                }
-                            } catch (err) {
-                                console.log("Error fetching subscription status on signup, defaulting to trialing.", err);
-                            }
-                        }
-                        
-                        localStorage.setItem('ceo_auth', 'true');
-                        localStorage.setItem('ceo_sub_status', fetchedStatus);
-                        window.location.hash = '#/';
-                        window.location.reload();
-                    }
-                });
+
+                // Give the profile trigger a moment, then read back the real trial state
+                await new Promise(resolve => setTimeout(resolve, 600));
+                const access = await window.refreshAccessState();
+                if (!access) {
+                    // Couldn't read it back (e.g. email confirmation required).
+                    // Assume a fresh trial so they aren't bounced to billing.
+                    localStorage.setItem('ceo_sub_status', 'trialing');
+                }
+
+                // Card-free signups never touch Stripe, so this is what puts them
+                // into Loops for the welcome and trial-ending emails.
+                try {
+                    await window.db.functions.invoke('signup-sync');
+                } catch (err) {
+                    // Never block someone getting into the app over an email sync
+                    console.warn('Loops sync failed at signup:', err.message);
+                }
+
+                localStorage.setItem('ceo_auth', 'true');
+                window.location.hash = '#/';
+                window.location.reload();
             });
         } else {
             // Real Supabase Login
@@ -236,22 +227,12 @@ function authAttachEvents() {
                         console.log("No cloud profile found or error fetching. Starting fresh.", err);
                     }
 
-                    // Fetch Subscription Status separately
-                    try {
-                        const { data: profile } = await window.db
-                            .from('profiles')
-                            .select('subscription_status')
-                            .eq('id', data.user.id)
-                            .single();
-                        
-                        if (profile && profile.subscription_status) {
-                            localStorage.setItem('ceo_sub_status', profile.subscription_status);
-                        } else {
-                            localStorage.setItem('ceo_sub_status', 'active'); // Fallback
-                        }
-                    } catch (err) {
-                        console.log("Error fetching subscription status.", err);
-                        localStorage.setItem('ceo_sub_status', 'active'); // Fallback
+                    // Read the real subscription and trial state from the database
+                    const access = await window.refreshAccessState();
+                    if (!access) {
+                        // Couldn't reach the server. Let them in rather than locking
+                        // them out over a blip. The AI is protected server side anyway.
+                        localStorage.setItem('ceo_sub_status', 'trialing');
                     }
 
                     // Handle "Remember password"
