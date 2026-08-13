@@ -10,9 +10,12 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 // Initialize the Supabase client attached to the global window
 window.db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// Stripe checkout links for when a trial runs out
-window.CEO_CHECKOUT_MONTHLY = 'https://buy.stripe.com/4gMaEWdiBa31c1q1xo18c05';
-window.CEO_CHECKOUT_ANNUAL = 'https://buy.stripe.com/cNicN40vP1wvaXm7VM18c07';
+// Stripe checkout links for when the free trial runs out.
+// These deliberately have NO Stripe trial period on them. The 14 free days are
+// served by the app, so a trial period here would hand people a second fortnight
+// free before they were ever charged.
+window.CEO_CHECKOUT_MONTHLY = 'https://buy.stripe.com/7sY28q2DXgrp6H67VM18c08';
+window.CEO_CHECKOUT_ANNUAL = 'https://buy.stripe.com/28E8wO92l6QP1mM3Fw18c09';
 // Existing customers whose card failed manage themselves here
 window.CEO_BILLING_PORTAL = 'https://billing.stripe.com/p/login/eVq3cucex8YXc1q0tk18c00';
 
