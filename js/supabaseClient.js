@@ -67,6 +67,22 @@ window.refreshAccessState = async function refreshAccessState() {
     }
 };
 
+// supabase-js collapses any non-2xx from an edge function into a generic
+// "non-2xx status code" error, which would hide the actual explanation. The real
+// message is in the response body, so dig it out. Without this, someone who hits
+// their daily AI limit or whose trial has ended just sees gibberish.
+window.readFunctionError = async function readFunctionError(error) {
+    try {
+        if (error && error.context && typeof error.context.json === 'function') {
+            const body = await error.context.json();
+            if (body && body.error) return body.error;
+        }
+    } catch (err) {
+        // Body wasn't readable, fall back to the generic message below
+    }
+    return (error && error.message) || 'Something went wrong. Please try again.';
+};
+
 // The statuses that lock someone out of the app.
 window.CEO_LOCKED_STATUSES = ['incomplete', 'past_due', 'canceled', 'unpaid', 'trial_expired'];
 window.isLockedOut = function isLockedOut(status) {

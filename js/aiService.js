@@ -142,7 +142,7 @@ export async function generateAIResponse(messageHistory) {
 
         if (error) {
             console.error("Edge Function Invocation Error:", error);
-            throw new Error(error.message);
+            throw new Error(await window.readFunctionError(error));
         }
 
         if (data.error) {
@@ -189,7 +189,7 @@ You MUST return ONLY a raw JSON strictly following this schema with no markdown 
             body: { messages: [{ role: 'user', content: prompt }] },
         });
 
-        if (error) throw new Error(error.message);
+        if (error) throw new Error(await window.readFunctionError(error));
         if (data.error) throw new Error(data.error.message || data.error);
 
         let content = data.choices[0].message.content;
@@ -307,7 +307,7 @@ CRITICAL: Return ONLY the JSON object above. No explanation, no preamble, no cod
             },
         });
 
-        if (error) throw new Error(error.message);
+        if (error) throw new Error(await window.readFunctionError(error));
         if (data.error) throw new Error(data.error.message || data.error);
 
         let content = data.choices[0].message.content;

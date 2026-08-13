@@ -71,6 +71,22 @@ window.refreshAccessState = async function refreshAccessState() {
     }
 };
 
+// supabase-js collapses any non-2xx from an edge function into a generic
+// "non-2xx status code" error, which would hide the actual explanation. The real
+// message is in the response body, so dig it out. Without this, someone who hits
+// their daily AI limit or whose trial has ended just sees gibberish.
+window.readFunctionError = async function readFunctionError(error) {
+    try {
+        if (error && error.context && typeof error.context.json === 'function') {
+            const body = await error.context.json();
+            if (body && body.error) return body.error;
+        }
+    } catch (err) {
+        // Body wasn't readable, fall back to the generic message below
+    }
+    return (error && error.message) || 'Something went wrong. Please try again.';
+};
+
 // The statuses that lock someone out of the app.
 window.CEO_LOCKED_STATUSES = ['incomplete', 'past_due', 'canceled', 'unpaid', 'trial_expired'];
 window.isLockedOut = function isLockedOut(status) {
@@ -887,7 +903,7 @@ async function generateAIResponse(messageHistory) {
 
         if (error) {
             console.error("Edge Function Invocation Error:", error);
-            throw new Error(error.message);
+            throw new Error(await window.readFunctionError(error));
         }
 
         if (data.error) {
@@ -934,7 +950,7 @@ You MUST return ONLY a raw JSON strictly following this schema with no markdown 
             body: { messages: [{ role: 'user', content: prompt }] },
         });
 
-        if (error) throw new Error(error.message);
+        if (error) throw new Error(await window.readFunctionError(error));
         if (data.error) throw new Error(data.error.message || data.error);
 
         let content = data.choices[0].message.content;
@@ -1052,7 +1068,7 @@ CRITICAL: Return ONLY the JSON object above. No explanation, no preamble, no cod
             },
         });
 
-        if (error) throw new Error(error.message);
+        if (error) throw new Error(await window.readFunctionError(error));
         if (data.error) throw new Error(data.error.message || data.error);
 
         let content = data.choices[0].message.content;
@@ -4015,7 +4031,7 @@ window.generateAiReport = async function() {
             body: { messages: [{ role: 'user', content: prompt }] },
         });
 
-        if (error) throw new Error(error.message);
+        if (error) throw new Error(await window.readFunctionError(error));
         if (data.error) throw new Error(data.error.message || data.error);
 
         const reportText = data.choices[0].message.content;

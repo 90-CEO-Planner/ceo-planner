@@ -519,7 +519,7 @@ window.generateAiReport = async function() {
             body: { messages: [{ role: 'user', content: prompt }] },
         });
 
-        if (error) throw new Error(error.message);
+        if (error) throw new Error(await window.readFunctionError(error));
         if (data.error) throw new Error(data.error.message || data.error);
 
         const reportText = data.choices[0].message.content;
