@@ -1,9 +1,13 @@
 // sw.js
-const CACHE_NAME = 'ceo-planner-cache-v8';
+// Bump CACHE_NAME and these ?v= numbers whenever the bundle version in
+// index.html changes. Fetching is network-first, so a stale list does not break
+// normal loading, but it is what an offline user gets served, and serving a
+// bundle from before the card-free trial change would be worse than nothing.
+const CACHE_NAME = 'ceo-planner-cache-v10';
 const urlsToCache = [
   './',
   './index.html',
-  './js/bundle.js?v=7',
+  './js/bundle.js?v=10',
   './css/variables.css?v=7',
   './css/styles.css?v=7',
   './css/components.css?v=7'
