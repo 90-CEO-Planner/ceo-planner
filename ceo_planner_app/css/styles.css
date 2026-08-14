@@ -1,0 +1,171 @@
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: var(--font-body);
+    color: var(--color-text-main);
+    background-color: var(--mesh-3);
+    background-image: 
+        radial-gradient(at 0% 0%, var(--mesh-1) 0px, transparent 50%),
+        radial-gradient(at 100% 0%, var(--mesh-2) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, var(--mesh-3) 0px, transparent 50%),
+        radial-gradient(at 0% 100%, var(--mesh-4) 0px, transparent 50%);
+    background-size: 100% 100%;
+    min-height: 100vh;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-heading);
+    color: var(--color-black);
+    font-weight: 600;
+    line-height: 1.2;
+}
+
+a {
+    color: var(--color-primary);
+    text-decoration: none;
+    transition: color var(--transition-fast);
+}
+
+a:hover {
+    color: var(--color-primary-dark);
+}
+
+/* Layout */
+#app-container {
+    max-width: 100%;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.main-content {
+    flex: 1;
+    width: 100%;
+    max-width: 800px;
+    margin: 0 auto;
+    padding: var(--spacing-xl) var(--spacing-md);
+}
+
+.dashboard-layout {
+    max-width: 1200px;
+}
+
+/* Utilities */
+.text-center { text-align: center; }
+.mt-1 { margin-top: var(--spacing-xs); }
+.mt-2 { margin-top: var(--spacing-sm); }
+.mt-4 { margin-top: var(--spacing-md); }
+.mt-6 { margin-top: var(--spacing-lg); }
+.mt-8 { margin-top: var(--spacing-xl); }
+.mb-4 { margin-bottom: var(--spacing-md); }
+.mb-6 { margin-bottom: var(--spacing-lg); }
+.mb-8 { margin-bottom: var(--spacing-xl); }
+
+.flex { display: flex; }
+.flex-col { display: flex; flex-direction: column; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.justify-center { justify-content: center; }
+.gap-2 { gap: var(--spacing-sm); }
+.gap-4 { gap: var(--spacing-md); }
+
+/* Loading State */
+.loading-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    color: var(--color-text-muted);
+}
+
+.spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid var(--color-border);
+    border-top-color: var(--color-primary);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-bottom: var(--spacing-md);
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+@keyframes fadeUp {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.fade-up {
+    animation: fadeUp 0.4s ease-out forwards;
+}
+
+/* Base card animation (apply fade up everywhere) */
+.card {
+    animation: fadeUp 0.4s ease-out forwards;
+}
+
+/* Responsive Grids */
+.grid-cols-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--spacing-md); }
+.grid-cols-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--spacing-md); }
+.grid-cols-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--spacing-md); }
+.grid-sidebar { display: grid; grid-template-columns: 2fr 1fr; gap: var(--spacing-lg); }
+.grid-sidebar-right { display: grid; grid-template-columns: 1fr 2fr; gap: var(--spacing-lg); }
+
+/* Responsive */
+@media (max-width: 768px) {
+    .main-content {
+        padding: var(--spacing-md);
+    }
+    
+    .grid-cols-2,
+    .grid-cols-3,
+    .grid-sidebar,
+    .grid-sidebar-right {
+        grid-template-columns: 1fr;
+    }
+
+    /* The four KPI cards stay side by side as a 2x2 block. Stacked in one column
+       they pushed everything else on the Revenue page below the fold. The inline
+       font sizes on those cards are sized for a desktop column, hence the
+       overrides — without them the figures wrap inside a half-width card. */
+    .grid-cols-4 {
+        grid-template-columns: repeat(2, 1fr);
+        gap: var(--spacing-sm);
+    }
+
+    .grid-cols-4 > .card {
+        padding: 1rem !important;
+    }
+
+    .grid-cols-4 > .card h3 {
+        font-size: 1.15rem !important;
+    }
+
+    .grid-cols-4 > .card p {
+        font-size: 0.7rem !important;
+    }
+
+    .flex-mobile-col {
+        flex-direction: column !important;
+        align-items: stretch !important;
+    }
+    
+    .flex-mobile-col > * {
+        width: 100% !important;
+    }
+}

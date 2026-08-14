@@ -1,0 +1,68 @@
+$files = @(
+    "js\supabaseClient.js",
+    "js\store.js",
+    "js\aiService.js",
+    "js\components\nav.js",
+    "js\components\tooltip.js",
+    "js\components\toast.js",
+    "js\components\chatWidget.js",
+    "js\screens\welcome.js",
+    "js\screens\wizard.js",
+    "js\screens\dashboard.js",
+    "js\screens\weeklyPlanner.js",
+    "js\screens\revenue.js",
+    "js\screens\fridayReview.js",
+    "js\screens\progress.js",
+    "js\screens\settings.js",
+    "js\screens\quarterReset.js",
+    "js\screens\coach.js",
+    "js\screens\monthlyReview.js",
+    "js\screens\mondayPlan.js",
+    "js\screens\auth.js",
+    "js\screens\roadmap.js",
+    "js\screens\billing.js",
+    "js\app.js"
+)
+
+# No error handler is injected here. index.html registers the single global
+# handler: it logs the detail to the console and shows the customer a calm
+# recovery message. A second handler prepending a red stack trace to the page
+# would undo that, which is exactly what this block used to do.
+$bundle = ""
+
+# The AI coach is handed the user guide as ground truth about how the app works.
+# It used to be a second copy pasted into aiService.js, which drifted from the
+# real USER_GUIDE.md and had the coach explaining features that did not exist.
+# Generating it here means there is only one copy to keep honest.
+$guidePath = "USER_GUIDE.md"
+if (Test-Path $guidePath) {
+    $guide = Get-Content $guidePath -Raw
+    # Neutralise the three sequences that would break out of a JS template
+    # literal. Backslash must be escaped first or it re-escapes the others.
+    $bt = [string][char]96
+    $guide = $guide.Replace('\', '\\').Replace($bt, '\' + $bt).Replace('$', '\$')
+    $bundle += "// --- Generated from USER_GUIDE.md at build time. Edit that file, not this. ---`n"
+    $bundle += "const CEO_USER_GUIDE = " + $bt + $guide + $bt + ";`n`n"
+}
+else {
+    Write-Host "Warning: $guidePath not found. The AI coach will fall back to its short built-in summary."
+}
+
+foreach ($file in $files) {
+    if (Test-Path $file) {
+        $content = Get-Content $file -Raw
+        $content = $content -replace '(?m)^import\s+.*$(?:\r?\n)?', ''
+        $content = $content -replace '(?m)^export\s+default\s+', ''
+        $content = $content -replace '(?m)^export\s+function\s+', 'function '
+        $content = $content -replace '(?m)^export\s+async\s+function\s+', 'async function '
+        $content = $content -replace '(?m)^export\s+const\s+', 'const '
+        $content = $content -replace '(?m)^export\s+let\s+', 'let '
+        $content = $content -replace '(?m)^export\s+\{.*\}\s*;?(?:\r?\n)?', ''
+        $bundle += "// --- $file ---`n" + $content + "`n`n"
+    }
+    else {
+        Write-Host "Warning: $file not found!"
+    }
+}
+Set-Content -Path "js\bundle.js" -Value $bundle
+Write-Host "Bundle created successfully."

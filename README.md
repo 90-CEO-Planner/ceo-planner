@@ -1,177 +1,86 @@
-# Supabase CLI
+# CEO Planner — deployment folder
 
-[![Coverage Status](https://coveralls.io/repos/github/supabase/cli/badge.svg?branch=develop)](https://coveralls.io/github/supabase/cli?branch=develop) [![Bitbucket Pipelines](https://img.shields.io/bitbucket/pipelines/supabase-cli/setup-cli/master?style=flat-square&label=Bitbucket%20Canary)](https://bitbucket.org/supabase-cli/setup-cli/pipelines) [![Gitlab Pipeline Status](https://img.shields.io/gitlab/pipeline-status/sweatybridge%2Fsetup-cli?label=Gitlab%20Canary)
-](https://gitlab.com/sweatybridge/setup-cli/-/pipelines)
+Everything needed to run CEO Planner, in one place. Built from the working copy on
+14 August 2026, after upgrade batches 1–6.
 
-[Supabase](https://supabase.io) is an open source Firebase alternative. We're building the features of Firebase using enterprise-grade open source tools.
+Drop the **contents of this folder** into your GitHub repository (not the folder
+itself — you want `ceo_planner_app/` at the top level of the repo, not
+`github_deployment/ceo_planner_app/`).
 
-This repository contains all the functionality for Supabase CLI.
+## What's in here
 
-- [x] Running Supabase locally
-- [x] Managing database migrations
-- [x] Creating and deploying Supabase Functions
-- [x] Generating types directly from your database schema
-- [x] Making authenticated HTTP requests to [Management API](https://supabase.com/docs/reference/api/introduction)
+| Folder | What it is | Goes where |
+|---|---|---|
+| `ceo_planner_app/` | The app itself. This is the folder your host serves. | Netlify / Cloudflare Pages / GitHub Pages |
+| `sales_page/` | The standalone sales page. Independent of the app. | Wherever you host the sales page |
+| `supabase/` | Database setup and the three edge functions. | Deployed with the Supabase CLI, not by your web host |
 
-## Getting started
+## Deploying the app
 
-### Install the CLI
+Publish directory: **`ceo_planner_app`**. Build command: **none** — the app has no
+build step, `js/bundle.js` is committed ready to serve.
 
-Available via [NPM](https://www.npmjs.com) as dev dependency. To install:
+`_redirects` is included for Netlify (it sends every path to `index.html` so the
+router handles it). Cloudflare Pages reads the same file. On GitHub Pages it is
+ignored and harmless.
 
-```bash
-npm i supabase --save-dev
-```
+## Deploying the Supabase side
 
-When installing with yarn 4, you need to disable experimental fetch with the following nodejs config.
-
-```
-NODE_OPTIONS=--no-experimental-fetch yarn add supabase
-```
-
-> **Note**
-For Bun versions below v1.0.17, you must add `supabase` as a [trusted dependency](https://bun.sh/guides/install/trusted) before running `bun add -D supabase`.
-
-<details>
-  <summary><b>macOS</b></summary>
-
-  Available via [Homebrew](https://brew.sh). To install:
-
-  ```sh
-  brew install supabase/tap/supabase
-  ```
-
-  To install the beta release channel:
-  
-  ```sh
-  brew install supabase/tap/supabase-beta
-  brew link --overwrite supabase-beta
-  ```
-  
-  To upgrade:
-
-  ```sh
-  brew upgrade supabase
-  ```
-</details>
-
-<details>
-  <summary><b>Windows</b></summary>
-
-  Available via [Scoop](https://scoop.sh). To install:
-
-  ```powershell
-  scoop bucket add supabase https://github.com/supabase/scoop-bucket.git
-  scoop install supabase
-  ```
-
-  To upgrade:
-
-  ```powershell
-  scoop update supabase
-  ```
-</details>
-
-<details>
-  <summary><b>Linux</b></summary>
-
-  Available via [Homebrew](https://brew.sh) and Linux packages.
-
-  #### via Homebrew
-
-  To install:
-
-  ```sh
-  brew install supabase/tap/supabase
-  ```
-
-  To upgrade:
-
-  ```sh
-  brew upgrade supabase
-  ```
-
-  #### via Linux packages
-
-  Linux packages are provided in [Releases](https://github.com/supabase/cli/releases). To install, download the `.apk`/`.deb`/`.rpm`/`.pkg.tar.zst` file depending on your package manager and run the respective commands.
-
-  ```sh
-  sudo apk add --allow-untrusted <...>.apk
-  ```
-
-  ```sh
-  sudo dpkg -i <...>.deb
-  ```
-
-  ```sh
-  sudo rpm -i <...>.rpm
-  ```
-
-  ```sh
-  sudo pacman -U <...>.pkg.tar.zst
-  ```
-</details>
-
-<details>
-  <summary><b>Other Platforms</b></summary>
-
-  You can also install the CLI via [go modules](https://go.dev/ref/mod#go-install) without the help of package managers.
-
-  ```sh
-  go install github.com/supabase/cli@latest
-  ```
-
-  Add a symlink to the binary in `$PATH` for easier access:
-
-  ```sh
-  ln -s "$(go env GOPATH)/bin/cli" /usr/bin/supabase
-  ```
-
-  This works on other non-standard Linux distros.
-</details>
-
-<details>
-  <summary><b>Community Maintained Packages</b></summary>
-
-  Available via [pkgx](https://pkgx.sh/). Package script [here](https://github.com/pkgxdev/pantry/blob/main/projects/supabase.com/cli/package.yml).
-  To install in your working directory:
-
-  ```bash
-  pkgx install supabase
-  ```
-
-  Available via [Nixpkgs](https://nixos.org/). Package script [here](https://github.com/NixOS/nixpkgs/blob/master/pkgs/development/tools/supabase-cli/default.nix).
-</details>
-
-### Run the CLI
+Only needed when the database or the AI/Stripe functions change.
 
 ```bash
-supabase bootstrap
+supabase db push
 ```
-
-Or using npx:
 
 ```bash
-npx supabase bootstrap
+supabase functions deploy chat signup-sync stripe-webhook
 ```
 
-The bootstrap command will guide you through the process of setting up a Supabase project using one of the [starter](https://github.com/supabase-community/supabase-samples/blob/main/samples.json) templates.
+The functions read these secrets from the Supabase dashboard (Settings → Edge
+Functions → Secrets). None of them are in this repository, and none should be:
 
-## Docs
+- `OPENAI_API_KEY` — the AI coach and executive report
+- `LOOPS_API_KEY` — welcome and trial-ending emails
+- `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` — subscription webhooks
 
-Command & config reference can be found [here](https://supabase.com/docs/reference/cli/about).
+`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are provided by Supabase
+automatically — you don't set those yourself.
 
-## Breaking changes
+The Supabase URL and anon key that *are* in `js/supabaseClient.js` are meant to be
+public. They identify the project in the browser; row-level security in
+`supabase/setup.sql` is what actually protects the data.
 
-We follow semantic versioning for changes that directly impact CLI commands, flags, and configurations.
+## After you push a code change
 
-However, due to dependencies on other service images, we cannot guarantee that schema migrations, seed.sql, and generated types will always work for the same CLI major version. If you need such guarantees, we encourage you to pin a specific version of CLI in package.json.
+`js/bundle.js` is generated. Rebuild it before deploying, from the app folder:
 
-## Developing
-
-To run from source:
-
-```sh
-# Go >= 1.22
-go run . help
+```bash
+powershell -ExecutionPolicy Bypass -File build_bundle.ps1
 ```
+
+Then bump the cache version in **three** places, or returning users get served the
+old code from their service worker:
+
+1. `index.html` — the `?v=` on the bundle script tag
+2. `sw.js` — `CACHE_NAME`
+3. `sw.js` — the `?v=` entries in `urlsToCache`
+
+Currently at **v17** (CSS files are on their own counter, currently **v8**).
+
+`USER_GUIDE.md` sits inside `ceo_planner_app/` on purpose: the build script reads it
+and injects it into the AI coach's system prompt, so the coach explains the app as
+the guide describes it. Editing that file is how you change what the coach believes.
+Keep it next to `build_bundle.ps1`.
+
+## One thing to fix
+
+`index.html` and `manifest.json` both reference `favicon.ico`, which doesn't exist —
+so browsers show a blank tab icon and log a 404. `logo.png` is a wide wordmark, so it
+won't crop to a square icon well. Adding a square brand mark saved as
+`ceo_planner_app/favicon.ico` is all that's needed.
+
+## Not included, on purpose
+
+- `supabase/.temp/` — local Supabase CLI state, specific to your machine
+- `CLAUDE.md`, `UPGRADE_PLAN.md` — working notes, not part of the product
+- Word documents and scratch files from the working folder

@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CEO Planner | The Command Center for Founders</title>
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@600;700&display=swap" rel="stylesheet">
+    
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+    <div class="container">
+        <!-- Navigation -->
+        <nav>
+            <div class="logo">CEO<span>Planner</span></div>
+            <a href="#" data-app-link="login" class="btn btn-secondary">Log In</a>
+        </nav>
+
+        <!-- Hero Section -->
+        <section class="hero">
+            <h1>Stop Guessing.<br>Start Operating Like a CEO.</h1>
+            <p>The only Command Center that tells you exactly what to execute today to hit your 90-day revenue goals. Turn motion into momentum.</p>
+            <div style="display: flex; gap: 1rem; justify-content: center; margin-top: 2rem;">
+                <a href="#" data-app-link="signup" class="btn btn-primary" style="font-size: 1.125rem; padding: 1rem 2rem;">Start Your 14-Day Free Trial</a>
+            </div>
+            
+            <!-- Video Showcase -->
+            <div class="hero-video-wrapper">
+                <video id="demo-video" controls style="width: 100%; height: auto; border-radius: inherit;">
+                    <source src="promo_video.mp4" type="video/mp4">
+                    Your browser does not support the video element.
+                </video>
+            </div>
+        </section>
+    </div>
+
+    <!-- The Bottleneck Section -->
+    <section class="section section-bg-white">
+        <div class="container">
+            <div class="section-header">
+                <span style="color: var(--color-primary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; display: block;">The Founder's Trap</span>
+                <h2>Why You Feel Stuck at Your Current Revenue</h2>
+            </div>
+            
+            <div class="grid-3">
+                <div class="card">
+                    <div class="card-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                    </div>
+                    <h3>Motion Without Momentum</h3>
+                    <p style="color: var(--color-text-muted);">You're working 10-hour days but revenue isn't growing. You're doing tasks, not executing a strategy.</p>
+                </div>
+                <div class="card">
+                    <div class="card-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12h4l2-9 5 18 2-9h4"/></svg>
+                    </div>
+                    <h3>Scattered Metrics</h3>
+                    <p style="color: var(--color-text-muted);">Your leads are in a spreadsheet, sales in Stripe, and goals in a notebook. You have no real-time pulse on the business.</p>
+                </div>
+                <div class="card">
+                    <div class="card-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+                    </div>
+                    <h3>Decision Fatigue</h3>
+                    <p style="color: var(--color-text-muted);">Every morning you waste an hour trying to figure out what you *should* be working on. You lack clear priorities.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section class="section">
+        <div class="container">
+            <div class="section-header">
+                <span style="color: var(--color-secondary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; display: block;">The Solution</span>
+                <h2>Absolute, Undeniable Clarity</h2>
+            </div>
+
+            <!-- Feature 1 -->
+            <div class="feature-row">
+                <div class="feature-content">
+                    <h3>The Daily 3: Execution Engine</h3>
+                    <p>Stop drowning in endless to-do lists. The CEO Planner automatically extracts the three highest-leverage actions from your 90-day strategy so you wake up knowing exactly what moves the needle.</p>
+                </div>
+                <div class="feature-image">
+                    <div style="background: white; padding: 1.5rem; border-radius: var(--radius-md); box-shadow: var(--shadow-sm); width: 100%; border: 1px solid var(--color-border);">
+                        <h4 style="margin-bottom: 1rem; color: var(--color-black);">The Daily 3</h4>
+                        <div style="display: flex; gap: 0.75rem; align-items: center; margin-bottom: 0.75rem;">
+                            <input type="checkbox" checked style="accent-color: var(--color-primary); width: 18px; height: 18px;">
+                            <span style="text-decoration: line-through; color: var(--color-text-muted);">Focus block on top priority</span>
+                        </div>
+                        <div style="display: flex; gap: 0.75rem; align-items: center; margin-bottom: 0.75rem;">
+                            <input type="checkbox" style="accent-color: var(--color-primary); width: 18px; height: 18px;">
+                            <span style="color: var(--color-black);">Execute next step for second priority</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Feature 2 -->
+            <div class="feature-row reversed">
+                <div class="feature-content">
+                    <h3>Dynamic Executive AI Coach Reports</h3>
+                    <p>Act as your own Board of Directors. The integrated Executive AI Coach evaluates your pipeline data instantly and generates brutally honest Executive Summaries diagnosing your conversion bottlenecks.</p>
+                </div>
+                <div class="feature-image">
+                    <div style="background: white; padding: 1.5rem; border-radius: var(--radius-md); box-shadow: var(--shadow-sm); width: 100%; border: 1px solid var(--color-border); text-align: center;">
+                        <span style="font-size: 3rem; margin-bottom: 1rem; display: block;">🤖</span>
+                        <h4 style="color: var(--color-black); margin-bottom: 0.5rem;">AI Strategic Briefing</h4>
+                        <p style="font-size: 0.875rem; color: var(--color-text-muted);">"Your lead volume is high, but your conversion rate has dropped below 10%. Stop marketing and tighten your sales script."</p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Feature 3 -->
+            <div class="feature-row">
+                <div class="feature-content">
+                    <h3>Zero-Friction 1-Tap Revenue</h3>
+                    <p>Don't wait until the end of the month to know if you're profitable. Setup your core products and log sales instantly from the Dashboard with a single tap to see your momentum in real time.</p>
+                </div>
+                <div class="feature-image">
+                    <div style="background: white; padding: 1.5rem; border-radius: var(--radius-md); box-shadow: var(--shadow-sm); width: 100%; border: 1px solid var(--color-border);">
+                        <p style="font-size: 0.75rem; text-transform: uppercase; font-weight: 600; color: var(--color-text-muted); margin-bottom: 0.5rem;">⚡ 1-Tap Log Sale</p>
+                        <div style="display: flex; gap: 0.5rem;">
+                            <select style="flex: 1; padding: 0.5rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm);"><option>Mastermind ($5,000)</option></select>
+                            <button class="btn btn-primary" style="padding: 0.5rem 1rem; font-size: 0.875rem; border-radius: var(--radius-sm);">+ Log</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </section>
+
+    <!-- Pricing Section -->
+    <section class="section section-bg-white" id="pricing">
+        <div class="container">
+            <div class="section-header">
+                <h2>Simple, Transparent Pricing</h2>
+                <p style="color: var(--color-text-muted); font-size: 1.125rem;">Try it free for 14 days. No card required, so there's nothing to cancel if it isn't for you.</p>
+            </div>
+            
+            <div style="display: flex; gap: 2rem; justify-content: center; flex-wrap: wrap;">
+                <!-- Monthly Plan -->
+                <div class="pricing-card" style="flex: 1; min-width: 300px; max-width: 350px;">
+                    <h3 style="color: var(--color-text-muted); font-size: 1.25rem; font-weight: 500; margin-bottom: 1rem;">Monthly</h3>
+                    <div class="pricing-price">$17<span>/mo</span></div>
+                    
+                    <ul class="pricing-features">
+                        <li><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg> Full Dashboard Access</li>
+                        <li><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg> AI Executive Reports</li>
+                        <li><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg> 90-Day Plan Generator</li>
+                        <li><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg> Data Export</li>
+                    </ul>
+                    
+                    <a href="#" data-app-link="signup" class="btn btn-secondary" style="width: 100%;">Start Free Trial</a>
+                </div>
+
+                <!-- Annual Plan -->
+                <div class="pricing-card" style="flex: 1; min-width: 300px; max-width: 350px; border-color: var(--color-primary); box-shadow: var(--shadow-lg); transform: scale(1.05);">
+                    <div class="pricing-badge">Save 30%</div>
+                    <h3 style="color: var(--color-primary-dark); font-size: 1.25rem; font-weight: 600; margin-bottom: 1rem;">Annual</h3>
+                    <div class="pricing-price">$147<span>/yr</span></div>
+                    
+                    <ul class="pricing-features">
+                        <li><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg> <strong>Everything in Monthly</strong></li>
+                        <li><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg> 2 Months Free</li>
+                        <li><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg> Priority Support</li>
+                    </ul>
+                    
+                    <a href="#" data-app-link="signup" class="btn btn-primary" style="width: 100%;">Start Free Trial</a>
+                </div>
+            </div>
+            
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+        <div class="container">
+            <div class="logo" style="margin-bottom: 1rem; font-size: 1.25rem;">CEO<span>Planner</span></div>
+            <p>&copy; 2026 CEO Planner. All rights reserved.</p>
+        </div>
+    </footer>
+
+    <script>
+        // ---------------------------------------------------------------
+        // SET THIS to wherever the CEO Planner app itself is published.
+        // No trailing slash. Every "Start Free Trial" and "Log In" button
+        // on this page is built from it, so this is the only line to change.
+        //
+        //   Same site as this page?      '' works (links become /#/signup)
+        //   Separate app site/subdomain? e.g. 'https://app.ceoplanner.com'
+        // ---------------------------------------------------------------
+        var APP_URL = '';
+
+        document.querySelectorAll('[data-app-link]').forEach(function (el) {
+            el.href = APP_URL + '/#/' + el.getAttribute('data-app-link');
+        });
+    </script>
+
+</body>
+</html>
