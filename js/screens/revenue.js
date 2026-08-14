@@ -3,6 +3,7 @@ import { renderNav } from '../components/nav.js';
 import { getStore, updateQuickOffers, addRevenueEntry, deleteRevenueEntry, getRevenueInsights, addLeadEntry, deleteLeadEntry, addMetricSnapshot, deleteMetricSnapshot, getLocalDateString, getWeekStart, parseDateInput, formatAmount } from '../store.js';
 import { renderTooltip } from '../components/tooltip.js';
 import { showToast, showConfirm, rerenderScreen } from '../components/toast.js';
+import { proTeaser, proLock } from '../components/proGate.js';
 
 // Pipeline list state. Module level so it survives a re-render — delete an entry
 // on page 3 of the list and you stay on page 3 instead of being thrown back to
@@ -71,11 +72,12 @@ export function renderRevenue() {
                     <h2>Revenue & Sales Analytics</h2>
                     <p style="color: var(--color-text-muted);">Monitor your pipeline, conversions, and growth metrics.</p>
                 </div>
-                <div style="display: flex; gap: 1rem; align-items: center;">
-                    <div style="display: flex; gap: 0.5rem;">
+                <div style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
                         <button id="btn-report-csv" class="btn btn-outline btn-sm" style="display: flex; align-items: center; gap: 0.5rem;">
                             📊 Export CSV
                         </button>
+                        ${proLock('pdf-export', '📄 PDF Report')}
                         <button id="btn-report-ai" class="btn btn-primary btn-sm" style="display: flex; align-items: center; gap: 0.5rem; background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark)); border: none; box-shadow: var(--shadow-sm);">
                             🤖 AI Executive Report
                             ${renderTooltip("A comprehensive, AI-generated analysis of your business's financial health, sales pipeline, and growth bottlenecks.", "It synthesizes your traffic, calls, conversions, and revenue into a clear strategy briefing and lists specific, high-priority tasks to help you optimize your funnel.", "bottom")}
@@ -244,6 +246,12 @@ export function renderRevenue() {
 
                 <!-- Sidebar Right -->
                 <div>
+                   ${proTeaser(
+                       'payment-import',
+                       'Never log a sale by hand again',
+                       'Connect Stripe or PayPal once. Every sale appears here the moment it happens.'
+                   )}
+
                    <!-- Multi-Form Tabs -->
                    <div class="card" style="border-top: 4px solid var(--color-accent); padding: 1.5rem;">
                        <div class="flex gap-2 mb-4" style="border-bottom: 1px solid var(--color-border); padding-bottom: 0.5rem; flex-wrap: wrap;">
@@ -372,6 +380,11 @@ export function renderRevenue() {
                               </div>
                               `;
                           }).join('')}
+                          ${proTeaser(
+                              'unlimited-offers',
+                              'Room for every offer you sell',
+                              'Three slots is the base limit. Pro lifts it, so today\'s sale is always one tap away.'
+                          )}
                           <button type="submit" class="btn btn-outline" style="width: 100%; border-color: var(--color-accent); color: var(--color-accent-dark);">Save Quick Actions</button>
                        </form>
                    </div>
@@ -387,6 +400,11 @@ export function renderRevenue() {
                            </div>
                        </div>
                        ${renderPipelineEvents(insights.entries, leads, currency)}
+                       ${proTeaser(
+                           'lead-pipeline',
+                           'Know exactly who to follow up today',
+                           'Track leads by name through booked, proposal and won, and see who has gone quiet.'
+                       )}
                    </div>
 
                 </div>

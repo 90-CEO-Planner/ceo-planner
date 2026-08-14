@@ -3,6 +3,7 @@ import { renderNav } from '../components/nav.js';
 import { getStore } from '../store.js';
 import { renderTooltip } from '../components/tooltip.js';
 import { showToast } from '../components/toast.js';
+import { proTeaser } from '../components/proGate.js';
 
 export function renderProgress() {
     window.setScreenModule({ attachEvents: progressAttachEvents });
@@ -25,6 +26,12 @@ export function renderProgress() {
                     <a href="#/settings" class="btn btn-outline" style="font-size: 0.875rem; padding: 0.5rem 1rem;">⚙️ Settings</a>
                 </div>
             </div>
+
+            ${proTeaser(
+                'history',
+                'See if this quarter beat the last one',
+                'Everything here resets each quarter. Pro keeps them and shows them side by side.'
+            )}
 
             <!-- CEO Insight Engine -->
             <div class="card mb-6" style="border-top: 4px solid var(--color-primary);">

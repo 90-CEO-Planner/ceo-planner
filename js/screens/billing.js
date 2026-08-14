@@ -1,9 +1,46 @@
 // billing.js
+import { showToast, rerenderScreen } from '../components/toast.js';
+
+// Checkout happens on Stripe's own page and the account is upgraded by a webhook
+// firing somewhere else entirely, so there is a window of a few seconds where the
+// customer is back in the app and the database has not caught up. That window
+// lands at the worst possible moment: she has just paid and the app is still
+// saying "your 14 days are up". These two constants govern how long we wait it
+// out before giving her the manual escape hatch instead.
+const CONFIRM_POLL_MS = 2000;
+const CONFIRM_TIMEOUT_MS = 30000;
+
+// Set once the confirming screen has given up, so re-rendering the route doesn't
+// restart the wait forever.
+let confirmAbandoned = false;
+let confirmTimer = null;
+
+// Stripe sends people back to a success URL we control. Accept the marker in the
+// query string or inside the hash, because a payment link can be configured
+// either way and getting it wrong would silently disable the whole flow.
+function hasCheckoutMarker() {
+    if (/[?&]checkout=success/.test(window.location.search)) return true;
+    const hash = window.location.hash || '';
+    const q = hash.indexOf('?');
+    return q !== -1 && /[?&]checkout=success/.test(hash.slice(q));
+}
+
+function clearCheckoutMarker() {
+    const hash = (window.location.hash || '').split('?')[0];
+    const url = window.location.pathname + (hash || '#/billing');
+    window.history.replaceState({}, '', url);
+}
 
 export function renderBilling() {
     window.setScreenModule({ attachEvents: billingAttachEvents });
 
     const status = localStorage.getItem('ceo_sub_status');
+
+    // Just back from Stripe. Wait for the webhook rather than telling someone who
+    // has this second paid us that their trial is over.
+    if (hasCheckoutMarker() && !confirmAbandoned && status !== 'active') {
+        return renderConfirmingPayment();
+    }
 
     // Still inside the trial and choosing to subscribe early
     if (status === 'trialing') return renderTrialEnded(true);
@@ -13,6 +50,38 @@ export function renderBilling() {
 
     // An existing customer whose card failed
     return renderPaymentProblem();
+}
+
+// The few seconds between paying and the webhook landing. Deliberately calm and
+// certain: the payment has gone through, this is only bookkeeping.
+function renderConfirmingPayment() {
+    return `
+        <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--color-primary-light) 0%, var(--color-bg-main) 100%); padding: 1.5rem;">
+            <div id="confirm-payment-card" class="card fade-up" style="width: 100%; max-width: 460px; padding: 3rem 2.5rem; text-align: center; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); border: 1px solid rgba(255,255,255,0.5); backdrop-filter: blur(10px);">
+
+                <div class="spinner" style="width: 32px; height: 32px; border: 3px solid var(--color-primary-light); border-top: 3px solid var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 1.5rem;"></div>
+
+                <h2 style="font-size: 1.5rem; color: var(--color-black); margin-bottom: 1rem; letter-spacing: -0.02em;">Confirming your payment</h2>
+
+                <p style="color: var(--color-text-muted); font-size: 1rem; line-height: 1.6; margin-bottom: 0;">
+                    Thank you. Your payment has gone through and we're just waiting for it
+                    to reach your account. This usually takes a few seconds.
+                </p>
+            </div>
+        </div>
+    `;
+}
+
+// Every screen in this file gets this. Whatever else goes wrong — a webhook that
+// never fires, a checkout finished in another tab, an email that didn't match —
+// there is always one thing the customer can press herself.
+function renderRefreshLink() {
+    return `
+        <p style="margin-top: 1.25rem; margin-bottom: 0; font-size: 0.8rem; color: var(--color-text-muted);">
+            Already paid?
+            <a href="#" id="btn-refresh-account" style="color: var(--color-primary-dark); text-decoration: underline;">Refresh my account</a>
+        </p>
+    `;
 }
 
 // The card-free trial ran out, or they're subscribing early. Nothing has gone
@@ -63,6 +132,7 @@ function renderTrialEnded(stillInTrial) {
                 </p>
 
                 ${backLink}
+                ${renderRefreshLink()}
             </div>
         </div>
     `;
@@ -91,12 +161,78 @@ function renderPaymentProblem() {
                 </button>
 
                 <a href="#" id="btn-signout" style="color: var(--color-text-muted); font-size: 0.875rem; text-decoration: underline;">Sign out</a>
+                ${renderRefreshLink()}
             </div>
         </div>
     `;
 }
 
+// Ask the database whether this account has access yet. Returns true if it does,
+// and takes the user through to the app when it does.
+async function checkAccessNow() {
+    const access = await window.refreshAccessState();
+    if (!access) return null; // Couldn't reach the server
+
+    if (!window.isLockedOut(access.status)) {
+        clearCheckoutMarker();
+        window.location.hash = '#/dashboard';
+        // Full reload on purpose: the whole app was rendered for a locked-out or
+        // base account, so every gate and every screen needs rebuilding.
+        window.location.reload();
+        return true;
+    }
+    return false;
+}
+
 function billingAttachEvents() {
+    // Poll while the "confirming your payment" card is on screen.
+    if (document.getElementById('confirm-payment-card') && hasCheckoutMarker() && !confirmAbandoned) {
+        const startedAt = Date.now();
+        if (confirmTimer) clearInterval(confirmTimer);
+
+        confirmTimer = setInterval(async () => {
+            const done = await checkAccessNow();
+            if (done) {
+                clearInterval(confirmTimer);
+                confirmTimer = null;
+                return;
+            }
+
+            if (Date.now() - startedAt >= CONFIRM_TIMEOUT_MS) {
+                clearInterval(confirmTimer);
+                confirmTimer = null;
+                // Give up gracefully and fall back to the normal screen, which
+                // carries the manual refresh link. Never leave someone watching a
+                // spinner that is never going to stop.
+                confirmAbandoned = true;
+                showToast("Your payment went through, but it hasn't reached your account yet. Give it a minute and press 'Refresh my account', or contact support and we'll sort it.", 'error');
+                rerenderScreen();
+            }
+        }, CONFIRM_POLL_MS);
+    }
+
+    const btnRefresh = document.getElementById('btn-refresh-account');
+    if (btnRefresh) {
+        btnRefresh.addEventListener('click', async (e) => {
+            e.preventDefault();
+            const original = btnRefresh.textContent;
+            btnRefresh.textContent = 'Checking…';
+            btnRefresh.style.pointerEvents = 'none';
+
+            const result = await checkAccessNow();
+
+            btnRefresh.textContent = original;
+            btnRefresh.style.pointerEvents = '';
+
+            if (result === null) {
+                showToast("We couldn't reach the server. Check your connection and try again.", 'error');
+            } else if (result === false) {
+                showToast("We can't see a payment on this account yet. If you've just paid, give it a minute. If you checked out with a different email address, contact support and we'll link it up.", 'error');
+            }
+            // On success checkAccessNow has already navigated away.
+        });
+    }
+
     // Send them to Stripe with their email already filled in, so the webhook can
     // match the payment back to the account they already have.
     const checkout = async (baseUrl) => {
@@ -138,6 +274,7 @@ function billingAttachEvents() {
             localStorage.removeItem('ceo_auth');
             localStorage.removeItem('ceo_sub_status');
             localStorage.removeItem('ceo_trial_ends_at');
+            localStorage.removeItem('ceo_plan_tier');
             localStorage.removeItem('ceoPlanner_store');
             window.location.hash = '#/login';
             window.location.reload();

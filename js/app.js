@@ -1,6 +1,7 @@
 // app.js
 import { getStore, seedMockData, getLocalDateString, REMINDER_WEEKLY, REMINDER_DAILY, REMINDER_FRIDAY } from './store.js';
 import { signOutAndClear } from './components/nav.js';
+import { initProGate } from './components/proGate.js';
 
 // Screens
 // We'll import these dynamically or define them later to handle page renders
@@ -12,6 +13,7 @@ import { renderRevenue } from './screens/revenue.js';
 import { renderReview } from './screens/fridayReview.js';
 import { renderProgress } from './screens/progress.js';
 import { renderSettings } from './screens/settings.js';
+import { renderAccount } from './screens/account.js';
 import { renderQuarterReset } from './screens/quarterReset.js';
 import { renderCoach } from './screens/coach.js';
 import { renderMonthlyReview } from './screens/monthlyReview.js';
@@ -131,6 +133,9 @@ function router() {
         case '#/settings':
             appContainer.innerHTML = renderSettings();
             break;
+        case '#/account':
+            appContainer.innerHTML = renderAccount();
+            break;
         case '#/quarter-reset':
             appContainer.innerHTML = renderQuarterReset();
             break;
@@ -247,10 +252,31 @@ async function revalidateAccess() {
     if (localStorage.getItem('ceo_auth') !== 'true') return;
 
     const before = localStorage.getItem('ceo_sub_status');
+    const beforeTier = localStorage.getItem('ceo_plan_tier');
     const access = await window.refreshAccessState();
     if (!access) return; // Offline or unreachable. Leave them as they were.
 
-    if (access.status !== before) router();
+    // Re-render on a tier change too, not just a status change. Base → Pro keeps
+    // the status at 'active', so without this an upgrade would leave every lock
+    // in place until the next page load.
+    if (access.status !== before || access.tier !== beforeTier) router();
+}
+
+// Checkout happens on Stripe's own page, so the app usually finds out that
+// someone has paid only on the next load or the next hourly poll. Someone who
+// pays in a second tab and switches back to this one would otherwise sit
+// looking at "you're on the free trial" for up to an hour, with the locks still
+// on. Re-check whenever the tab comes back to the foreground, throttled so that
+// ordinary tab-flicking doesn't hammer the database.
+const REVALIDATE_MIN_GAP_MS = 30000;
+let lastRevalidatedAt = 0;
+
+function revalidateOnReturn() {
+    if (document.visibilityState !== 'visible') return;
+    const now = Date.now();
+    if (now - lastRevalidatedAt < REVALIDATE_MIN_GAP_MS) return;
+    lastRevalidatedAt = now;
+    revalidateAccess();
 }
 
 // Purge keys earlier versions wrote that should never have been stored. This runs
@@ -281,12 +307,19 @@ window.addEventListener('hashchange', router);
 window.addEventListener('load', () => {
     purgeLegacyKeys();
     bindGlobalNavEvents();
+    // One delegated handler for every locked Pro control, bound once. Screens
+    // render `data-pro-feature="..."` and never wire anything up themselves.
+    initProGate();
     router();
 
     // Confirm the trial is still valid against the database, not just localStorage
+    lastRevalidatedAt = Date.now();
     revalidateAccess();
     // And re-check hourly, so a long-open tab doesn't outlive the trial
     setInterval(revalidateAccess, 3600000);
+    // ...plus whenever they come back to the tab, which is how the app notices a
+    // Stripe checkout completed somewhere else.
+    document.addEventListener('visibilitychange', revalidateOnReturn);
 
     // Start background notification polling engine
     setInterval(checkPushNotifications, 60000);

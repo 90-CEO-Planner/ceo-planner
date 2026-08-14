@@ -1,5 +1,6 @@
 // nav.js
 import { getStore } from '../store.js';
+import { isProTrial, trialDaysLeft, anyProFeatureLive } from './proGate.js';
 
 // Signs the user out properly. The old inline handler cleared localStorage but
 // never called signOut, so the Supabase sb-*-auth-token survived: the next person
@@ -15,9 +16,31 @@ export async function signOutAndClear() {
     localStorage.removeItem('ceo_auth');
     localStorage.removeItem('ceo_sub_status');
     localStorage.removeItem('ceo_trial_ends_at');
+    localStorage.removeItem('ceo_plan_tier');
     localStorage.removeItem('ceoPlanner_store');
     window.location.hash = '#/login';
     window.location.reload();
+}
+
+// A countdown, and only for people on the trial. The whole reason the free
+// fortnight runs on the Pro feature set is that losing something you have used
+// is what makes the upgrade make sense later, and that only works if the user
+// knew what she had — so once any Pro feature exists, this says "Pro trial"
+// rather than just "trial".
+//
+// Base subscribers get nothing here on purpose. A permanent "upgrade" pill in a
+// paying customer's nav is a nag; Account is one click away and explains Pro
+// properly when she actually wants to know.
+function renderPlanPill() {
+    if (!isProTrial()) return '';
+
+    const noun = anyProFeatureLive() ? 'Pro trial' : 'Free trial';
+    const days = trialDaysLeft();
+    const label = days === null
+        ? noun
+        : (days === 1 ? `${noun}, 1 day left` : `${noun}, ${days} days left`);
+
+    return `<a href="#/account" class="nav-plan-pill" title="See your plan and choose one whenever you're ready">${label}</a>`;
 }
 
 export function renderNav() {
@@ -46,6 +69,8 @@ export function renderNav() {
                 <a href="#/monthly-review" class="nav-link" id="nav-monthly-review">Monthly Review</a>
                 <a href="#/progress" class="nav-link" id="nav-progress">Wins & Progress</a>
                 <a href="#/settings" class="nav-link" id="nav-settings">Settings</a>
+                <a href="#/account" class="nav-link" id="nav-account">Account</a>
+                ${renderPlanPill()}
                 <a href="#" class="nav-link" id="nav-logout" style="color: #FCA5A5;">Log Out</a>
             </nav>
         </header>

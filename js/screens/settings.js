@@ -1,7 +1,8 @@
 // settings.js
 import { renderNav } from '../components/nav.js';
 import { getStore, updateProfile, updateGoals, updateRevenueSettings, updateLeadGoal, updateSettings, REMINDER_WEEKLY, REMINDER_DAILY, REMINDER_FRIDAY } from '../store.js';
-import { showToast, showConfirm, rerenderScreen } from '../components/toast.js';
+import { showToast, rerenderScreen } from '../components/toast.js';
+import { proTeaser } from '../components/proGate.js';
 
 // Must stay identical to CURRENCIES in wizard.js. The wizard was the only place
 // currency could ever be set, so anyone who accepted the default $ by mistake had
@@ -208,6 +209,11 @@ export function renderSettings() {
                     app is closed, they won't reach you — so treat them as a nudge while
                     you're working, not an alarm clock.
                 </p>
+                ${proTeaser(
+                    'email-digest',
+                    'A nudge that reaches you anywhere',
+                    'A short Monday email with your numbers and next steps. Works with the app closed.'
+                )}
                 <div style="display: flex; flex-direction: column; gap: 1rem;">
                     <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer;">
                         <input type="checkbox" name="reminder" value="${REMINDER_WEEKLY}" ${isChecked(REMINDER_WEEKLY)} style="margin-top: 0.25rem;">
@@ -241,28 +247,6 @@ export function renderSettings() {
         </div>
     </form>
 
-    <!-- Card 6: Billing & Subscription -->
-    <div class="card mt-8">
-        <h3 class="mb-4" style="display: flex; align-items: center; gap: 0.5rem; color: var(--color-black);">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg>
-            Billing & Subscription
-        </h3>
-        <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1.5rem;">
-            ${localStorage.getItem('ceo_sub_status') === 'trialing'
-                ? "You're on the free trial, so there's nothing to pay and nothing to cancel. Whenever you're ready, you can choose a plan here."
-                : 'Manage your payment method, view invoices, or cancel your subscription at any time.'}
-        </p>
-        <button type="button" id="btn-manage-subscription" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600; display: inline-flex; align-items: center; gap: 0.5rem;">
-            ${localStorage.getItem('ceo_sub_status') === 'trialing' ? 'Choose Your Plan' : 'Manage Subscription / Cancel'}
-        </button>
-    </div>
-
-    <!-- Card 7: Danger Zone -->
-    <div class="card mt-6" style="border: 1px solid #FEE4E2;">
-        <h3 class="mb-2" style="color: #B42318;">Danger Zone</h3>
-        <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1rem;">Permanently deletes your plans, revenue log, reviews and profile — from this device and from our servers. This cannot be undone.</p>
-        <button id="btn-reset-data" class="btn btn-outline" style="border-color: #FEE4E2; color: #B42318; background: #FEF3F2;">Erase All My Data</button>
-    </div>
 </div>
 `;
 }
@@ -429,64 +413,4 @@ function settingsAttachEvents() {
             }
         });
     });
-
-    // Handle Billing Click. Someone on the free trial has no Stripe record yet,
-    // so the customer portal would be a dead end for them. Send them to the
-    // plan picker instead.
-    const btnManageSub = document.getElementById('btn-manage-subscription');
-    if (btnManageSub) {
-        btnManageSub.addEventListener('click', () => {
-            if (localStorage.getItem('ceo_sub_status') === 'trialing') {
-                window.location.hash = '#/billing';
-            } else {
-                window.location.href = window.CEO_BILLING_PORTAL;
-            }
-        });
-    }
-
-    // Handle Factory Reset. This deletes the cloud row first, then the local copy.
-    // Clearing localStorage alone left the user_data row sitting in Supabase, while
-    // the user guide promised permanent deletion — a UK GDPR erasure claim the app
-    // was not actually honouring.
-    const resetBtn = document.getElementById('btn-reset-data');
-    if (resetBtn) {
-        resetBtn.addEventListener('click', async () => {
-            const confirmed = await showConfirm(
-                "This permanently deletes your plans, revenue log and profile from this device and from our servers. It cannot be undone.",
-                { title: 'Erase all your data?', confirmText: 'Erase everything', danger: true }
-            );
-            if (!confirmed) return;
-
-            const originalText = resetBtn.textContent;
-            resetBtn.disabled = true;
-            resetBtn.textContent = 'Erasing…';
-
-            try {
-                const { data: sessionData } = await window.db.auth.getSession();
-                const user = sessionData?.session?.user;
-                if (user) {
-                    const { error } = await window.db
-                        .from('user_data')
-                        .delete()
-                        .eq('user_id', user.id);
-                    if (error) throw error;
-                }
-            } catch (err) {
-                // Do NOT clear locally if the cloud delete failed. Wiping the device
-                // copy while the server copy survives would leave the data undeletable
-                // by the user and make the erasure claim worse, not better.
-                console.error('Cloud data deletion failed:', err);
-                resetBtn.disabled = false;
-                resetBtn.textContent = originalText;
-                showToast("We couldn't delete your data from the server, so nothing has been erased. Please check your connection and try again. If it keeps failing, contact support.", 'error');
-                return;
-            }
-
-            localStorage.removeItem('ceoPlanner_store');
-            window.location.hash = '#/';
-            // A full reload here on purpose: everything the app holds in memory is
-            // now stale, and this is the one action where a clean boot is the point.
-            window.location.reload();
-        });
-    }
 }

@@ -42,7 +42,7 @@ Everything in the app stems from your **90-Day Vision**. When you first launch t
 
 **The AI 90-Day Roadmap:** Once your vision is set, you can generate a complete 90-Day Action Plan. The AI will build a highly realistic 12-week roadmap, taking your goals and breaking them down into weekly visibility tasks, revenue tasks, and step-by-step execution priorities.
 
-You can modify your baseline goals at any time by navigating to **Settings**. From Settings, you can also upload a **Business Logo** and customize your **Planning Day**.
+You can modify your baseline goals at any time by navigating to **Settings**. From Settings, you can also upload a **Business Logo** and customize your **Planning Day**. Settings covers how your business is configured; anything to do with your plan, billing or login lives on the separate **Account** page.
 
 ---
 
@@ -122,7 +122,26 @@ The app functions as your objective Board of Directors, providing dynamic insigh
 The CEO Planner is built to be fast and private. Data is stored securely and accessible only by you.
 
 **Erasing Data:**
-If you want to start fresh, navigate to **Settings** and scroll down to the **Danger Zone**. Clicking "Erase All My Data" will permanently delete your plans, revenue logs, and profile, both from your device and from our servers. This cannot be undone.
+If you want to start fresh, navigate to **Account** and scroll down to the **Danger Zone**. Clicking "Erase All My Data" will permanently delete your plans, revenue logs, and profile, both from your device and from our servers. This cannot be undone.
+
+---
+
+## 9. Your Account and Plan
+
+**Settings vs Account:**
+There are two places to manage things, and they do different jobs. **Settings** is how your business is set up: your profile, your 90-day vision, your targets, your currency, your strategy mode and your reminders. Those are the things the AI reads when it plans your week. **Account** is your relationship with the app: which plan you are on, billing, your login details, and erasing your data.
+
+**Your Plan:**
+The Account page shows the plan you are on and what it includes. New accounts start on a free 14-day trial that runs on the full product, with no card required. Every feature in the Pro list is marked either as included, as still in build, or as locked, so you can always see exactly where you stand.
+
+**Billing:**
+Everything to do with money lives on the Billing card in **Account** — updating your card, changing your billing address, downloading invoices and cancelling. It opens Stripe's own secure page, so your card details never pass through this app. While you are on the free trial there is nothing to pay and nothing to cancel; that button takes you to the plan picker instead.
+
+**Changing your password:**
+On the Account page, "Change password" emails you a link to set a new one. The app never lets a signed-in browser set a password directly, so someone who finds your laptop open cannot lock you out of your own account.
+
+**Changing your email address:**
+Your email is shown on the Account page but cannot be edited there. It is both your sign-in and the address your billing is matched to, so the two have to be moved together — email support and it will be handled.
 
 ---
 *Stay Focused. Take Action. Act Like the CEO.*
@@ -146,6 +165,12 @@ window.CEO_CHECKOUT_ANNUAL = 'https://buy.stripe.com/28E8wO92l6QP1mM3Fw18c09';
 // Existing customers whose card failed manage themselves here
 window.CEO_BILLING_PORTAL = 'https://billing.stripe.com/p/login/eVq3cucex8YXc1q0tk18c00';
 
+// Pro tier checkout. Deliberately null: Pro is being built and has no price in
+// Stripe yet, so the locked-feature modal explains the feature and stops there
+// rather than selling something that cannot be delivered. Set this to the Pro
+// payment link when the tier ships and the modal grows an upgrade button.
+window.CEO_CHECKOUT_PRO = null;
+
 // Reads the user's real subscription state from the database and caches it locally.
 // The cached copy is only ever used to render the UI. The database is the source
 // of truth, and the chat function checks it server side.
@@ -154,11 +179,24 @@ window.refreshAccessState = async function refreshAccessState() {
         const { data: { session } } = await window.db.auth.getSession();
         if (!session || !session.user) return null;
 
-        const { data: profile, error } = await window.db
+        let { data: profile, error } = await window.db
             .from('profiles')
-            .select('subscription_status, trial_ends_at')
+            .select('subscription_status, trial_ends_at, plan_tier')
             .eq('id', session.user.id)
             .maybeSingle();
+
+        // `plan_tier` is newer than some deployed databases. Postgres answers
+        // 42703 (undefined_column) if the migration hasn't been run yet. Without
+        // this retry, shipping the bundle before the migration would make every
+        // access check fail and nothing would ever revalidate a trial again.
+        if (error && (error.code === '42703' || /plan_tier/.test(error.message || ''))) {
+            console.warn('profiles.plan_tier is missing — run the plan_tier migration. Treating this account as base.');
+            ({ data: profile, error } = await window.db
+                .from('profiles')
+                .select('subscription_status, trial_ends_at')
+                .eq('id', session.user.id)
+                .maybeSingle());
+        }
 
         // Couldn't reach the server. Leave the cached value alone rather than
         // locking someone out over a dropped connection.
@@ -171,7 +209,8 @@ window.refreshAccessState = async function refreshAccessState() {
         if (!profile) {
             localStorage.setItem('ceo_sub_status', 'incomplete');
             localStorage.removeItem('ceo_trial_ends_at');
-            return { status: 'incomplete', daysLeft: 0, trialEndsAt: null };
+            localStorage.removeItem('ceo_plan_tier');
+            return { status: 'incomplete', daysLeft: 0, trialEndsAt: null, tier: 'base' };
         }
 
         const trialEndsAt = profile.trial_ends_at ? new Date(profile.trial_ends_at) : null;
@@ -184,14 +223,29 @@ window.refreshAccessState = async function refreshAccessState() {
             if (msLeft <= 0) status = 'trial_expired';
         }
 
+        // Which feature set they get. The 14-day trial deliberately runs on Pro:
+        // nobody upgrades to a tier they have never seen, and the locked-feature
+        // teasers only do their job as a reminder of something the user has
+        // already had. This grants Pro *features* — the AI allowance stays at the
+        // trial rate, because consume_ai_quota keys off subscription_status, not
+        // off this. Anyone locked out resolves to base; they see the paywall
+        // rather than any of this.
+        let tier = 'base';
+        if (status === 'trialing') {
+            tier = 'pro';
+        } else if (status === 'active') {
+            tier = profile.plan_tier === 'pro' ? 'pro' : 'base';
+        }
+
         localStorage.setItem('ceo_sub_status', status);
+        localStorage.setItem('ceo_plan_tier', tier);
         if (trialEndsAt) {
             localStorage.setItem('ceo_trial_ends_at', trialEndsAt.toISOString());
         } else {
             localStorage.removeItem('ceo_trial_ends_at');
         }
 
-        return { status, daysLeft, trialEndsAt };
+        return { status, daysLeft, trialEndsAt, tier };
     } catch (err) {
         console.warn('Could not refresh access state:', err.message);
         return null;
@@ -1089,6 +1143,116 @@ function seedMockData() {
 }
 
 
+// --- js\stripeImport.js ---
+// stripeImport.js
+//
+// Client half of Pro item 1. Talks to the stripe-connect and stripe-sync edge
+// functions and reads the imported_sales table.
+//
+// Deliberately does NOT write imported sales into the planner store. The store
+// is one JSON document written wholesale by the browser on every save, so
+// merging server-owned rows into it would mean a sync could overwrite whatever
+// the user typed a second earlier. Imported sales stay in their own table and
+// are merged at read time for display.
+
+// Sales imported for the signed-in user, newest first. Returns [] when nothing
+// is connected, when the tables are missing, or when offline — this is decoration
+// on top of the user's own data, so it must never break a screen by throwing.
+async function fetchImportedSales() {
+    try {
+        const { data: { session } } = await window.db.auth.getSession();
+        if (!session || !session.user) return [];
+
+        const { data, error } = await window.db
+            .from('imported_sales')
+            .select('external_id, amount, currency, occurred_at, description, customer_email, refunded')
+            .eq('user_id', session.user.id)
+            .order('occurred_at', { ascending: false })
+            .limit(500);
+
+        if (error) {
+            console.warn('Could not read imported sales:', error.message);
+            return [];
+        }
+        return data || [];
+    } catch (err) {
+        console.warn('Could not read imported sales:', err.message);
+        return [];
+    }
+}
+
+// The current connection, or null. Also carries last_synced_at and the last
+// error, which is what the Account screen shows.
+async function fetchStripeConnection() {
+    try {
+        const { data: { session } } = await window.db.auth.getSession();
+        if (!session || !session.user) return null;
+
+        const { data, error } = await window.db
+            .from('stripe_connections')
+            .select('stripe_account_id, livemode, connected_at, last_synced_at, last_sync_error')
+            .eq('user_id', session.user.id)
+            .maybeSingle();
+
+        if (error) {
+            console.warn('Could not read Stripe connection:', error.message);
+            return null;
+        }
+        return data || null;
+    } catch (err) {
+        console.warn('Could not read Stripe connection:', err.message);
+        return null;
+    }
+}
+
+// Begin the OAuth handshake. Resolves to an error string, or navigates away.
+async function startStripeConnect() {
+    const { data, error } = await window.db.functions.invoke('stripe-connect?action=start', {
+        method: 'POST'
+    });
+
+    if (error) return await window.readFunctionError(error);
+    if (!data || !data.url) return 'Could not start the connection. Please try again.';
+
+    window.location.href = data.url;
+    return null;
+}
+
+async function disconnectStripe() {
+    const { error } = await window.db.functions.invoke('stripe-connect?action=disconnect', {
+        method: 'POST'
+    });
+    if (error) return await window.readFunctionError(error);
+    return null;
+}
+
+// Pull new sales. Returns { imported, scanned, truncated } or an error string.
+async function syncStripeSales() {
+    const { data, error } = await window.db.functions.invoke('stripe-sync', { method: 'POST' });
+    if (error) return { error: await window.readFunctionError(error) };
+    return data || { imported: 0, scanned: 0 };
+}
+
+// Outcome of the OAuth round trip, passed back by the edge function as
+// ?stripe=<code>. Read once and cleared, so a refresh doesn't repeat the toast.
+function readStripeOutcome() {
+    const match = /[?&]stripe=([^&#]+)/.exec(window.location.search);
+    if (!match) return null;
+
+    const hash = (window.location.hash || '').split('?')[0] || '#/account';
+    window.history.replaceState({}, '', window.location.pathname + hash);
+
+    const outcome = decodeURIComponent(match[1]);
+    const messages = {
+        connected: { text: 'Stripe connected. Your sales will start appearing here.', type: 'success' },
+        cancelled: { text: 'No problem, nothing was connected.', type: 'info' },
+        expired: { text: 'That took a little too long, so the link expired. Please try connecting again.', type: 'error' },
+        failed: { text: "We couldn't finish connecting to Stripe. Please try again, or contact support if it keeps happening.", type: 'error' }
+    };
+    return messages[outcome] || null;
+}
+
+
 // --- js\aiService.js ---
 // aiService.js
 
@@ -1417,6 +1581,303 @@ CRITICAL: Return ONLY the JSON object above. No explanation, no preamble, no cod
 
 
 
+// --- js\components\proGate.js ---
+// proGate.js
+//
+// One place that answers "can this account use Pro?" and one place that says no.
+//
+// The design rule for Phase 2: base-tier users SEE every Pro feature where they
+// would naturally use it, rather than having it hidden. Clicking a locked control
+// opens an explanatory modal. Nothing is sold here yet — there is no Pro price in
+// Stripe, so a checkout button would be selling something that doesn't exist.
+// When Pro ships, set window.CEO_CHECKOUT_PRO in supabaseClient.js and the
+// modal grows a real upgrade button on its own.
+//
+// The client is for presentation only. Every Pro feature that costs money must
+// also be enforced server side — the edge functions are the real gate.
+
+// Every Pro feature, in the order they appear in UPGRADE_PLAN.md Phase 2.
+// `title` is what the modal is headed with, `blurb` is the honest description of
+// what it does. Keep the tone the same as the rest of the app: plain, warm, no
+// "unlock your potential" language.
+//
+// `shipped` is the honesty switch. The 14-day trial runs on Pro, so without it
+// the plan list would show a trial user nine ticks for features that do not
+// exist yet — the app telling her she has things she cannot use. While it is
+// false the feature reads as "in build" for Pro and trial accounts and as a
+// lock for base. **Flip it to true in the same session the feature ships**, and
+// the plan list, the modal copy and the nav pill all correct themselves.
+const PRO_FEATURES = {
+    'payment-import': {
+        shipped: false,
+        title: 'Sales that log themselves',
+        blurb: 'Connect Stripe or PayPal once and every sale appears here on its own, at the moment it happens. No manual entry, no forgotten Tuesday, and every rate on this page becomes something you can actually trust.'
+    },
+    'lead-pipeline': {
+        shipped: false,
+        title: 'A real lead pipeline',
+        blurb: 'Named contacts instead of a running count. Move each one through lead, call booked, proposal sent, won or lost, set a follow-up date, and see at a glance who has gone quiet on you.'
+    },
+    'history': {
+        shipped: false,
+        title: 'Your year, quarter by quarter',
+        blurb: 'Every quarter you finish is archived rather than cleared. This is where you see them side by side, so you can tell whether this quarter is genuinely better than the last one or it just feels that way.'
+    },
+    'live-ai': {
+        shipped: false,
+        title: 'Planning that thinks about your business',
+        blurb: 'The suggestions here are currently pattern rules, which is why they can feel a little generic. Pro sends your actual numbers, offer and stage to the coach, so what comes back is written about your business rather than about businesses in general.'
+    },
+    'coach-memory': {
+        shipped: false,
+        title: 'A coach that remembers',
+        blurb: 'Right now the conversation resets every time you refresh the page. With Pro your coach keeps the thread, so you can pick up on Thursday where you left off on Monday without explaining yourself again.'
+    },
+    'week-regen': {
+        shipped: false,
+        title: 'Rebuild one week, keep the rest',
+        blurb: 'Something changed in week five and the plan needs to bend. Regenerate that single week instead of the whole quarter, and leave everything you have already done exactly as it is.'
+    },
+    'email-digest': {
+        shipped: false,
+        title: 'Your week, in your inbox',
+        blurb: 'A short Monday summary of where you are against target, what moved last week and what you said you would do next. It arrives whether or not the app is open, which is the part browser reminders can never do.'
+    },
+    'pdf-export': {
+        shipped: false,
+        title: 'A report worth sending',
+        blurb: 'Your executive report laid out properly with your logo, your numbers and your charts, ready to save as a PDF. For an accountant, a business partner, or the version of you who wants proof of the last ninety days.'
+    },
+    'unlimited-offers': {
+        shipped: false,
+        title: 'More than three quick offers',
+        blurb: 'The quick-log buttons are capped at three offers on the base plan. Pro lifts the cap, which matters once you are selling a few different things and the one you sold today is never one of the three.'
+    },
+    // Used by the nav pill and anywhere we want to describe Pro as a whole
+    'overview': {
+        title: 'What Pro adds',
+        blurb: 'Pro is being built now. Here is what is coming:',
+        list: [
+            'Sales imported automatically from Stripe or PayPal',
+            'A named lead pipeline with follow-up dates',
+            'Quarter-over-quarter history and a year view',
+            'AI planning written from your real numbers',
+            'A coach that remembers your conversations',
+            'Weekly digest by email',
+            'Branded PDF reports',
+            'Unlimited quick offers'
+        ]
+    }
+};
+
+// The nine Pro features in plan-list order. `overview` is deliberately absent —
+// it is the "all of Pro" description used by the nav, not a feature.
+const PRO_FEATURE_KEYS = [
+    'payment-import',
+    'lead-pipeline',
+    'history',
+    'live-ai',
+    'coach-memory',
+    'week-regen',
+    'email-digest',
+    'pdf-export',
+    'unlimited-offers'
+];
+
+// Has this feature actually been built yet?
+function isFeatureLive(featureKey) {
+    return PRO_FEATURES[featureKey] ? PRO_FEATURES[featureKey].shipped === true : false;
+}
+
+// True once any Pro feature exists. Until then "Pro" is a plan on paper, so the
+// nav says "Free trial" rather than "Pro trial" — naming the tier only helps if
+// there is something behind the name.
+function anyProFeatureLive() {
+    return PRO_FEATURE_KEYS.some(isFeatureLive);
+}
+
+// The plan the account is actually on: 'base' or 'pro'.
+//
+// A trial deliberately resolves to 'pro'. The 14 free days run on the full
+// product, because nobody upgrades to a tier they have never seen — and a
+// locked feature reads very differently once you have used it. The trial's AI
+// allowance stays at the trial rate regardless (see consume_ai_quota), so this
+// grants Pro features, not Pro spend.
+function getPlanTier() {
+    const cached = localStorage.getItem('ceo_plan_tier');
+    if (cached === 'base' || cached === 'pro') return cached;
+
+    // First load after signup, before refreshAccessState has answered. Fall back
+    // to the subscription status rather than flashing locks at a trial user.
+    return localStorage.getItem('ceo_sub_status') === 'trialing' ? 'pro' : 'base';
+}
+
+function isProUser() {
+    return getPlanTier() === 'pro';
+}
+
+// True while the account is inside the app-managed 14-day trial, which is the
+// only state where someone has Pro without paying for it.
+function isProTrial() {
+    return localStorage.getItem('ceo_sub_status') === 'trialing' && isProUser();
+}
+
+// Whole days left on the trial, or null if they aren't on one.
+function trialDaysLeft() {
+    const endsAt = localStorage.getItem('ceo_trial_ends_at');
+    if (!endsAt) return null;
+    const ms = new Date(endsAt).getTime() - Date.now();
+    if (Number.isNaN(ms)) return null;
+    return Math.max(0, Math.ceil(ms / 86400000));
+}
+
+// A small "PRO" chip, for sitting next to a heading or a label.
+function proBadge() {
+    return `<span class="pro-badge">PRO</span>`;
+}
+
+// A locked control, for a feature that belongs in a row of other controls rather
+// than in the flow of the page:
+//
+//   ${proLock('pdf-export', 'PDF Report')}
+//
+// Disappears on exactly the same rule as proTeaser — the account has the tier
+// AND the feature exists. Hiding it on tier alone was a bug: the trial resolves
+// to Pro, so every trial user lost the lock buttons while keeping the teasers,
+// and the two most valuable placements were invisible to the people most likely
+// to convert.
+function proLock(featureKey, label) {
+    if (isProUser() && isFeatureLive(featureKey)) return '';
+    return `
+        <button type="button" class="pro-lock" data-pro-feature="${featureKey}">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+            <span>${label}</span>
+        </button>
+    `;
+}
+
+// A full-width teaser strip, for the moments where the point isn't "here's a
+// button you can't press" but "this whole job could be easier". Sits in the flow
+// of a screen rather than in a row of controls.
+//
+//   ${proTeaser('payment-import', 'These could log themselves', 'Connect Stripe…')}
+//
+// Returns an empty string for accounts that already have the feature working,
+// so it disappears the moment the real thing ships to that user.
+function proTeaser(featureKey, heading, hint) {
+    if (isProUser() && isFeatureLive(featureKey)) return '';
+
+    const live = isFeatureLive(featureKey);
+    const tag = live ? 'PRO' : 'IN BUILD';
+
+    return `
+        <div class="pro-teaser" data-pro-feature="${featureKey}" role="button" tabindex="0">
+            <svg class="pro-teaser-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+            <span class="pro-teaser-body">
+                <span class="pro-teaser-heading">${heading}<span class="pro-badge pro-teaser-tag">${tag}</span></span>
+                <span class="pro-teaser-hint">${hint}</span>
+            </span>
+        </div>
+    `;
+}
+
+// The "not on your plan" modal. Structure and keyboard handling mirror
+// showConfirm() in toast.js so the two feel like the same app.
+function showProModal(featureKey) {
+    const feature = PRO_FEATURES[featureKey] || PRO_FEATURES['overview'];
+
+    const overlay = document.createElement('div');
+    overlay.className = 'confirm-overlay';
+    overlay.innerHTML = `
+        <div class="confirm-card card pro-modal" role="dialog" aria-modal="true" aria-labelledby="pro-modal-title">
+            <span class="pro-badge pro-modal-badge">PRO</span>
+            <h3 id="pro-modal-title" class="confirm-title"></h3>
+            <p class="confirm-message pro-modal-blurb"></p>
+            <ul class="pro-modal-list"></ul>
+            <p class="pro-modal-note"></p>
+            <div class="confirm-actions">
+                <button type="button" class="btn btn-primary pro-modal-close">Got it</button>
+            </div>
+        </div>
+    `;
+
+    overlay.querySelector('.confirm-title').textContent = feature.title;
+    overlay.querySelector('.pro-modal-blurb').textContent = feature.blurb;
+
+    // The footer says one of three true things, never a sales line the app can't
+    // honour. Which one depends on whether the feature exists yet and whether
+    // this account already has Pro.
+    const live = isFeatureLive(featureKey);
+    const note = overlay.querySelector('.pro-modal-note');
+    if (!live) {
+        note.textContent = "This one is still being built. Nothing changes on your plan today, and it'll appear here the moment it lands.";
+    } else if (isProUser()) {
+        note.textContent = 'This is part of your plan. Go ahead.';
+    } else if (window.CEO_CHECKOUT_PRO) {
+        note.textContent = 'This is part of Pro. You can switch plans whenever you like, and everything you have logged comes with you.';
+    } else {
+        note.textContent = "Pro isn't open for sign-ups just yet. You'll see it here as soon as it is.";
+    }
+
+    const list = overlay.querySelector('.pro-modal-list');
+    if (feature.list && feature.list.length) {
+        feature.list.forEach(item => {
+            const li = document.createElement('li');
+            li.textContent = item;
+            list.appendChild(li);
+        });
+    } else {
+        list.remove();
+    }
+
+    const previouslyFocused = document.activeElement;
+
+    const close = () => {
+        document.removeEventListener('keydown', onKeydown);
+        overlay.remove();
+        if (previouslyFocused && typeof previouslyFocused.focus === 'function') {
+            previouslyFocused.focus();
+        }
+    };
+
+    const onKeydown = (e) => {
+        if (e.key === 'Escape') close();
+    };
+
+    overlay.querySelector('.pro-modal-close').addEventListener('click', close);
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) close();
+    });
+    document.addEventListener('keydown', onKeydown);
+
+    document.body.appendChild(overlay);
+    overlay.querySelector('.pro-modal-close').focus();
+}
+
+// One delegated listener for every locked control in the app, present and
+// future. Screens only have to render `data-pro-feature="..."` — they never
+// wire up a handler, and a screen that re-renders can't lose it.
+function initProGate() {
+    document.addEventListener('click', (e) => {
+        const trigger = e.target.closest('[data-pro-feature]');
+        if (!trigger) return;
+        e.preventDefault();
+        showProModal(trigger.getAttribute('data-pro-feature'));
+    });
+
+    // Not every locked control can be a <button> — the plan list in Settings is
+    // rows of text. Those carry role="button" tabindex="0", which promises
+    // keyboard users that Enter and Space will work, so honour it.
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        const trigger = e.target.closest && e.target.closest('[data-pro-feature]');
+        if (!trigger || trigger.tagName === 'BUTTON') return;
+        e.preventDefault();
+        showProModal(trigger.getAttribute('data-pro-feature'));
+    });
+}
+
+
 // --- js\components\nav.js ---
 // nav.js
 
@@ -1434,9 +1895,31 @@ async function signOutAndClear() {
     localStorage.removeItem('ceo_auth');
     localStorage.removeItem('ceo_sub_status');
     localStorage.removeItem('ceo_trial_ends_at');
+    localStorage.removeItem('ceo_plan_tier');
     localStorage.removeItem('ceoPlanner_store');
     window.location.hash = '#/login';
     window.location.reload();
+}
+
+// A countdown, and only for people on the trial. The whole reason the free
+// fortnight runs on the Pro feature set is that losing something you have used
+// is what makes the upgrade make sense later, and that only works if the user
+// knew what she had — so once any Pro feature exists, this says "Pro trial"
+// rather than just "trial".
+//
+// Base subscribers get nothing here on purpose. A permanent "upgrade" pill in a
+// paying customer's nav is a nag; Account is one click away and explains Pro
+// properly when she actually wants to know.
+function renderPlanPill() {
+    if (!isProTrial()) return '';
+
+    const noun = anyProFeatureLive() ? 'Pro trial' : 'Free trial';
+    const days = trialDaysLeft();
+    const label = days === null
+        ? noun
+        : (days === 1 ? `${noun}, 1 day left` : `${noun}, ${days} days left`);
+
+    return `<a href="#/account" class="nav-plan-pill" title="See your plan and choose one whenever you're ready">${label}</a>`;
 }
 
 function renderNav() {
@@ -1465,6 +1948,8 @@ function renderNav() {
                 <a href="#/monthly-review" class="nav-link" id="nav-monthly-review">Monthly Review</a>
                 <a href="#/progress" class="nav-link" id="nav-progress">Wins & Progress</a>
                 <a href="#/settings" class="nav-link" id="nav-settings">Settings</a>
+                <a href="#/account" class="nav-link" id="nav-account">Account</a>
+                ${renderPlanPill()}
                 <a href="#" class="nav-link" id="nav-logout" style="color: #FCA5A5;">Log Out</a>
             </nav>
         </header>
@@ -1689,6 +2174,13 @@ function initChatWidget() {
 
             <!-- Input Form -->
             <div style="padding: 0.75rem 1rem; border-top: 1px solid var(--color-border); background: #F8FAFC;">
+                <!-- The panel is narrow, so this is the compact one-line variant of
+                     the teaser rather than the full strip used on the wide screens. -->
+                ${(isProUser() && isFeatureLive('coach-memory')) ? '' : `
+                <button type="button" class="pro-teaser pro-teaser-compact" data-pro-feature="coach-memory">
+                    <svg class="pro-teaser-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                    <span class="pro-teaser-hint">Pick up where you left off. Pro remembers your chats.</span>
+                </button>`}
                 <form id="ai-widget-form" style="display: flex; gap: 0.5rem; margin: 0;">
                     <input type="text" id="ai-widget-input" placeholder="Ask your Co-Pilot..." style="flex: 1; border-radius: 20px; border: 1px solid var(--color-border); padding: 0.5rem 1rem; font-size: 0.85rem; color: var(--color-black); outline: none; transition: border-color 0.2s;" autocomplete="off" required>
                     <button type="submit" id="ai-widget-submit" style="background: var(--color-primary); color: white; border: none; border-radius: 50%; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; transition: transform 0.1s;">
@@ -2626,6 +3118,7 @@ function renderDashboard() {
                             Regenerate Plan
                         </button>
                     </div>
+                    ${proLock('week-regen', 'Redo one week')}
                     <button class="btn btn-primary btn-sm btn-open-quick-sale" style="display: flex; align-items: center; gap: 0.25rem;">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                         Log a Sale
@@ -2987,6 +3480,11 @@ function renderDashboard() {
                      <div style="display: flex; flex-direction: column; gap: 0.75rem;">
                          ${dailyTasksHtml}
                      </div>
+                     ${proTeaser(
+                         'live-ai',
+                         'Suggestions written about your business',
+                         'These follow set patterns today. Pro writes them from your real numbers and offer.'
+                     )}
                 </div>
 
                 <div style="display: flex; flex-direction: column; gap: var(--spacing-lg);">
@@ -4301,11 +4799,12 @@ function renderRevenue() {
                     <h2>Revenue & Sales Analytics</h2>
                     <p style="color: var(--color-text-muted);">Monitor your pipeline, conversions, and growth metrics.</p>
                 </div>
-                <div style="display: flex; gap: 1rem; align-items: center;">
-                    <div style="display: flex; gap: 0.5rem;">
+                <div style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
                         <button id="btn-report-csv" class="btn btn-outline btn-sm" style="display: flex; align-items: center; gap: 0.5rem;">
                             📊 Export CSV
                         </button>
+                        ${proLock('pdf-export', '📄 PDF Report')}
                         <button id="btn-report-ai" class="btn btn-primary btn-sm" style="display: flex; align-items: center; gap: 0.5rem; background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark)); border: none; box-shadow: var(--shadow-sm);">
                             🤖 AI Executive Report
                             ${renderTooltip("A comprehensive, AI-generated analysis of your business's financial health, sales pipeline, and growth bottlenecks.", "It synthesizes your traffic, calls, conversions, and revenue into a clear strategy briefing and lists specific, high-priority tasks to help you optimize your funnel.", "bottom")}
@@ -4474,6 +4973,12 @@ function renderRevenue() {
 
                 <!-- Sidebar Right -->
                 <div>
+                   ${proTeaser(
+                       'payment-import',
+                       'Never log a sale by hand again',
+                       'Connect Stripe or PayPal once. Every sale appears here the moment it happens.'
+                   )}
+
                    <!-- Multi-Form Tabs -->
                    <div class="card" style="border-top: 4px solid var(--color-accent); padding: 1.5rem;">
                        <div class="flex gap-2 mb-4" style="border-bottom: 1px solid var(--color-border); padding-bottom: 0.5rem; flex-wrap: wrap;">
@@ -4602,6 +5107,11 @@ function renderRevenue() {
                               </div>
                               `;
                           }).join('')}
+                          ${proTeaser(
+                              'unlimited-offers',
+                              'Room for every offer you sell',
+                              'Three slots is the base limit. Pro lifts it, so today\'s sale is always one tap away.'
+                          )}
                           <button type="submit" class="btn btn-outline" style="width: 100%; border-color: var(--color-accent); color: var(--color-accent-dark);">Save Quick Actions</button>
                        </form>
                    </div>
@@ -4617,6 +5127,11 @@ function renderRevenue() {
                            </div>
                        </div>
                        ${renderPipelineEvents(insights.entries, leads, currency)}
+                       ${proTeaser(
+                           'lead-pipeline',
+                           'Know exactly who to follow up today',
+                           'Track leads by name through booked, proposal and won, and see who has gone quiet.'
+                       )}
                    </div>
 
                 </div>
@@ -5596,6 +6111,12 @@ function renderProgress() {
                 </div>
             </div>
 
+            ${proTeaser(
+                'history',
+                'See if this quarter beat the last one',
+                'Everything here resets each quarter. Pro keeps them and shows them side by side.'
+            )}
+
             <!-- CEO Insight Engine -->
             <div class="card mb-6" style="border-top: 4px solid var(--color-primary);">
                 <div class="flex items-center gap-2 mb-4">
@@ -6042,6 +6563,11 @@ function renderSettings() {
                     app is closed, they won't reach you — so treat them as a nudge while
                     you're working, not an alarm clock.
                 </p>
+                ${proTeaser(
+                    'email-digest',
+                    'A nudge that reaches you anywhere',
+                    'A short Monday email with your numbers and next steps. Works with the app closed.'
+                )}
                 <div style="display: flex; flex-direction: column; gap: 1rem;">
                     <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer;">
                         <input type="checkbox" name="reminder" value="${REMINDER_WEEKLY}" ${isChecked(REMINDER_WEEKLY)} style="margin-top: 0.25rem;">
@@ -6075,28 +6601,6 @@ function renderSettings() {
         </div>
     </form>
 
-    <!-- Card 6: Billing & Subscription -->
-    <div class="card mt-8">
-        <h3 class="mb-4" style="display: flex; align-items: center; gap: 0.5rem; color: var(--color-black);">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg>
-            Billing & Subscription
-        </h3>
-        <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1.5rem;">
-            ${localStorage.getItem('ceo_sub_status') === 'trialing'
-                ? "You're on the free trial, so there's nothing to pay and nothing to cancel. Whenever you're ready, you can choose a plan here."
-                : 'Manage your payment method, view invoices, or cancel your subscription at any time.'}
-        </p>
-        <button type="button" id="btn-manage-subscription" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600; display: inline-flex; align-items: center; gap: 0.5rem;">
-            ${localStorage.getItem('ceo_sub_status') === 'trialing' ? 'Choose Your Plan' : 'Manage Subscription / Cancel'}
-        </button>
-    </div>
-
-    <!-- Card 7: Danger Zone -->
-    <div class="card mt-6" style="border: 1px solid #FEE4E2;">
-        <h3 class="mb-2" style="color: #B42318;">Danger Zone</h3>
-        <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1rem;">Permanently deletes your plans, revenue log, reviews and profile — from this device and from our servers. This cannot be undone.</p>
-        <button id="btn-reset-data" class="btn btn-outline" style="border-color: #FEE4E2; color: #B42318; background: #FEF3F2;">Erase All My Data</button>
-    </div>
 </div>
 `;
 }
@@ -6263,10 +6767,309 @@ function settingsAttachEvents() {
             }
         });
     });
+}
 
-    // Handle Billing Click. Someone on the free trial has no Stripe record yet,
-    // so the customer portal would be a dead end for them. Send them to the
-    // plan picker instead.
+
+// --- js\screens\account.js ---
+// account.js
+//
+// "My account with this company", as opposed to Settings, which is "how my
+// business is configured". They were one 5,000px page, which buried billing and
+// cancellation at the very bottom — the two things a person needs to find fast,
+// and usually when they are already a bit annoyed.
+//
+// This screen owns: which plan you are on, what Pro adds, billing, your login
+// details, and erasing everything. Settings keeps the business profile, goals,
+// strategy mode and reminders, all of which feed the AI rather than the account.
+
+// Everything the base plan includes. Written out rather than derived, because
+// the point of this list is to make base feel like a complete product on its
+// own — a Pro list with nothing beside it reads as a list of things you lack.
+const BASE_FEATURES = [
+    'Your 90-day roadmap and quarterly targets',
+    'Weekly planning and the Daily 3',
+    'Revenue, leads and conversion tracking',
+    'The Friday Review and your Monday draft',
+    'The AI coach, 30 conversations a day',
+    'CSV export of everything you log',
+    'Executive reports on demand'
+];
+
+const TICK_SVG = `<svg class="plan-feature-mark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
+const LOCK_SVG = `<svg class="plan-feature-mark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>`;
+const CLOCK_SVG = `<svg class="plan-feature-mark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>`;
+
+function renderAccount() {
+    window.setScreenModule({ attachEvents: accountAttachEvents });
+
+    return `
+        ${renderNav()}
+<div class="main-content" style="max-width: 800px;">
+    <div class="flex justify-between items-center mb-6">
+        <h2>Account</h2>
+        <a href="#/dashboard" class="btn btn-ghost" style="font-size: 0.875rem;">← Back</a>
+    </div>
+
+    ${renderPlanCard()}
+    ${renderConnectionsCard()}
+    ${renderBillingCard()}
+    ${renderLoginCard()}
+    ${renderDangerCard()}
+</div>
+`;
+}
+
+// Your Plan. Shows what the account is on now and, for base users, exactly what
+// Pro adds — visible and clickable rather than hidden, so nothing about the
+// upgrade is a surprise later.
+function renderPlanCard() {
+    const tier = getPlanTier();
+    const onTrial = isProTrial();
+    const days = trialDaysLeft();
+    const hasPro = tier === 'pro';
+
+    let heading;
+    let sub;
+
+    if (onTrial) {
+        const dayText = days === null ? 'while your trial runs' : (days === 1 ? 'for 1 more day' : `for ${days} more days`);
+        heading = 'Free trial, running on Pro';
+        sub = `You have the complete product ${dayText}, including every Pro feature as it lands. Nothing to pay and no card on file. When the trial finishes you'll pick a plan, and Base keeps everything in the first list below.`;
+    } else if (hasPro) {
+        heading = 'CEO Planner Pro';
+        sub = 'You have everything. Thank you — genuinely.';
+    } else {
+        heading = 'CEO Planner, Base plan';
+        sub = "Everything in the first list is yours. The second list is what Pro adds — click any line to read what it actually does.";
+    }
+
+    const baseRows = BASE_FEATURES.map(f => `
+        <div class="plan-feature-row">${TICK_SVG}<span>${f}</span></div>
+    `).join('');
+
+    // Three states per row, and the third one matters: a Pro or trial account
+    // does NOT get a tick for a feature that hasn't been built yet. Ticking all
+    // nine today would be telling a trial user she has things that don't exist.
+    // Flip `shipped` in PRO_FEATURES as each one lands and this fixes itself.
+    const proRows = PRO_FEATURE_KEYS.map(key => {
+        const feature = PRO_FEATURES[key];
+        if (!feature) return '';
+
+        const live = isFeatureLive(key);
+        let mark = LOCK_SVG;
+        let suffix = '';
+        // `is-locked` mutes the row. It stays on for anything the account can't
+        // use *today*, which includes an unbuilt feature on a Pro or trial
+        // account — a clock in full-strength text would read as available.
+        let muted = true;
+
+        if (hasPro && live) {
+            mark = TICK_SVG;
+            muted = false;
+        } else if (hasPro) {
+            mark = CLOCK_SVG;
+            suffix = ` <span class="plan-feature-soon">in build</span>`;
+        }
+
+        return `
+            <div class="plan-feature-row${muted ? ' is-locked' : ''}" data-pro-feature="${key}" role="button" tabindex="0">
+                ${mark}<span>${feature.title}${suffix}</span>
+            </div>
+        `;
+    }).join('');
+
+    return `
+    <div class="card mb-6">
+        <h3 class="mb-2" style="display: flex; align-items: center; gap: 0.5rem; color: var(--color-black);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+            Your Plan
+        </h3>
+        <p style="color: var(--color-text-muted); font-size: 0.9rem; line-height: 1.6; margin-bottom: 1.5rem;"><strong style="color: var(--color-black);">${heading}</strong> — ${sub}</p>
+
+        <p class="plan-section-label">In every plan</p>
+        ${baseRows}
+
+        <p class="plan-section-label" style="color: var(--color-secondary-dark); margin-top: 1.5rem; display: flex; align-items: center; gap: 0.5rem;">${proBadge()} adds</p>
+        ${proRows}
+    </div>
+    `;
+}
+
+// Connected payment processors, for Pro item 1.
+//
+// Gated on `isFeatureLive('payment-import')` as well as on the tier, so the card
+// stays invisible until the import is genuinely finished. The backend is live
+// before the client half is, and a Connect button that leads to a half-built
+// feature is worse than no button.
+function renderConnectionsCard() {
+    if (!isFeatureLive('payment-import') || !isProUser()) return '';
+
+    return `
+    <div class="card mb-6">
+        <h3 class="mb-2" style="display: flex; align-items: center; gap: 0.5rem; color: var(--color-black);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+            Connected accounts
+        </h3>
+        <p style="color: var(--color-text-muted); font-size: 0.875rem; line-height: 1.6; margin-bottom: 1.25rem;">
+            Connect Stripe and your sales are imported here automatically. The connection
+            is <strong>read only</strong>, so this can see payments but can never move money,
+            issue a refund, or change anything in your Stripe account. You can disconnect
+            at any time and your imported sales stay with you.
+        </p>
+        <div id="stripe-connection-state" style="color: var(--color-text-muted); font-size: 0.875rem;">Checking…</div>
+    </div>
+    `;
+}
+
+function renderBillingCard() {
+    const onTrial = localStorage.getItem('ceo_sub_status') === 'trialing';
+
+    return `
+    <div class="card mb-6">
+        <h3 class="mb-4" style="display: flex; align-items: center; gap: 0.5rem; color: var(--color-black);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg>
+            Billing
+        </h3>
+        <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1.5rem; line-height: 1.6;">
+            ${onTrial
+                ? "You're on the free trial, so there's nothing to pay and nothing to cancel. Whenever you're ready, you can choose a plan here."
+                : 'Update your card, change your billing address, download invoices or cancel — all handled on the secure Stripe page, so your card details never touch this app.'}
+        </p>
+        <button type="button" id="btn-manage-subscription" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600; display: inline-flex; align-items: center; gap: 0.5rem;">
+            ${onTrial ? 'Choose Your Plan' : 'Manage billing, invoices or cancel'}
+        </button>
+    </div>
+    `;
+}
+
+// Login details. The email is shown but not editable here: changing the address
+// on a Supabase account sends a confirmation to both the old and new inbox, and
+// it also has to be changed on the Stripe customer or the webhook stops matching
+// payments to the account. That is a job with a support conversation attached,
+// not a text field.
+function renderLoginCard() {
+    return `
+    <div class="card mb-6">
+        <h3 class="mb-4" style="display: flex; align-items: center; gap: 0.5rem; color: var(--color-black);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+            Login details
+        </h3>
+
+        <div style="margin-bottom: 1.5rem;">
+            <span style="display: block; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--color-text-muted); margin-bottom: 0.25rem;">Email address</span>
+            <span id="account-email" style="color: var(--color-black); font-weight: 500;">Loading…</span>
+            <p style="color: var(--color-text-muted); font-size: 0.8rem; margin-top: 0.5rem; line-height: 1.5;">
+                This is the address you sign in with, and the one your billing is matched
+                to. To change it, email support so both can be moved together.
+            </p>
+        </div>
+
+        <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+            <button type="button" id="btn-change-password" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Change password</button>
+            <button type="button" id="btn-account-signout" class="btn btn-ghost">Sign out</button>
+        </div>
+    </div>
+    `;
+}
+
+function renderDangerCard() {
+    return `
+    <div class="card" style="border: 1px solid #FEE4E2;">
+        <h3 class="mb-2" style="color: #B42318;">Danger Zone</h3>
+        <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1rem;">Permanently deletes your plans, revenue log, reviews and profile — from this device and from our servers. This cannot be undone.</p>
+        <button id="btn-reset-data" class="btn btn-outline" style="border-color: #FEE4E2; color: #B42318; background: #FEF3F2;">Erase All My Data</button>
+    </div>
+    `;
+}
+
+// Paints the connection panel and wires its buttons. Re-entrant: every action
+// re-paints, so there is one place that decides what the panel says.
+async function paintStripeConnection() {
+    const host = document.getElementById('stripe-connection-state');
+    if (!host) return;
+
+    const conn = await fetchStripeConnection();
+
+    if (!conn) {
+        host.innerHTML = `<button type="button" id="btn-stripe-connect" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Connect Stripe</button>`;
+        document.getElementById('btn-stripe-connect').addEventListener('click', async (e) => {
+            e.target.disabled = true;
+            e.target.textContent = 'Opening Stripe…';
+            const err = await startStripeConnect();
+            if (err) {
+                e.target.disabled = false;
+                e.target.textContent = 'Connect Stripe';
+                showToast(err, 'error');
+            }
+        });
+        return;
+    }
+
+    const lastSynced = conn.last_synced_at
+        ? new Date(conn.last_synced_at).toLocaleString()
+        : 'not yet';
+
+    host.innerHTML = `
+        <p style="margin: 0 0 0.5rem 0;"><strong style="color: var(--color-black);">Stripe connected</strong> — account ${conn.stripe_account_id}</p>
+        <p style="margin: 0 0 1rem 0;">Last import: ${lastSynced}</p>
+        ${conn.last_sync_error ? `<p style="margin: 0 0 1rem 0; color: #B42318;">Last attempt failed: ${conn.last_sync_error}</p>` : ''}
+        <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+            <button type="button" id="btn-stripe-sync" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Import sales now</button>
+            <button type="button" id="btn-stripe-disconnect" class="btn btn-ghost">Disconnect</button>
+        </div>
+    `;
+
+    document.getElementById('btn-stripe-sync').addEventListener('click', async (e) => {
+        e.target.disabled = true;
+        e.target.textContent = 'Importing…';
+        const result = await syncStripeSales();
+        if (result.error) {
+            showToast(result.error, 'error');
+        } else {
+            showToast(
+                result.imported
+                    ? `Imported ${result.imported} ${result.imported === 1 ? 'sale' : 'sales'} from Stripe.`
+                    : 'Up to date, nothing new to import.',
+                'success'
+            );
+        }
+        paintStripeConnection();
+    });
+
+    document.getElementById('btn-stripe-disconnect').addEventListener('click', async () => {
+        const confirmed = await showConfirm(
+            'Your imported sales stay in your revenue history. This only stops new ones arriving.',
+            { title: 'Disconnect Stripe?', confirmText: 'Disconnect' }
+        );
+        if (!confirmed) return;
+
+        const err = await disconnectStripe();
+        if (err) showToast(err, 'error');
+        else showToast('Stripe disconnected.', 'success');
+        paintStripeConnection();
+    });
+}
+
+function accountAttachEvents() {
+    // Report the outcome of an OAuth round trip, if we've just come back from one.
+    const outcome = readStripeOutcome();
+    if (outcome) showToast(outcome.text, outcome.type);
+
+    paintStripeConnection();
+
+    // Fill in the email from the live session rather than from the store, so it
+    // is the address they actually sign in with and not a stale copy.
+    window.db.auth.getSession().then(({ data }) => {
+        const el = document.getElementById('account-email');
+        if (!el) return;
+        el.textContent = data?.session?.user?.email || 'Not available';
+    }).catch(() => {
+        const el = document.getElementById('account-email');
+        if (el) el.textContent = 'Not available';
+    });
+
+    // Someone on the free trial has no Stripe record yet, so the customer portal
+    // would be a dead end for them. Send them to the plan picker instead.
     const btnManageSub = document.getElementById('btn-manage-subscription');
     if (btnManageSub) {
         btnManageSub.addEventListener('click', () => {
@@ -6278,10 +7081,47 @@ function settingsAttachEvents() {
         });
     }
 
-    // Handle Factory Reset. This deletes the cloud row first, then the local copy.
-    // Clearing localStorage alone left the user_data row sitting in Supabase, while
-    // the user guide promised permanent deletion — a UK GDPR erasure claim the app
-    // was not actually honouring.
+    // Same flow as "forgot password" on the login screen: Supabase emails a link
+    // rather than letting the page set a new password directly, so a walk-away
+    // unlocked laptop can't be used to lock the owner out of her own account.
+    const btnPassword = document.getElementById('btn-change-password');
+    if (btnPassword) {
+        btnPassword.addEventListener('click', async () => {
+            const { data } = await window.db.auth.getSession();
+            const email = data?.session?.user?.email;
+            if (!email) {
+                showToast('We could not read your account. Please sign out and back in, then try again.', 'error');
+                return;
+            }
+
+            btnPassword.disabled = true;
+            const original = btnPassword.textContent;
+            btnPassword.textContent = 'Sending…';
+
+            const { error } = await window.db.auth.resetPasswordForEmail(email, {
+                redirectTo: window.location.origin + window.location.pathname + '#/reset-password'
+            });
+
+            btnPassword.disabled = false;
+            btnPassword.textContent = original;
+
+            if (error) {
+                showToast(error.message, 'error');
+            } else {
+                showToast(`Check ${email} for a link to set a new password.`, 'success', 6000);
+            }
+        });
+    }
+
+    const btnSignout = document.getElementById('btn-account-signout');
+    if (btnSignout) {
+        btnSignout.addEventListener('click', () => signOutAndClear());
+    }
+
+    // Deletes the cloud row first, then the local copy. Clearing localStorage
+    // alone left the user_data row sitting in Supabase while the user guide
+    // promised permanent deletion — a UK GDPR erasure claim the app was not
+    // actually honouring.
     const resetBtn = document.getElementById('btn-reset-data');
     if (resetBtn) {
         resetBtn.addEventListener('click', async () => {
@@ -7902,10 +8742,46 @@ function roadmapAttachEvents() {
 // --- js\screens\billing.js ---
 // billing.js
 
+// Checkout happens on Stripe's own page and the account is upgraded by a webhook
+// firing somewhere else entirely, so there is a window of a few seconds where the
+// customer is back in the app and the database has not caught up. That window
+// lands at the worst possible moment: she has just paid and the app is still
+// saying "your 14 days are up". These two constants govern how long we wait it
+// out before giving her the manual escape hatch instead.
+const CONFIRM_POLL_MS = 2000;
+const CONFIRM_TIMEOUT_MS = 30000;
+
+// Set once the confirming screen has given up, so re-rendering the route doesn't
+// restart the wait forever.
+let confirmAbandoned = false;
+let confirmTimer = null;
+
+// Stripe sends people back to a success URL we control. Accept the marker in the
+// query string or inside the hash, because a payment link can be configured
+// either way and getting it wrong would silently disable the whole flow.
+function hasCheckoutMarker() {
+    if (/[?&]checkout=success/.test(window.location.search)) return true;
+    const hash = window.location.hash || '';
+    const q = hash.indexOf('?');
+    return q !== -1 && /[?&]checkout=success/.test(hash.slice(q));
+}
+
+function clearCheckoutMarker() {
+    const hash = (window.location.hash || '').split('?')[0];
+    const url = window.location.pathname + (hash || '#/billing');
+    window.history.replaceState({}, '', url);
+}
+
 function renderBilling() {
     window.setScreenModule({ attachEvents: billingAttachEvents });
 
     const status = localStorage.getItem('ceo_sub_status');
+
+    // Just back from Stripe. Wait for the webhook rather than telling someone who
+    // has this second paid us that their trial is over.
+    if (hasCheckoutMarker() && !confirmAbandoned && status !== 'active') {
+        return renderConfirmingPayment();
+    }
 
     // Still inside the trial and choosing to subscribe early
     if (status === 'trialing') return renderTrialEnded(true);
@@ -7915,6 +8791,38 @@ function renderBilling() {
 
     // An existing customer whose card failed
     return renderPaymentProblem();
+}
+
+// The few seconds between paying and the webhook landing. Deliberately calm and
+// certain: the payment has gone through, this is only bookkeeping.
+function renderConfirmingPayment() {
+    return `
+        <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--color-primary-light) 0%, var(--color-bg-main) 100%); padding: 1.5rem;">
+            <div id="confirm-payment-card" class="card fade-up" style="width: 100%; max-width: 460px; padding: 3rem 2.5rem; text-align: center; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); border: 1px solid rgba(255,255,255,0.5); backdrop-filter: blur(10px);">
+
+                <div class="spinner" style="width: 32px; height: 32px; border: 3px solid var(--color-primary-light); border-top: 3px solid var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 1.5rem;"></div>
+
+                <h2 style="font-size: 1.5rem; color: var(--color-black); margin-bottom: 1rem; letter-spacing: -0.02em;">Confirming your payment</h2>
+
+                <p style="color: var(--color-text-muted); font-size: 1rem; line-height: 1.6; margin-bottom: 0;">
+                    Thank you. Your payment has gone through and we're just waiting for it
+                    to reach your account. This usually takes a few seconds.
+                </p>
+            </div>
+        </div>
+    `;
+}
+
+// Every screen in this file gets this. Whatever else goes wrong — a webhook that
+// never fires, a checkout finished in another tab, an email that didn't match —
+// there is always one thing the customer can press herself.
+function renderRefreshLink() {
+    return `
+        <p style="margin-top: 1.25rem; margin-bottom: 0; font-size: 0.8rem; color: var(--color-text-muted);">
+            Already paid?
+            <a href="#" id="btn-refresh-account" style="color: var(--color-primary-dark); text-decoration: underline;">Refresh my account</a>
+        </p>
+    `;
 }
 
 // The card-free trial ran out, or they're subscribing early. Nothing has gone
@@ -7965,6 +8873,7 @@ function renderTrialEnded(stillInTrial) {
                 </p>
 
                 ${backLink}
+                ${renderRefreshLink()}
             </div>
         </div>
     `;
@@ -7993,12 +8902,78 @@ function renderPaymentProblem() {
                 </button>
 
                 <a href="#" id="btn-signout" style="color: var(--color-text-muted); font-size: 0.875rem; text-decoration: underline;">Sign out</a>
+                ${renderRefreshLink()}
             </div>
         </div>
     `;
 }
 
+// Ask the database whether this account has access yet. Returns true if it does,
+// and takes the user through to the app when it does.
+async function checkAccessNow() {
+    const access = await window.refreshAccessState();
+    if (!access) return null; // Couldn't reach the server
+
+    if (!window.isLockedOut(access.status)) {
+        clearCheckoutMarker();
+        window.location.hash = '#/dashboard';
+        // Full reload on purpose: the whole app was rendered for a locked-out or
+        // base account, so every gate and every screen needs rebuilding.
+        window.location.reload();
+        return true;
+    }
+    return false;
+}
+
 function billingAttachEvents() {
+    // Poll while the "confirming your payment" card is on screen.
+    if (document.getElementById('confirm-payment-card') && hasCheckoutMarker() && !confirmAbandoned) {
+        const startedAt = Date.now();
+        if (confirmTimer) clearInterval(confirmTimer);
+
+        confirmTimer = setInterval(async () => {
+            const done = await checkAccessNow();
+            if (done) {
+                clearInterval(confirmTimer);
+                confirmTimer = null;
+                return;
+            }
+
+            if (Date.now() - startedAt >= CONFIRM_TIMEOUT_MS) {
+                clearInterval(confirmTimer);
+                confirmTimer = null;
+                // Give up gracefully and fall back to the normal screen, which
+                // carries the manual refresh link. Never leave someone watching a
+                // spinner that is never going to stop.
+                confirmAbandoned = true;
+                showToast("Your payment went through, but it hasn't reached your account yet. Give it a minute and press 'Refresh my account', or contact support and we'll sort it.", 'error');
+                rerenderScreen();
+            }
+        }, CONFIRM_POLL_MS);
+    }
+
+    const btnRefresh = document.getElementById('btn-refresh-account');
+    if (btnRefresh) {
+        btnRefresh.addEventListener('click', async (e) => {
+            e.preventDefault();
+            const original = btnRefresh.textContent;
+            btnRefresh.textContent = 'Checking…';
+            btnRefresh.style.pointerEvents = 'none';
+
+            const result = await checkAccessNow();
+
+            btnRefresh.textContent = original;
+            btnRefresh.style.pointerEvents = '';
+
+            if (result === null) {
+                showToast("We couldn't reach the server. Check your connection and try again.", 'error');
+            } else if (result === false) {
+                showToast("We can't see a payment on this account yet. If you've just paid, give it a minute. If you checked out with a different email address, contact support and we'll link it up.", 'error');
+            }
+            // On success checkAccessNow has already navigated away.
+        });
+    }
+
     // Send them to Stripe with their email already filled in, so the webhook can
     // match the payment back to the account they already have.
     const checkout = async (baseUrl) => {
@@ -8040,6 +9015,7 @@ function billingAttachEvents() {
             localStorage.removeItem('ceo_auth');
             localStorage.removeItem('ceo_sub_status');
             localStorage.removeItem('ceo_trial_ends_at');
+            localStorage.removeItem('ceo_plan_tier');
             localStorage.removeItem('ceoPlanner_store');
             window.location.hash = '#/login';
             window.location.reload();
@@ -8165,6 +9141,9 @@ function router() {
         case '#/settings':
             appContainer.innerHTML = renderSettings();
             break;
+        case '#/account':
+            appContainer.innerHTML = renderAccount();
+            break;
         case '#/quarter-reset':
             appContainer.innerHTML = renderQuarterReset();
             break;
@@ -8281,10 +9260,31 @@ async function revalidateAccess() {
     if (localStorage.getItem('ceo_auth') !== 'true') return;
 
     const before = localStorage.getItem('ceo_sub_status');
+    const beforeTier = localStorage.getItem('ceo_plan_tier');
     const access = await window.refreshAccessState();
     if (!access) return; // Offline or unreachable. Leave them as they were.
 
-    if (access.status !== before) router();
+    // Re-render on a tier change too, not just a status change. Base → Pro keeps
+    // the status at 'active', so without this an upgrade would leave every lock
+    // in place until the next page load.
+    if (access.status !== before || access.tier !== beforeTier) router();
+}
+
+// Checkout happens on Stripe's own page, so the app usually finds out that
+// someone has paid only on the next load or the next hourly poll. Someone who
+// pays in a second tab and switches back to this one would otherwise sit
+// looking at "you're on the free trial" for up to an hour, with the locks still
+// on. Re-check whenever the tab comes back to the foreground, throttled so that
+// ordinary tab-flicking doesn't hammer the database.
+const REVALIDATE_MIN_GAP_MS = 30000;
+let lastRevalidatedAt = 0;
+
+function revalidateOnReturn() {
+    if (document.visibilityState !== 'visible') return;
+    const now = Date.now();
+    if (now - lastRevalidatedAt < REVALIDATE_MIN_GAP_MS) return;
+    lastRevalidatedAt = now;
+    revalidateAccess();
 }
 
 // Purge keys earlier versions wrote that should never have been stored. This runs
@@ -8315,12 +9315,19 @@ window.addEventListener('hashchange', router);
 window.addEventListener('load', () => {
     purgeLegacyKeys();
     bindGlobalNavEvents();
+    // One delegated handler for every locked Pro control, bound once. Screens
+    // render `data-pro-feature="..."` and never wire anything up themselves.
+    initProGate();
     router();
 
     // Confirm the trial is still valid against the database, not just localStorage
+    lastRevalidatedAt = Date.now();
     revalidateAccess();
     // And re-check hourly, so a long-open tab doesn't outlive the trial
     setInterval(revalidateAccess, 3600000);
+    // ...plus whenever they come back to the tab, which is how the app notices a
+    // Stripe checkout completed somewhere else.
+    document.addEventListener('visibilitychange', revalidateOnReturn);
 
     // Start background notification polling engine
     setInterval(checkPushNotifications, 60000);

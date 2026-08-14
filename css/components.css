@@ -318,10 +318,13 @@
     background-color: var(--color-primary-light);
 }
 
-/* 1080px, not 768px: the logo plus ten nav links need 1079px to fit, so between
-   769px and 1078px the bar used to overflow and push "Log Out" off the screen —
-   iPad landscape, small laptops, and any half-width desktop window. */
-@media (max-width: 1080px) {
+/* 1120px, not 768px and no longer 1080px: the logo plus the nav links need
+   1100px to fit, and below that the bar overflows and pushes "Log Out" off the
+   screen — iPad landscape, small laptops, and any half-width desktop window.
+   The number went 1080 → 1120 when the Account link was added. **Re-measure it
+   if you add or rename a nav link**: the fit is tight and the failure is silent
+   until someone notices they can't log out. */
+@media (max-width: 1120px) {
     .app-header {
         flex-wrap: wrap;
     }
@@ -500,4 +503,270 @@
     font-size: 0.75rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
+}
+
+/* ============================================
+   Pro gate — locked Phase 2 features
+   Base-tier users see every Pro feature where they would use it. These styles
+   make a locked control read as "there is more here" rather than as an error.
+   The brand yellow is used throughout so Pro reads as a different thing from
+   the teal primary actions, not as a disabled version of them.
+   ============================================ */
+
+.pro-badge {
+    display: inline-flex;
+    align-items: center;
+    background: var(--color-secondary-light);
+    color: var(--color-secondary-dark);
+    border: 1px solid rgba(242, 194, 29, 0.4);
+    border-radius: var(--radius-full);
+    padding: 0.1rem 0.5rem;
+    font-family: var(--font-heading);
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    line-height: 1.5;
+    vertical-align: middle;
+}
+
+/* The locked control itself. Deliberately not `disabled` — it has to be
+   clickable, and a disabled button is invisible to keyboard users. */
+.pro-lock {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    background: var(--color-secondary-light);
+    color: var(--color-secondary-dark);
+    border: 1px dashed rgba(242, 194, 29, 0.6);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.9rem;
+    font-family: var(--font-body);
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.pro-lock:hover,
+.pro-lock:focus-visible {
+    background: #FCF3D3;
+    border-color: var(--color-secondary);
+}
+
+.pro-lock svg {
+    flex-shrink: 0;
+}
+
+/* Full-width teaser strip. Sits in the flow of a screen, next to the manual way
+   of doing the job it would replace. Muted on purpose — it has to be findable
+   without competing with the control the user actually came to press. */
+.pro-teaser {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.65rem;
+    width: 100%;
+    background: var(--color-secondary-light);
+    border: 1px dashed rgba(242, 194, 29, 0.6);
+    border-radius: var(--radius-sm);
+    padding: 0.75rem 0.9rem;
+    margin: 1rem 0;
+    text-align: left;
+    cursor: pointer;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.pro-teaser:hover,
+.pro-teaser:focus-visible {
+    background: #FCF3D3;
+    border-color: var(--color-secondary);
+}
+
+.pro-teaser-icon {
+    flex-shrink: 0;
+    margin-top: 0.15rem;
+    color: var(--color-secondary-dark);
+}
+
+.pro-teaser-body {
+    display: block;
+    min-width: 0;
+}
+
+.pro-teaser-heading {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    color: var(--color-black);
+    font-size: 0.875rem;
+    font-weight: 600;
+    margin-bottom: 0.15rem;
+}
+
+.pro-teaser-tag {
+    font-size: 0.6rem;
+}
+
+.pro-teaser-hint {
+    display: block;
+    color: var(--color-text-muted);
+    font-size: 0.8rem;
+    line-height: 1.5;
+}
+
+/* One-line variant, for narrow places like the chat panel where a full strip
+   would eat the space the conversation needs. */
+.pro-teaser-compact {
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.4rem 0.6rem;
+    margin: 0 0 0.6rem 0;
+}
+
+.pro-teaser-compact .pro-teaser-icon {
+    margin-top: 0;
+}
+
+.pro-teaser-compact .pro-teaser-hint {
+    font-size: 0.75rem;
+    line-height: 1.4;
+}
+
+/* Modal. Shares .confirm-overlay / .confirm-card with showConfirm() so the two
+   dialogs in the app behave identically. */
+.pro-modal {
+    max-width: 460px;
+    text-align: left;
+}
+
+.pro-modal-badge {
+    margin-bottom: var(--spacing-sm);
+}
+
+.pro-modal-blurb {
+    line-height: 1.65;
+}
+
+.pro-modal-list {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 var(--spacing-lg) 0;
+}
+
+.pro-modal-list li {
+    position: relative;
+    padding-left: 1.35rem;
+    margin-bottom: 0.4rem;
+    color: var(--color-text-main);
+    font-size: 0.9rem;
+}
+
+.pro-modal-list li::before {
+    content: '';
+    position: absolute;
+    left: 0.3rem;
+    top: 0.55rem;
+    width: 5px;
+    height: 5px;
+    border-radius: var(--radius-full);
+    background: var(--color-secondary);
+}
+
+.pro-modal-note {
+    background: var(--color-secondary-light);
+    border-radius: var(--radius-sm);
+    padding: 0.75rem 0.9rem;
+    margin-bottom: var(--spacing-lg);
+    color: var(--color-text-muted);
+    font-size: 0.8rem;
+    line-height: 1.55;
+}
+
+/* Plan pill in the header. Shows the trial countdown, or a way in to the Pro
+   summary once someone is paying for base. */
+.nav-plan-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: var(--color-secondary-light);
+    color: var(--color-secondary-dark);
+    border: 1px solid rgba(242, 194, 29, 0.45);
+    border-radius: var(--radius-full);
+    padding: 0.2rem 0.7rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.nav-plan-pill:hover {
+    background: #FCF3D3;
+}
+
+/* The trial countdown costs about 158px on the nav row, which is more than the
+   gap between "the links fit" (1100px) and "the links plus the pill fit"
+   (1258px). Rather than push every laptop under 1258px into a hamburger for the
+   sake of a countdown, drop the pill through that band. Below 1120px the nav is
+   a vertical dropdown, where the pill costs no width and comes back. Account is
+   one click away in all three cases. */
+@media (min-width: 1121px) and (max-width: 1280px) {
+    .nav-plan-pill {
+        display: none;
+    }
+}
+
+/* Plan comparison on the Account screen */
+.plan-section-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--color-text-muted);
+    margin-bottom: 0.25rem;
+}
+
+/* "in build" — a Pro or trial account looking at a feature that doesn't exist
+   yet. Without this the plan list would tick nine things nobody can use. */
+.plan-feature-soon {
+    display: inline-block;
+    margin-left: 0.4rem;
+    color: var(--color-secondary-dark);
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.plan-feature-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    padding: 0.5rem 0;
+    font-size: 0.875rem;
+    color: var(--color-text-main);
+    border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+}
+
+.plan-feature-row:last-child {
+    border-bottom: none;
+}
+
+.plan-feature-row .plan-feature-mark {
+    flex-shrink: 0;
+    margin-top: 0.15rem;
+    color: var(--color-primary-dark);
+}
+
+.plan-feature-row.is-locked {
+    cursor: pointer;
+    color: var(--color-text-muted);
+}
+
+.plan-feature-row.is-locked:hover {
+    color: var(--color-black);
+}
+
+.plan-feature-row.is-locked .plan-feature-mark {
+    color: var(--color-secondary-dark);
 }

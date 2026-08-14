@@ -3,6 +3,7 @@ import { renderNav } from '../components/nav.js';
 import { renderTooltip } from '../components/tooltip.js';
 import { generate90DayActionPlan } from '../aiService.js';
 import { showToast, showConfirm, rerenderScreen } from '../components/toast.js';
+import { proTeaser, proLock } from '../components/proGate.js';
 
 export function renderDashboard() {
     window.setScreenModule({ attachEvents: dashboardAttachEvents });
@@ -98,6 +99,7 @@ export function renderDashboard() {
                             Regenerate Plan
                         </button>
                     </div>
+                    ${proLock('week-regen', 'Redo one week')}
                     <button class="btn btn-primary btn-sm btn-open-quick-sale" style="display: flex; align-items: center; gap: 0.25rem;">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                         Log a Sale
@@ -459,6 +461,11 @@ export function renderDashboard() {
                      <div style="display: flex; flex-direction: column; gap: 0.75rem;">
                          ${dailyTasksHtml}
                      </div>
+                     ${proTeaser(
+                         'live-ai',
+                         'Suggestions written about your business',
+                         'These follow set patterns today. Pro writes them from your real numbers and offer.'
+                     )}
                 </div>
 
                 <div style="display: flex; flex-direction: column; gap: var(--spacing-lg);">

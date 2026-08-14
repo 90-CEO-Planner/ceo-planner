@@ -7,6 +7,12 @@ create table public.profiles (
   stripe_customer_id text,
   subscription_status text default 'incomplete',
   subscription_price_id text,
+  -- Which feature set a PAYING account gets: 'base' or 'pro'. Written by the
+  -- Stripe webhook from the price they bought. Trials ignore this column
+  -- entirely — the 14-day trial always runs on Pro (see js/supabaseClient.js),
+  -- so a locked feature is always something the user has already had rather
+  -- than something they have never seen.
+  plan_tier text not null default 'base' check (plan_tier in ('base', 'pro')),
   -- End of the app-managed 14-day free trial. NULL means the account is not on
   -- an app trial, either because Stripe governs it or because it is grandfathered.
   trial_ends_at timestamp with time zone,

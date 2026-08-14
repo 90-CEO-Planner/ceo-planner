@@ -1,5 +1,6 @@
 // chatWidget.js
 import { showConfirm } from './toast.js';
+import { isProUser, isFeatureLive } from './proGate.js';
 
 function renderWidgetMessage(role, content) {
     const isAi = role === 'assistant';
@@ -63,6 +64,13 @@ function initChatWidget() {
 
             <!-- Input Form -->
             <div style="padding: 0.75rem 1rem; border-top: 1px solid var(--color-border); background: #F8FAFC;">
+                <!-- The panel is narrow, so this is the compact one-line variant of
+                     the teaser rather than the full strip used on the wide screens. -->
+                ${(isProUser() && isFeatureLive('coach-memory')) ? '' : `
+                <button type="button" class="pro-teaser pro-teaser-compact" data-pro-feature="coach-memory">
+                    <svg class="pro-teaser-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                    <span class="pro-teaser-hint">Pick up where you left off. Pro remembers your chats.</span>
+                </button>`}
                 <form id="ai-widget-form" style="display: flex; gap: 0.5rem; margin: 0;">
                     <input type="text" id="ai-widget-input" placeholder="Ask your Co-Pilot..." style="flex: 1; border-radius: 20px; border: 1px solid var(--color-border); padding: 0.5rem 1rem; font-size: 0.85rem; color: var(--color-black); outline: none; transition: border-color 0.2s;" autocomplete="off" required>
                     <button type="submit" id="ai-widget-submit" style="background: var(--color-primary); color: white; border: none; border-radius: 50%; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; transition: transform 0.1s;">

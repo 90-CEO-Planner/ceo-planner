@@ -1,7 +1,9 @@
 $files = @(
     "js\supabaseClient.js",
     "js\store.js",
+    "js\stripeImport.js",
     "js\aiService.js",
+    "js\components\proGate.js",
     "js\components\nav.js",
     "js\components\tooltip.js",
     "js\components\toast.js",
@@ -14,6 +16,7 @@ $files = @(
     "js\screens\fridayReview.js",
     "js\screens\progress.js",
     "js\screens\settings.js",
+    "js\screens\account.js",
     "js\screens\quarterReset.js",
     "js\screens\coach.js",
     "js\screens\monthlyReview.js",

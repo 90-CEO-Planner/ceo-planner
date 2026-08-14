@@ -41,7 +41,7 @@ Everything in the app stems from your **90-Day Vision**. When you first launch t
 
 **The AI 90-Day Roadmap:** Once your vision is set, you can generate a complete 90-Day Action Plan. The AI will build a highly realistic 12-week roadmap, taking your goals and breaking them down into weekly visibility tasks, revenue tasks, and step-by-step execution priorities.
 
-You can modify your baseline goals at any time by navigating to **Settings**. From Settings, you can also upload a **Business Logo** and customize your **Planning Day**.
+You can modify your baseline goals at any time by navigating to **Settings**. From Settings, you can also upload a **Business Logo** and customize your **Planning Day**. Settings covers how your business is configured; anything to do with your plan, billing or login lives on the separate **Account** page.
 
 ---
 
@@ -121,7 +121,26 @@ The app functions as your objective Board of Directors, providing dynamic insigh
 The CEO Planner is built to be fast and private. Data is stored securely and accessible only by you.
 
 **Erasing Data:**
-If you want to start fresh, navigate to **Settings** and scroll down to the **Danger Zone**. Clicking "Erase All My Data" will permanently delete your plans, revenue logs, and profile, both from your device and from our servers. This cannot be undone.
+If you want to start fresh, navigate to **Account** and scroll down to the **Danger Zone**. Clicking "Erase All My Data" will permanently delete your plans, revenue logs, and profile, both from your device and from our servers. This cannot be undone.
+
+---
+
+## 9. Your Account and Plan
+
+**Settings vs Account:**
+There are two places to manage things, and they do different jobs. **Settings** is how your business is set up: your profile, your 90-day vision, your targets, your currency, your strategy mode and your reminders. Those are the things the AI reads when it plans your week. **Account** is your relationship with the app: which plan you are on, billing, your login details, and erasing your data.
+
+**Your Plan:**
+The Account page shows the plan you are on and what it includes. New accounts start on a free 14-day trial that runs on the full product, with no card required. Every feature in the Pro list is marked either as included, as still in build, or as locked, so you can always see exactly where you stand.
+
+**Billing:**
+Everything to do with money lives on the Billing card in **Account** — updating your card, changing your billing address, downloading invoices and cancelling. It opens Stripe's own secure page, so your card details never pass through this app. While you are on the free trial there is nothing to pay and nothing to cancel; that button takes you to the plan picker instead.
+
+**Changing your password:**
+On the Account page, "Change password" emails you a link to set a new one. The app never lets a signed-in browser set a password directly, so someone who finds your laptop open cannot lock you out of your own account.
+
+**Changing your email address:**
+Your email is shown on the Account page but cannot be edited there. It is both your sign-in and the address your billing is matched to, so the two have to be moved together — email support and it will be handled.
 
 ---
 *Stay Focused. Take Action. Act Like the CEO.*

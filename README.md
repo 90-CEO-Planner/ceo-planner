@@ -87,7 +87,7 @@ old code from their service worker:
 2. `sw.js` — `CACHE_NAME`
 3. `sw.js` — the `?v=` entries in `urlsToCache`
 
-Currently at **v23** (CSS files are on their own counter, currently **v13**).
+Currently at **v24** (CSS files are on their own counter, currently **v13**).
 
 Bump the number *after* you finish editing, not before. Bumping first means the new
 version number gets cached against the old file, and your change silently doesn't
@@ -98,12 +98,17 @@ and injects it into the AI coach's system prompt, so the coach explains the app 
 the guide describes it. Editing that file is how you change what the coach believes.
 Keep it next to `build_bundle.ps1`.
 
-## One thing to fix
+## Icons
 
-`index.html` and `manifest.json` both reference `favicon.ico`, which doesn't exist —
-so browsers show a blank tab icon and log a 404. `logo.png` is a wide wordmark, so it
-won't crop to a square icon well. Adding a square brand mark saved as
-`favicon.ico` at the repo root is all that's needed.
+`favicon.ico` holds **different artwork per size**: the "C" at 16 and 32 pixels,
+where three letters would be an illegible smudge, and the full "CEO" at 48 and 64.
+Alongside it are `apple-touch-icon.png` (180), `icon-192.png` and `icon-512.png`,
+all referenced from `manifest.json` and all self-hosted — there is no longer any
+third-party CDN in the icon or notification path.
+
+They are generated from a single square source by the script in the working folder.
+Pillow cannot write a multi-size ICO with different artwork per frame, so that
+script assembles the container by hand; if you regenerate them, keep that in mind.
 
 ## Not included, on purpose
 

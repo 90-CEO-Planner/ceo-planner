@@ -15,6 +15,12 @@ window.CEO_CHECKOUT_ANNUAL = 'https://buy.stripe.com/28E8wO92l6QP1mM3Fw18c09';
 // Existing customers whose card failed manage themselves here
 window.CEO_BILLING_PORTAL = 'https://billing.stripe.com/p/login/eVq3cucex8YXc1q0tk18c00';
 
+// Pro tier checkout. Deliberately null: Pro is being built and has no price in
+// Stripe yet, so the locked-feature modal explains the feature and stops there
+// rather than selling something that cannot be delivered. Set this to the Pro
+// payment link when the tier ships and the modal grows an upgrade button.
+window.CEO_CHECKOUT_PRO = null;
+
 // Reads the user's real subscription state from the database and caches it locally.
 // The cached copy is only ever used to render the UI. The database is the source
 // of truth, and the chat function checks it server side.
@@ -23,11 +29,24 @@ window.refreshAccessState = async function refreshAccessState() {
         const { data: { session } } = await window.db.auth.getSession();
         if (!session || !session.user) return null;
 
-        const { data: profile, error } = await window.db
+        let { data: profile, error } = await window.db
             .from('profiles')
-            .select('subscription_status, trial_ends_at')
+            .select('subscription_status, trial_ends_at, plan_tier')
             .eq('id', session.user.id)
             .maybeSingle();
+
+        // `plan_tier` is newer than some deployed databases. Postgres answers
+        // 42703 (undefined_column) if the migration hasn't been run yet. Without
+        // this retry, shipping the bundle before the migration would make every
+        // access check fail and nothing would ever revalidate a trial again.
+        if (error && (error.code === '42703' || /plan_tier/.test(error.message || ''))) {
+            console.warn('profiles.plan_tier is missing — run the plan_tier migration. Treating this account as base.');
+            ({ data: profile, error } = await window.db
+                .from('profiles')
+                .select('subscription_status, trial_ends_at')
+                .eq('id', session.user.id)
+                .maybeSingle());
+        }
 
         // Couldn't reach the server. Leave the cached value alone rather than
         // locking someone out over a dropped connection.
@@ -40,7 +59,8 @@ window.refreshAccessState = async function refreshAccessState() {
         if (!profile) {
             localStorage.setItem('ceo_sub_status', 'incomplete');
             localStorage.removeItem('ceo_trial_ends_at');
-            return { status: 'incomplete', daysLeft: 0, trialEndsAt: null };
+            localStorage.removeItem('ceo_plan_tier');
+            return { status: 'incomplete', daysLeft: 0, trialEndsAt: null, tier: 'base' };
         }
 
         const trialEndsAt = profile.trial_ends_at ? new Date(profile.trial_ends_at) : null;
@@ -53,14 +73,29 @@ window.refreshAccessState = async function refreshAccessState() {
             if (msLeft <= 0) status = 'trial_expired';
         }
 
+        // Which feature set they get. The 14-day trial deliberately runs on Pro:
+        // nobody upgrades to a tier they have never seen, and the locked-feature
+        // teasers only do their job as a reminder of something the user has
+        // already had. This grants Pro *features* — the AI allowance stays at the
+        // trial rate, because consume_ai_quota keys off subscription_status, not
+        // off this. Anyone locked out resolves to base; they see the paywall
+        // rather than any of this.
+        let tier = 'base';
+        if (status === 'trialing') {
+            tier = 'pro';
+        } else if (status === 'active') {
+            tier = profile.plan_tier === 'pro' ? 'pro' : 'base';
+        }
+
         localStorage.setItem('ceo_sub_status', status);
+        localStorage.setItem('ceo_plan_tier', tier);
         if (trialEndsAt) {
             localStorage.setItem('ceo_trial_ends_at', trialEndsAt.toISOString());
         } else {
             localStorage.removeItem('ceo_trial_ends_at');
         }
 
-        return { status, daysLeft, trialEndsAt };
+        return { status, daysLeft, trialEndsAt, tier };
     } catch (err) {
         console.warn('Could not refresh access state:', err.message);
         return null;
