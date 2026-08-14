@@ -176,7 +176,7 @@ function checkPushNotifications() {
         if (lastFiredStore[key] !== todayStr) {
             if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
                 navigator.serviceWorker.ready.then(reg => {
-                    reg.showNotification(title, { body, icon: "https://cdn-icons-png.flaticon.com/512/864/864685.png" });
+                    reg.showNotification(title, { body, icon: "./icon-192.png" });
                 });
             } else {
                 new Notification(title, { body });
@@ -213,7 +213,7 @@ function checkPushNotifications() {
                 if (!localStorage.getItem(globalKey)) {
                     if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
                         navigator.serviceWorker.ready.then(reg => {
-                            reg.showNotification(title, { body, icon: "https://cdn-icons-png.flaticon.com/512/864/864685.png" });
+                            reg.showNotification(title, { body, icon: "./icon-192.png" });
                         });
                     } else {
                         new Notification(title, { body });

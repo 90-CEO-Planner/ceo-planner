@@ -5912,8 +5912,11 @@ function renderSettings() {
 
             <div class="form-group mb-0">
                 <label class="form-label" style="font-weight: 600;">CEO Commitment Statement</label>
-                <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-top: -0.25rem; margin-bottom: 0.75rem;">Your daily commitment shown on the dashboard.</p>
-                <input type="text" id="set-statement" class="form-input" value="${store.goals.statement || 'I commit to prioritizing my top tasks before checking email, and trusting my strategy.'}" required>
+                <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-top: -0.25rem; margin-bottom: 0.75rem;">
+                    One sentence about <em>how</em> you want to work this quarter, not what you want to achieve.
+                    It sits on your dashboard every day. Leave it blank if you would rather not have one.
+                </p>
+                <input type="text" id="set-statement" class="form-input" value="${store.goals.statement || ''}" placeholder="e.g. I commit to protecting two deep-work mornings a week, no matter what the inbox says.">
             </div>
         </div>
 
@@ -6242,7 +6245,7 @@ function settingsAttachEvents() {
                 navigator.serviceWorker.ready.then(registration => {
                     registration.showNotification("CEO Planner", {
                         body: "Notifications successfully linked!",
-                        icon: "https://cdn-icons-png.flaticon.com/512/864/864685.png"
+                        icon: "./icon-192.png"
                     });
                 });
             }
@@ -8207,7 +8210,7 @@ function checkPushNotifications() {
         if (lastFiredStore[key] !== todayStr) {
             if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
                 navigator.serviceWorker.ready.then(reg => {
-                    reg.showNotification(title, { body, icon: "https://cdn-icons-png.flaticon.com/512/864/864685.png" });
+                    reg.showNotification(title, { body, icon: "./icon-192.png" });
                 });
             } else {
                 new Notification(title, { body });
@@ -8244,7 +8247,7 @@ function checkPushNotifications() {
                 if (!localStorage.getItem(globalKey)) {
                     if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
                         navigator.serviceWorker.ready.then(reg => {
-                            reg.showNotification(title, { body, icon: "https://cdn-icons-png.flaticon.com/512/864/864685.png" });
+                            reg.showNotification(title, { body, icon: "./icon-192.png" });
                         });
                     } else {
                         new Notification(title, { body });
