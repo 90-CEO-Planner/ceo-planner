@@ -1,6 +1,25 @@
 // nav.js
 import { getStore } from '../store.js';
 
+// Signs the user out properly. The old inline handler cleared localStorage but
+// never called signOut, so the Supabase sb-*-auth-token survived: the next person
+// at that browser was still authenticated. Mirrors the sign-out in billing.js.
+export async function signOutAndClear() {
+    try {
+        await window.db.auth.signOut();
+    } catch (err) {
+        // Network down or session already gone. Still clear locally — leaving them
+        // "logged in" on this device would be the worse outcome.
+        console.warn('Supabase sign-out failed, clearing locally anyway:', err?.message);
+    }
+    localStorage.removeItem('ceo_auth');
+    localStorage.removeItem('ceo_sub_status');
+    localStorage.removeItem('ceo_trial_ends_at');
+    localStorage.removeItem('ceoPlanner_store');
+    window.location.hash = '#/login';
+    window.location.reload();
+}
+
 export function renderNav() {
     const store = getStore();
     const bName = store.profile?.businessName || 'CEO Planner';
@@ -27,7 +46,7 @@ export function renderNav() {
                 <a href="#/monthly-review" class="nav-link" id="nav-monthly-review">Monthly Review</a>
                 <a href="#/progress" class="nav-link" id="nav-progress">Wins & Progress</a>
                 <a href="#/settings" class="nav-link" id="nav-settings">Settings</a>
-                <a href="#" class="nav-link" onclick="localStorage.removeItem('ceo_auth'); localStorage.removeItem('ceoPlanner_store'); window.location.hash='#/login'; window.location.reload(); return false;" style="color: #FCA5A5;">Log Out</a>
+                <a href="#" class="nav-link" id="nav-logout" style="color: #FCA5A5;">Log Out</a>
             </nav>
         </header>
     `;

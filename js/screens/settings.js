@@ -1,34 +1,25 @@
 // settings.js
 import { renderNav } from '../components/nav.js';
-import { getStore, updateProfile, updateGoals, updateRevenueSettings, updateLeadGoal } from '../store.js';
+import { getStore, updateProfile, updateGoals, updateRevenueSettings, updateLeadGoal, updateSettings, REMINDER_WEEKLY, REMINDER_DAILY, REMINDER_FRIDAY } from '../store.js';
+import { showToast, showConfirm, rerenderScreen } from '../components/toast.js';
 
-function getCurrentUserEmail() {
-    try {
-        for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
-            if (key.startsWith('sb-') && key.endsWith('-auth-token')) {
-                const sessionStr = localStorage.getItem(key);
-                if (sessionStr) {
-                    const session = JSON.parse(sessionStr);
-                    if (session && session.user && session.user.email) {
-                        return session.user.email;
-                    }
-                }
-            }
-        }
-    } catch (e) {
-        console.error("Error reading session email from localStorage:", e);
-    }
-    return null;
-}
+// Must stay identical to CURRENCIES in wizard.js. The wizard was the only place
+// currency could ever be set, so anyone who accepted the default $ by mistake had
+// no way back — and the symbol in that wizard field was invisible at the time.
+const SETTINGS_CURRENCIES = [
+    { value: '£', label: '£  British Pound (GBP)' },
+    { value: '$', label: '$  US Dollar (USD)' },
+    { value: '€', label: '€  Euro (EUR)' },
+    { value: 'A$', label: 'A$  Australian Dollar (AUD)' },
+    { value: 'C$', label: 'C$  Canadian Dollar (CAD)' },
+    { value: 'R', label: 'R  South African Rand (ZAR)' }
+];
 
 export function renderSettings() {
     // We bind the event listeners after HTML is rendered using setScreenModule
     window.setScreenModule({ attachEvents: settingsAttachEvents });
     const store = getStore();
     const reminders = store.profile.reminderTimes || [];
-    const userEmail = getCurrentUserEmail();
-    const isAdmin = userEmail === 'jeanette_spencer@yahoo.com';
 
     // Quick helper to check if a reminder is active
     const isChecked = (val) => reminders.includes(val) ? 'checked' : '';
@@ -159,9 +150,16 @@ export function renderSettings() {
                 <input type="text" id="set-outcome" class="form-input" value="${store.goals.outcome || ''}" placeholder="e.g. 10 beta clients at $1.5k" required>
             </div>
             <div class="form-group mb-4">
+                <label class="form-label" style="font-weight: 600;">Currency</label>
+                <select id="set-currency" class="form-select">
+                    ${SETTINGS_CURRENCIES.map(c => `<option value="${c.value}" ${(store.settings?.currency || '$') === c.value ? 'selected' : ''}>${c.label}</option>`).join('')}
+                </select>
+                <span class="form-helper">Used everywhere money appears. Changing it relabels your figures, it does not convert them.</span>
+            </div>
+            <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Quarterly Revenue Goal</label>
                 <div style="position: relative; display: flex; align-items: center;">
-                    <span style="position: absolute; left: 1rem; font-weight: 600; color: var(--color-text-muted);">${store.settings?.currency || '$'}</span>
+                    <span style="position: absolute; left: 1rem; z-index: 1; font-weight: 600; color: var(--color-text-muted);">${store.settings?.currency || '$'}</span>
                     <input type="number" id="set-revenue-goal" class="form-input" value="${store.revenue?.quarterlyGoal || 0}" min="0" required style="padding-left: 2rem;">
                 </div>
             </div>
@@ -199,12 +197,17 @@ export function renderSettings() {
             <div class="form-group mb-0">
                 <label class="form-label" style="font-weight: 600; margin-bottom: 0.5rem;">Reminders & Prompts</label>
                 <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
-                    Select when you'd like the app to remind you about CEO tasks.
-                    <i>(Note: Push notifications require browser permissions).</i>
+                    Select when you'd like the app to nudge you about CEO tasks. Your
+                    browser will ask permission the first time you tick one.
+                </p>
+                <p style="color: #B54708; background: #FFFAEB; border: 1px solid #FEDF89; border-radius: var(--radius-sm); padding: 0.625rem 0.75rem; font-size: 0.8rem; margin-bottom: 1rem;">
+                    These only appear while CEO Planner is open in a browser tab. If the
+                    app is closed, they won't reach you — so treat them as a nudge while
+                    you're working, not an alarm clock.
                 </p>
                 <div style="display: flex; flex-direction: column; gap: 1rem;">
                     <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer;">
-                        <input type="checkbox" name="reminder" value="weekly_plan" ${isChecked('weekly_plan')} style="margin-top: 0.25rem;">
+                        <input type="checkbox" name="reminder" value="${REMINDER_WEEKLY}" ${isChecked(REMINDER_WEEKLY)} style="margin-top: 0.25rem;">
                         <div>
                             <span style="font-weight: 500; display: block; color: var(--color-black);">Weekly Planning Prompt</span>
                             <span style="font-size: 0.8rem; color: var(--color-text-muted);">Reminds you to set your weekly goals (Usually Sunday or Monday)</span>
@@ -212,7 +215,7 @@ export function renderSettings() {
                     </label>
 
                     <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer;">
-                        <input type="checkbox" name="reminder" value="daily_priority" ${isChecked('daily_priority')} style="margin-top: 0.25rem;">
+                        <input type="checkbox" name="reminder" value="${REMINDER_DAILY}" ${isChecked(REMINDER_DAILY)} style="margin-top: 0.25rem;">
                         <div>
                             <span style="font-weight: 500; display: block; color: var(--color-black);">Daily Priority Check</span>
                             <span style="font-size: 0.8rem; color: var(--color-text-muted);">A morning nudge to review your top 3 priorities</span>
@@ -220,7 +223,7 @@ export function renderSettings() {
                     </label>
 
                     <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer;">
-                        <input type="checkbox" name="reminder" value="friday_review" ${isChecked('friday_review')} style="margin-top: 0.25rem;">
+                        <input type="checkbox" name="reminder" value="${REMINDER_FRIDAY}" ${isChecked(REMINDER_FRIDAY)} style="margin-top: 0.25rem;">
                         <div>
                             <span style="font-weight: 500; display: block; color: var(--color-black);">Friday CEO Review</span>
                             <span style="font-size: 0.8rem; color: var(--color-text-muted);">Afternoon prompt to log wins and close out the week</span>
@@ -229,23 +232,6 @@ export function renderSettings() {
                 </div>
             </div>
         </div>
-
-        <!-- Card 5: Generative AI Integration (Admin Only) -->
-        ${isAdmin ? `
-        <div class="card">
-            <h3 class="mb-4" style="color: #10a37f; display: flex; align-items: center; gap: 0.5rem;">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-                Generative AI Integration
-            </h3>
-            <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1rem;">
-                Connect your OpenAI API key to unlock the Level 3 Executive AI Coach. Your key is stored <b>exclusively locally</b> in this browser.
-            </p>
-            <div class="form-group mb-0">
-                <label class="form-label" style="font-weight: 600;">ChatGPT API Key</label>
-                <input type="password" id="set-openai-key" class="form-input" placeholder="sk-..." value="${localStorage.getItem('ceo_openai_key') || ''}">
-            </div>
-        </div>
-        ` : ''}
 
         <div class="mt-4 flex justify-end">
             <button type="submit" class="btn btn-primary" style="padding: 0.75rem 2.5rem; font-size: 1.05rem;">Save Preferences</button>
@@ -271,8 +257,8 @@ export function renderSettings() {
     <!-- Card 7: Danger Zone -->
     <div class="card mt-6" style="border: 1px solid #FEE4E2;">
         <h3 class="mb-2" style="color: #B42318;">Danger Zone</h3>
-        <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1rem;">Resetting your account will delete all your local data, plans, and historical reviews permanently.</p>
-        <button id="btn-reset-data" class="btn btn-outline" style="border-color: #FEE4E2; color: #B42318; background: #FEF3F2;">Erase All Local Data</button>
+        <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1rem;">Permanently deletes your plans, revenue log, reviews and profile — from this device and from our servers. This cannot be undone.</p>
+        <button id="btn-reset-data" class="btn btn-outline" style="border-color: #FEE4E2; color: #B42318; background: #FEF3F2;">Erase All My Data</button>
     </div>
 </div>
 `;
@@ -377,13 +363,11 @@ function settingsAttachEvents() {
                 planningDay: planningDay
             });
 
+            const currency = document.getElementById('set-currency')?.value;
+            if (currency) updateSettings({ currency });
+
             updateRevenueSettings({ quarterlyGoal: revenueGoal });
             updateLeadGoal(leadGoal);
-
-            const openaiKeyEl = document.getElementById('set-openai-key');
-            if (openaiKeyEl) {
-                localStorage.setItem('ceo_openai_key', openaiKeyEl.value);
-            }
 
             updateGoals({
                 focus: focus,
@@ -392,36 +376,43 @@ function settingsAttachEvents() {
                 statement: statement
             });
 
-            alert('Settings saved successfully!');
-            window.location.reload();
+            showToast('Settings saved');
+            rerenderScreen();
         });
     }
 
-    // Bind Notification Permission Request to Checkboxes
-    ['remind-weekly', 'remind-daily', 'remind-friday'].forEach(id => {
-        const checkbox = document.getElementById(id);
-        if (checkbox) {
-            checkbox.addEventListener('change', async (e) => {
-                if (e.target.checked && 'Notification' in window) {
-                    if (Notification.permission !== 'granted' && Notification.permission !== 'denied') {
-                        const permission = await Notification.requestPermission();
-                        if (permission !== 'granted') {
-                            e.target.checked = false; // Revert if denied
-                            alert("You must allow notifications in your browser settings to enable reminders.");
-                        } else {
-                            if ('serviceWorker' in navigator) {
-                                navigator.serviceWorker.ready.then(registration => {
-                                    registration.showNotification("CEO Planner", {
-                                        body: "Notifications successfully linked!",
-                                        icon: "https://cdn-icons-png.flaticon.com/512/864/864685.png"
-                                    });
-                                });
-                            }
-                        }
-                    }
-                }
-            });
-        }
+    // Bind Notification Permission Request to Checkboxes.
+    // These used to be looked up by IDs that were never rendered, so permission was
+    // never requested, Notification.permission stayed 'default', and every reminder
+    // (including the whole 14-day trial sequence) was silently skipped.
+    document.querySelectorAll('input[name="reminder"]').forEach(checkbox => {
+        checkbox.addEventListener('change', async (e) => {
+            if (!e.target.checked || !('Notification' in window)) return;
+
+            if (Notification.permission === 'denied') {
+                e.target.checked = false;
+                showToast("Notifications are blocked for this site in your browser settings. You'll need to allow them there before reminders can work.", 'error');
+                return;
+            }
+
+            if (Notification.permission === 'granted') return;
+
+            const permission = await Notification.requestPermission();
+            if (permission !== 'granted') {
+                e.target.checked = false; // Revert if denied
+                showToast("Reminders need notification permission, which wasn't granted.", 'error');
+                return;
+            }
+
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.ready.then(registration => {
+                    registration.showNotification("CEO Planner", {
+                        body: "Notifications successfully linked!",
+                        icon: "https://cdn-icons-png.flaticon.com/512/864/864685.png"
+                    });
+                });
+            }
+        });
     });
 
     // Handle Bottleneck Presets
@@ -450,16 +441,49 @@ function settingsAttachEvents() {
         });
     }
 
-    // Handle Factory Reset
+    // Handle Factory Reset. This deletes the cloud row first, then the local copy.
+    // Clearing localStorage alone left the user_data row sitting in Supabase, while
+    // the user guide promised permanent deletion — a UK GDPR erasure claim the app
+    // was not actually honouring.
     const resetBtn = document.getElementById('btn-reset-data');
     if (resetBtn) {
-        resetBtn.addEventListener('click', () => {
-            const confirmDelete = confirm("Are you sure? This cannot be undone.");
-            if (confirmDelete) {
-                localStorage.removeItem('ceoPlanner_store');
-                window.location.hash = '#/';
-                window.location.reload();
+        resetBtn.addEventListener('click', async () => {
+            const confirmed = await showConfirm(
+                "This permanently deletes your plans, revenue log and profile from this device and from our servers. It cannot be undone.",
+                { title: 'Erase all your data?', confirmText: 'Erase everything', danger: true }
+            );
+            if (!confirmed) return;
+
+            const originalText = resetBtn.textContent;
+            resetBtn.disabled = true;
+            resetBtn.textContent = 'Erasing…';
+
+            try {
+                const { data: sessionData } = await window.db.auth.getSession();
+                const user = sessionData?.session?.user;
+                if (user) {
+                    const { error } = await window.db
+                        .from('user_data')
+                        .delete()
+                        .eq('user_id', user.id);
+                    if (error) throw error;
+                }
+            } catch (err) {
+                // Do NOT clear locally if the cloud delete failed. Wiping the device
+                // copy while the server copy survives would leave the data undeletable
+                // by the user and make the erasure claim worse, not better.
+                console.error('Cloud data deletion failed:', err);
+                resetBtn.disabled = false;
+                resetBtn.textContent = originalText;
+                showToast("We couldn't delete your data from the server, so nothing has been erased. Please check your connection and try again. If it keeps failing, contact support.", 'error');
+                return;
             }
+
+            localStorage.removeItem('ceoPlanner_store');
+            window.location.hash = '#/';
+            // A full reload here on purpose: everything the app holds in memory is
+            // now stale, and this is the one action where a clean boot is the point.
+            window.location.reload();
         });
     }
 }

@@ -1,4 +1,5 @@
 // chatWidget.js
+import { showConfirm } from './toast.js';
 
 function renderWidgetMessage(role, content) {
     const isAi = role === 'assistant';
@@ -170,11 +171,13 @@ function initChatWidget() {
     });
 
     // Clear Chat
-    clearBtn.addEventListener('click', () => {
-        if (confirm("Reset local chat memory?")) {
-            window.ceoChatHistory = [];
-            loadMemory();
-        }
+    clearBtn.addEventListener('click', async () => {
+        const ok = await showConfirm('This clears the conversation you have open with your coach.', {
+            title: 'Reset chat memory?', confirmText: 'Reset', danger: true
+        });
+        if (!ok) return;
+        window.ceoChatHistory = [];
+        loadMemory();
     });
 
     // Handle Submission

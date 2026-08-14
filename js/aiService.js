@@ -1,30 +1,26 @@
 // aiService.js
 
-const USER_GUIDE_TEXT = `
+// The coach is told this is ground truth about the app, so when it drifts from
+// reality the coach confidently explains features that do not exist to paying
+// customers. To stop that happening again it is no longer maintained by hand:
+// build_bundle.ps1 reads USER_GUIDE.md and defines CEO_USER_GUIDE ahead of this
+// file. The literal below is only a fallback for running the module unbundled,
+// and is deliberately short — if you are editing it to describe a feature, edit
+// USER_GUIDE.md instead.
+const USER_GUIDE_TEXT = (typeof CEO_USER_GUIDE !== 'undefined' && CEO_USER_GUIDE)
+    ? CEO_USER_GUIDE
+    : `
 # CEO Planner App User Guide
 
-Welcome to the CEO Planner, your business operating system.
-
-1. Core Philosophy:
-   - Vision: Set your 90-Day Vision (Focus, Outcome, Top 3 Priorities, Revenue Goal).
-   - Simplicity: Just 3 priorities a week, and 3 tasks a day (Daily 3).
-   - Visibility & Cash Flow: Every week requires marketing (Visibility) and selling (Revenue Action) tasks.
-
-2. Weekly Cadence:
-   - Monday Planning (Weekly Plan tab): Anchor vision, review AI-generated Weekly plan (Top 3, Visibility, Revenue, Follow-up actions), refine, and accept. Accepting populates your Daily 3.
-   - Daily Execution (Dashboard): Shows CEO Snapshot score, AI-recommended Next Best Action card, Daily 3 tasks (complete all 3 to build your streak), and 1-tap logging of sales/leads.
-   - Friday Review (Friday Review tab): Log Wins, rate completion %, write Bottlenecks, and receive an AI Focus Score and coaching critique.
-   - Streak counters: 'Plan' streak is consecutive weeks you have generated a Monday Plan; 'Review' streak is consecutive weeks you have completed a Friday Review.
-
-3. Revenue & Analytics:
-   - Revenue tab: Track conversion rates (Call Booking, Call Close, Pipeline Conversion).
-   - Log Sales/Leads: Set date, amount, source (Instagram, Referral, etc.), and offer.
-   - Export CSV: Instantly download your financial history as a spreadsheet.
-   - AI Executive Report: Generates a comprehensive strategic funnel briefing (can be downloaded as a text file).
-
-4. Managing Settings:
-   - Settings tab: Edit profile, business name, logo, 90-day targets, and planning day. Erase all data permanently in the Danger Zone.
-   - Chat Widget (Executive AI Coach): Floating chat assistant available on all core pages (hidden on wizard, auth, and billing) to review plans, offer strategies, and answer app questions.
+Set a 90-Day Vision (Focus, Outcome, Top 3 Priorities, Revenue Goal). Work it in
+weekly cycles: plan on Monday, execute a Daily 3 each day, review on Friday.
+The Friday Review asks what moved forward, what worked, what felt heavy, your
+energy level, optional metrics, and one thing to improve — then drafts next
+Monday's plan for you. The Focus Score on the dashboard is the percentage of
+Daily 3 tasks completed this week; it is not produced by the Friday Review.
+Revenue tab tracks sales, leads and conversion rates, exports CSV, and generates
+an AI Executive Report. Settings holds profile, targets, planning day, reminders
+and data erasure.
 `;
 
 // Prepares the hyper-contextual system prompt by scraping the entire database
@@ -259,7 +255,8 @@ RULES (apply all of them):
 8. Write in their voice: warm, direct, specific, no hype, no jargon. The user is a tired founder reading this on their phone.
 10. The 'successCheck' for each week MUST be highly realistic and grounded based on the user's stage. Do NOT set unattainable lag-metric checks (e.g., "10 new sales" or "50 signups" for a beginner). Instead, tie the check to the completion of the week's input actions (e.g., "Drafted 3 emails" or "Pitched 5 people").
 11. NEVER recommend tools they did not mention. NEVER assume budget or team. Default to "free or already-owned" tools.
-12. Output JSON only. No markdown, no code fences, no prose before or after.
+12. Keep each topPriorities entry under 70 characters. They are rendered in single-line inputs on the weekly planner, so anything longer is cut off mid-sentence and the user cannot read their own priorities. One action per entry, no "Task:"/"Execution:" labels, no semicolons joining two actions.
+13. Output JSON only. No markdown, no code fences, no prose before or after.
 OUTPUT FORMAT (return exactly this JSON shape):
 {
   "summary": "One paragraph (3-4 sentences) explaining the plan's logic, what's realistic, and what's stretch.",
@@ -282,9 +279,9 @@ OUTPUT FORMAT (return exactly this JSON shape):
       "monthIndex": 1,
       "weeklyFocus": "One sentence focus for the week, tied to monthly theme.",
       "topPriorities": [
-        "Task: [Actionable task]. Execution: [Clear step-by-step direction on how to carry it out]",
-        "Task: [Actionable task]. Execution: [Clear step-by-step direction on how to carry it out]",
-        "Task: [Actionable task]. Execution: [Clear step-by-step direction on how to carry it out]"
+        "[One specific action, max 70 characters, no 'Task:' or 'Execution:' prefix]",
+        "[One specific action, max 70 characters, no 'Task:' or 'Execution:' prefix]",
+        "[One specific action, max 70 characters, no 'Task:' or 'Execution:' prefix]"
       ],
       "visibilityAction": "ONE specific visibility task this week (audience-facing, no sale).",
       "revenueAction": "ONE specific revenue task this week (a direct invitation to buy).",

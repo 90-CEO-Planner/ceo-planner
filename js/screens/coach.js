@@ -2,6 +2,7 @@
 import { renderNav } from '../components/nav.js';
 import { getStore, addNote, deleteNote } from '../store.js';
 import { renderTooltip } from '../components/tooltip.js';
+import { showToast, showConfirm } from '../components/toast.js';
 
 export function renderCoach() {
     window.setScreenModule({ attachEvents: coachAttachEvents });
@@ -119,18 +120,21 @@ function coachAttachEvents() {
         const newSavedNotesList = savedNotesList.cloneNode(true);
         savedNotesList.parentNode.replaceChild(newSavedNotesList, savedNotesList);
         
-        newSavedNotesList.addEventListener('click', (e) => {
+        newSavedNotesList.addEventListener('click', async (e) => {
             const deleteBtn = e.target.closest('.btn-delete-note');
             if (deleteBtn) {
                 const id = deleteBtn.getAttribute('data-id');
-                if (confirm("Delete this note?")) {
-                    deleteNote(id);
-                    const appContainer = document.getElementById('app-container');
-                    if (appContainer) {
-                        appContainer.innerHTML = renderCoach();
-                        if (window.currentScreen && window.currentScreen.attachEvents) {
-                            window.currentScreen.attachEvents();
-                        }
+                const ok = await showConfirm('This note will be removed from your coach notes.', {
+                    title: 'Delete this note?', confirmText: 'Delete', danger: true
+                });
+                if (!ok) return;
+                deleteNote(id);
+                showToast('Note deleted');
+                const appContainer = document.getElementById('app-container');
+                if (appContainer) {
+                    appContainer.innerHTML = renderCoach();
+                    if (window.currentScreen && window.currentScreen.attachEvents) {
+                        window.currentScreen.attachEvents();
                     }
                 }
             }
@@ -202,7 +206,7 @@ function coachAttachEvents() {
         });
     } else if (btnVoice) {
         btnVoice.addEventListener('click', () => {
-            alert("Voice recording is not supported in this browser. Please use Chrome or Safari.");
+            showToast("Voice recording isn't supported in this browser. Chrome or Safari will work.", 'info');
         });
     }
 

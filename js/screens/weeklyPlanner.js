@@ -1,6 +1,7 @@
 // weeklyPlanner.js
 import { renderNav } from '../components/nav.js';
 import { getStore, saveStore, addWeeklyPlan, updateWeeklyPlan, getLocalDateString } from '../store.js';
+import { showToast } from '../components/toast.js';
 
 export function renderPlanner() {
     window.setScreenModule({ attachEvents: plannerAttachEvents });
@@ -163,7 +164,7 @@ function plannerAttachEvents() {
                 }
                 
                 if (!targetId) {
-                    alert("Your Top 3 Priority slots are all full with custom tasks! Please clear one of the boxes to apply an AI Action suggestion.");
+                    showToast("Your Top 3 Priority slots are full. Clear one to apply an AI suggestion.", 'info');
                     return;
                 }
             }
@@ -215,7 +216,7 @@ function plannerAttachEvents() {
                 // Update date so it extends the 6-day active window if they edit it
                 plan.date = new Date().toISOString();
                 updateWeeklyPlan(planId, plan);
-                alert("Weekly plan updated!");
+                showToast('Weekly plan updated');
             } else if (genId && genId !== '') {
                 // We are applying a generated plan
                 plan.applied = true;
@@ -232,10 +233,10 @@ function plannerAttachEvents() {
                        saveStore(storeStateForMove);
                    }
                 }
-                alert("Weekly plan applied and saved! Have a great week, CEO.");
+                showToast('Weekly plan applied. Have a great week, CEO.');
             } else {
                 addWeeklyPlan(plan);
-                alert("Weekly plan saved! Have a great week, CEO.");
+                showToast('Weekly plan saved. Have a great week, CEO.');
             }
 
             // Clear today's daily log so the dashboard regenerates the Daily 3 based on the new plan

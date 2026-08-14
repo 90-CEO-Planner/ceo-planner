@@ -2,6 +2,7 @@
 import { renderNav } from '../components/nav.js';
 import { getStore } from '../store.js';
 import { renderTooltip } from '../components/tooltip.js';
+import { showToast } from '../components/toast.js';
 
 export function renderProgress() {
     window.setScreenModule({ attachEvents: progressAttachEvents });
@@ -230,7 +231,7 @@ function progressAttachEvents() {
         btnExport.addEventListener('click', () => {
             const store = getStore();
             if (!store.dailyLogs || Object.keys(store.dailyLogs).length === 0) {
-                alert("No daily actions to export.");
+                showToast("There are no daily actions to export yet.", 'info');
                 return;
             }
             

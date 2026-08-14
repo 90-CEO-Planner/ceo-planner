@@ -1,7 +1,19 @@
 // revenue.js
 import { renderNav } from '../components/nav.js';
-import { getStore, updateRevenueSettings, updateQuickOffers, addRevenueEntry, deleteRevenueEntry, getRevenueInsights, updateLeadGoal, addLeadEntry, deleteLeadEntry, addMetricSnapshot, deleteMetricSnapshot, getLocalDateString } from '../store.js';
+import { getStore, updateQuickOffers, addRevenueEntry, deleteRevenueEntry, getRevenueInsights, addLeadEntry, deleteLeadEntry, addMetricSnapshot, deleteMetricSnapshot, getLocalDateString, getWeekStart, parseDateInput, formatAmount } from '../store.js';
 import { renderTooltip } from '../components/tooltip.js';
+import { showToast, showConfirm, rerenderScreen } from '../components/toast.js';
+
+// Pipeline list state. Module level so it survives a re-render — delete an entry
+// on page 3 of the list and you stay on page 3 instead of being thrown back to
+// the top, which is what the old full page reload did.
+let pipelineFilter = 'all'; // 'all' | 'sale' | 'lead'
+let pipelineLimit = 15;
+const PIPELINE_PAGE_SIZE = 15;
+
+// Which logging tab is open. Module level for the same reason as the pipeline
+// state above: saving re-renders the screen, and the tab should not move.
+let activeLogTab = 'tab-rev';
 
 export function renderRevenue() {
     window.setScreenModule({ attachEvents: revenueAttachEvents });
@@ -47,7 +59,9 @@ export function renderRevenue() {
     // Conversion Rates
     const leadToSaleConversion = totalLeads > 0 ? ((effectiveCloses / totalLeads) * 100).toFixed(1) : 0;
     const callBookingRate = totalLeads > 0 ? ((totalCalls / totalLeads) * 100).toFixed(1) : 0;
-    const callCloseRate = totalCalls > 0 ? ((effectiveCloses / totalCalls) * 100).toFixed(1) : (effectiveCloses > 0 ? 100 : 0);
+    // No calls logged means there is no close rate to report. This used to return
+    // 100% off a single sale and zero calls, which read as a perfect record.
+    const callCloseRate = totalCalls > 0 ? ((effectiveCloses / totalCalls) * 100).toFixed(1) : null;
 
     return `
         ${renderNav()}
@@ -83,6 +97,10 @@ export function renderRevenue() {
                         Quarter Revenue Goal
                     </p>
                     <h3 style="font-size: 1.75rem; color: var(--color-black); margin: 0;">${currency}${insights.goal.toLocaleString()}</h3>
+                    ${insights.revenueBeforeQuarter > 0 ? `
+                    <p style="font-size: 0.7rem; color: var(--color-text-muted); margin: 0.5rem 0 0 0; line-height: 1.35;">
+                        Plus ${currency}${insights.revenueBeforeQuarter.toLocaleString(undefined, { maximumFractionDigits: 2 })} logged before this quarter started, kept in your history but not counted towards this goal.
+                    </p>` : ''}
                 </div>
                 <div class="card" style="padding: 1.5rem; text-align: center; border: 2px solid var(--color-primary-light);">
                     <p style="display: flex; align-items: center; justify-content: center; font-size: 0.8rem; color: var(--color-primary-dark); font-weight: 600; margin-bottom: 0.5rem; text-transform: uppercase;">
@@ -100,7 +118,7 @@ export function renderRevenue() {
                     <p style="display: flex; align-items: center; justify-content: center; font-size: 0.8rem; color: var(--color-text-muted); font-weight: 600; margin-bottom: 0.5rem; text-transform: uppercase;">
                         Call Close Rate
                     </p>
-                    <h3 style="font-size: 1.75rem; color: var(--color-black); margin: 0;">${callCloseRate}%</h3>
+                    <h3 style="font-size: 1.75rem; color: var(--color-black); margin: 0;">${callCloseRate === null ? '&mdash;' : callCloseRate + '%'}</h3>
                 </div>
             </div>
 
@@ -360,36 +378,15 @@ export function renderRevenue() {
                    
                    <!-- Pipeline Visuals / Recent Entities -->
                    <div class="card mt-6">
-                       <h3 class="mb-4">Recent Pipeline Events</h3>
-                       <div style="display:flex; flex-direction: column; gap: 0.75rem; max-height: 400px; overflow-y: auto;" class="custom-scroll">
-                           ${[...insights.entries, ...leads].sort((a,b) => new Date(b.date) - new Date(a.date)).slice(0, 15).map(e => {
-                               const isSale = !!e.offer || typeof e.source === 'string' && e.amount.toString().includes('0'); // Crude check
-                               const isExplicitSale = Object.keys(e).includes('offer');
-                               if (isExplicitSale) {
-                                   return `
-                                    <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.75rem; border-bottom: 1px solid var(--color-border);">
-                                        <div>
-                                            <span style="font-weight: 600; color: var(--color-black); display: block;">${currency}${parseFloat(e.amount).toLocaleString()}</span>
-                                            <span style="font-size: 0.8rem; color: var(--color-text-muted);">SALE • ${new Date(e.date).toLocaleDateString()} • ${e.source}</span>
-                                        </div>
-                                        <button type="button" class="btn btn-ghost btn-sm btn-delete-revenue" data-id="${e.id}" style="padding: 0.25rem; color: var(--color-text-muted);">🗑️</button>
-                                    </div>
-                                   `;
-                               } else {
-                                   return `
-                                    <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.75rem; border-bottom: 1px solid var(--color-border);">
-                                        <div>
-                                            <span style="font-weight: 600; color: var(--color-secondary-dark); display: block;">+${parseFloat(e.amount).toLocaleString()} Leads</span>
-                                            <span style="font-size: 0.8rem; color: var(--color-text-muted);">LEADS • ${new Date(e.date).toLocaleDateString()} • ${e.source}</span>
-                                            ${(e.calls > 0 || e.closes > 0) ? `<div style="font-size: 0.8rem; color: var(--color-text-muted); margin-top: 0.25rem;">📞 ${e.calls || 0} Calls &nbsp;&nbsp; 💰 ${e.closes || 0} Closes</div>` : ''}
-                                        </div>
-                                        <button type="button" class="btn btn-ghost btn-sm btn-delete-lead" data-id="${e.id}" style="padding: 0.25rem; color: var(--color-text-muted);">🗑️</button>
-                                    </div>
-                                   `;
-                               }
-                           }).join('')}
-                           ${(insights.entries.length === 0 && leads.length === 0) ? '<p style="font-size: 0.9rem; color: var(--color-text-muted);">No pipeline events logged.</p>' : ''}
+                       <div class="flex justify-between items-center mb-4 flex-mobile-col" style="gap: 0.75rem;">
+                           <h3 style="margin: 0;">Recent Pipeline Events</h3>
+                           <div style="display: flex; gap: 0.25rem; background: var(--color-bg-main); padding: 0.25rem; border-radius: var(--radius-full);">
+                               ${[['all', 'All'], ['sale', 'Sales'], ['lead', 'Leads']].map(([value, label]) => `
+                                   <button type="button" class="btn btn-sm btn-pipeline-filter" data-filter="${value}" style="padding: 0.25rem 0.75rem; font-size: 0.8rem; border-radius: var(--radius-full); ${pipelineFilter === value ? 'background: var(--color-white); color: var(--color-primary-dark); font-weight: 600; box-shadow: var(--shadow-sm);' : 'background: transparent; color: var(--color-text-muted);'}">${label}</button>
+                               `).join('')}
+                           </div>
                        </div>
+                       ${renderPipelineEvents(insights.entries, leads, currency)}
                    </div>
 
                 </div>
@@ -424,6 +421,65 @@ export function renderRevenue() {
                 opacity: 1 !important;
             }
         </style>
+    `;
+}
+
+// The pipeline feed: sales and leads on one timeline, filtered and paged.
+// Sale-vs-lead used to be inferred from whether an entry happened to have an
+// 'offer' key, which quietly filed any sale logged without an offer name under
+// leads. Entries now carry an explicit type; the `|| ` fallbacks cover a store
+// object read before the migration in getStore() has run.
+function renderPipelineEvents(entries, leads, currency) {
+    const events = [
+        ...(entries || []).map(e => ({ ...e, type: e.type || 'sale' })),
+        ...(leads || []).map(e => ({ ...e, type: e.type || 'lead' }))
+    ].sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    const filtered = pipelineFilter === 'all' ? events : events.filter(e => e.type === pipelineFilter);
+    const visible = filtered.slice(0, pipelineLimit);
+    const remaining = filtered.length - visible.length;
+
+    if (filtered.length === 0) {
+        const emptyCopy = events.length === 0
+            ? 'No pipeline events logged.'
+            : (pipelineFilter === 'sale' ? 'No sales logged yet.' : 'No leads logged yet.');
+        return `<p style="font-size: 0.9rem; color: var(--color-text-muted);">${emptyCopy}</p>`;
+    }
+
+    const rows = visible.map(e => {
+        if (e.type === 'sale') {
+            return `
+                <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.75rem; border-bottom: 1px solid var(--color-border);">
+                    <div>
+                        <span style="font-weight: 600; color: var(--color-black); display: block;">${currency}${formatAmount(e.amount)}</span>
+                        <span style="font-size: 0.8rem; color: var(--color-text-muted);">SALE • ${new Date(e.date).toLocaleDateString()}${e.source ? ' • ' + e.source : ''}${e.offer ? ' • ' + e.offer : ''}</span>
+                    </div>
+                    <button type="button" class="btn btn-ghost btn-sm btn-delete-revenue" data-id="${e.id}" style="padding: 0.25rem; color: var(--color-text-muted);">🗑️</button>
+                </div>
+            `;
+        }
+        return `
+            <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.75rem; border-bottom: 1px solid var(--color-border);">
+                <div>
+                    <span style="font-weight: 600; color: var(--color-secondary-dark); display: block;">+${parseFloat(e.amount).toLocaleString()} Leads</span>
+                    <span style="font-size: 0.8rem; color: var(--color-text-muted);">LEADS • ${new Date(e.date).toLocaleDateString()}${e.source ? ' • ' + e.source : ''}</span>
+                    ${(e.calls > 0 || e.closes > 0) ? `<div style="font-size: 0.8rem; color: var(--color-text-muted); margin-top: 0.25rem;">📞 ${e.calls || 0} Calls &nbsp;&nbsp; 💰 ${e.closes || 0} Closes</div>` : ''}
+                </div>
+                <button type="button" class="btn btn-ghost btn-sm btn-delete-lead" data-id="${e.id}" style="padding: 0.25rem; color: var(--color-text-muted);">🗑️</button>
+            </div>
+        `;
+    }).join('');
+
+    return `
+        <div style="display:flex; flex-direction: column; gap: 0.75rem; max-height: 400px; overflow-y: auto;" class="custom-scroll">
+            ${rows}
+        </div>
+        <div class="flex justify-between items-center mt-4" style="font-size: 0.8rem; color: var(--color-text-muted);">
+            <span>Showing ${visible.length} of ${filtered.length}</span>
+            ${remaining > 0
+                ? `<button type="button" id="btn-pipeline-more" class="btn btn-outline btn-sm" style="padding: 0.25rem 0.75rem; font-size: 0.8rem;">Show ${Math.min(remaining, PIPELINE_PAGE_SIZE)} more</button>`
+                : (filtered.length > PIPELINE_PAGE_SIZE ? `<button type="button" id="btn-pipeline-less" class="btn btn-ghost btn-sm" style="padding: 0.25rem 0.75rem; font-size: 0.8rem;">Show less</button>` : '')}
+        </div>
     `;
 }
 
@@ -490,17 +546,34 @@ window.generateAiReport = async function() {
     try {
         const store = window.currentScreenModuleStore || JSON.parse(localStorage.getItem('ceoPlanner_store') || '{}');
         const insights = getRevenueInsights();
+        const currency = store.settings?.currency || '$';
         const leads = store.leads?.entries || [];
         const metrics = store.metrics || [];
         
-        let prompt = `Analyze this exact SaaS / Business revenue data and provide a brutally honest Executive Summary.
-        
+        // Tone deliberately matches the 90-day plan prompt in aiService.js. Asking
+        // for "brutally honest" produced reports calling a week-one founder's
+        // numbers "abysmal" and "a failure", which is not what this audience is
+        // paying for and is a fast route to a cancelled subscription.
+        // Currency must be stated: without it the model defaults to $ and a UK
+        // user who set £ gets their own figures back in dollars.
+        let prompt = `Analyze this business revenue data and provide a clear, honest Executive Summary.
+
+        Tone: direct and specific, warm rather than harsh. Name problems plainly and
+        without euphemism, but never insult the reader or their results. They are a
+        founder doing their best with limited time. If the numbers are early or thin,
+        say so as context rather than as failure.
+
+        Currency: all money figures below are in ${currency}. Use the ${currency}
+        symbol throughout your report and never substitute another currency.
+
         Formatting: Use markdown. Break the report into 3 sections:
         1. 📊 The Data Snapshot (Summarize the numbers clearly)
         2. 🔍 The Funnel Diagnosis (Where is the bottleneck? Are they failing to capture leads, book calls, or close sales?)
         3. ⚡ Immediate Directive (Exactly what they must do this week to fix the primary bottleneck)
-        
+
         Data:
+        Business stage: ${store.profile?.stage || 'not stated'}
+        Weeks elapsed in this 90-day quarter: ${insights.weeksElapsed} of 12
         Current Quarter Revenue Goal: ${store.revenue?.quarterlyGoal}
         Total Revenue Generated: ${insights.totalRevenue}
         Total Core Sales Made: ${insights.entries?.length || 0}
@@ -575,8 +648,25 @@ function revenueAttachEvents() {
         { id: 'tab-quick-settings', formId: 'quick-offers-form' }
     ];
 
+    // Show whichever tab the user was last on. Saving a lead re-renders the screen,
+    // which used to drop them back on the Sale form — so logging three lead batches
+    // in a row meant re-selecting the Leads tab every single time.
+    const activateTab = (tabId) => {
+        const target = toggleTabs.find(t => t.id === tabId) || toggleTabs[0];
+        toggleTabs.forEach(tab => {
+            const btn = document.getElementById(tab.id);
+            const form = document.getElementById(tab.formId);
+            if (!btn || !form) return;
+            const isActive = tab.id === target.id;
+            btn.style.color = isActive ? 'var(--color-primary-dark)' : 'var(--color-text-muted)';
+            btn.style.fontWeight = isActive ? '600' : 'normal';
+            form.style.display = isActive ? 'block' : 'none';
+        });
+    };
+
     toggleTabs.forEach(t => {
         document.getElementById(t.id)?.addEventListener('click', (e) => {
+            activeLogTab = t.id;
             // Unset all
             toggleTabs.forEach(tab => {
                 document.getElementById(tab.id).style.color = 'var(--color-text-muted)';
@@ -590,17 +680,23 @@ function revenueAttachEvents() {
         });
     });
 
+    // Restore the tab the user was on before the last save re-rendered the screen
+    activateTab(activeLogTab);
+
     const logRevForm = document.getElementById('log-revenue-form');
     if (logRevForm) {
         logRevForm.addEventListener('submit', (e) => {
             e.preventDefault();
+            const amount = parseFloat(document.getElementById('log-amount').value);
             addRevenueEntry({
-                amount: parseFloat(document.getElementById('log-amount').value),
+                amount,
                 source: document.getElementById('log-source').value,
                 offer: document.getElementById('log-offer').value,
-                date: new Date(document.getElementById('log-date').value).toISOString()
+                date: parseDateInput(document.getElementById('log-date').value).toISOString()
             });
-            window.location.reload();
+            const currency = getStore().settings?.currency || '$';
+            showToast(`Sale logged: ${currency}${formatAmount(amount)}`);
+            rerenderScreen();
         });
     }
 
@@ -624,7 +720,9 @@ function revenueAttachEvents() {
                 date: new Date().toISOString(),
                 notes: '1-Tap entry'
             });
-            setTimeout(() => { window.location.reload(); }, 600);
+            const currency = store.settings?.currency || '$';
+            showToast(`Sale logged: ${currency}${formatAmount(offerConf.price)}`);
+            setTimeout(() => { rerenderScreen(); }, 600);
         }
     });
 
@@ -632,14 +730,16 @@ function revenueAttachEvents() {
     if (logLeadForm) {
         logLeadForm.addEventListener('submit', (e) => {
             e.preventDefault();
+            const leadCount = parseFloat(document.getElementById('lead-amount').value);
             addLeadEntry({
-                amount: parseFloat(document.getElementById('lead-amount').value),
+                amount: leadCount,
                 calls: parseFloat(document.getElementById('lead-calls').value) || 0,
                 closes: parseFloat(document.getElementById('lead-closes').value) || 0,
                 source: document.getElementById('lead-source').value,
-                date: new Date(document.getElementById('lead-date').value).toISOString()
+                date: parseDateInput(document.getElementById('lead-date').value).toISOString()
             });
-            window.location.reload();
+            showToast(`${leadCount.toLocaleString()} lead${leadCount === 1 ? '' : 's'} logged`);
+            rerenderScreen();
         });
     }
 
@@ -651,9 +751,10 @@ function revenueAttachEvents() {
                 traffic: parseFloat(document.getElementById('metric-traffic').value),
                 calls: parseFloat(document.getElementById('metric-calls').value),
                 social: parseFloat(document.getElementById('metric-social').value),
-                date: new Date(document.getElementById('metric-date').value).toISOString()
+                date: parseDateInput(document.getElementById('metric-date').value).toISOString()
             });
-            window.location.reload();
+            showToast('Snapshot saved');
+            rerenderScreen();
         });
     }
 
@@ -671,33 +772,49 @@ function revenueAttachEvents() {
                 }
             }
             updateQuickOffers(offers);
-            alert("1-Tap offers saved! Head to the Dashboard to use them.");
-            window.location.reload();
+            showToast('1-Tap offers saved. They are ready on your Dashboard.');
+            rerenderScreen();
         });
     }
 
-    document.querySelectorAll('.btn-delete-revenue').forEach(btn => {
+    // One handler shape for all three deletions: confirm, delete, tell them, redraw.
+    const bindDelete = (selector, deleteFn, question, successMessage) => {
+        document.querySelectorAll(selector).forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const id = e.currentTarget.getAttribute('data-id');
+                const ok = await showConfirm(question, { title: 'Delete entry', confirmText: 'Delete', danger: true });
+                if (!ok) return;
+                if (deleteFn(id)) {
+                    showToast(successMessage);
+                    rerenderScreen();
+                } else {
+                    showToast("That entry couldn't be deleted. Please refresh and try again.", 'error');
+                }
+            });
+        });
+    };
+
+    bindDelete('.btn-delete-revenue', deleteRevenueEntry, 'This removes the sale from your revenue totals and charts.', 'Sale deleted');
+    bindDelete('.btn-delete-lead', deleteLeadEntry, 'This removes the leads from your pipeline totals.', 'Lead entry deleted');
+    bindDelete('.btn-delete-metric', deleteMetricSnapshot, 'This removes the snapshot from your traffic and conversion figures.', 'Snapshot deleted');
+
+    // Pipeline feed: filter and paging
+    document.querySelectorAll('.btn-pipeline-filter').forEach(btn => {
         btn.addEventListener('click', (e) => {
-            if (confirm("Delete this revenue entry?")) {
-                if (deleteRevenueEntry(e.currentTarget.getAttribute('data-id'))) window.location.reload();
-            }
+            pipelineFilter = e.currentTarget.getAttribute('data-filter');
+            pipelineLimit = PIPELINE_PAGE_SIZE; // a new filter starts at the top
+            rerenderScreen();
         });
     });
 
-    document.querySelectorAll('.btn-delete-lead').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            if (confirm("Delete this lead entry?")) {
-                if (deleteLeadEntry(e.currentTarget.getAttribute('data-id'))) window.location.reload();
-            }
-        });
+    document.getElementById('btn-pipeline-more')?.addEventListener('click', () => {
+        pipelineLimit += PIPELINE_PAGE_SIZE;
+        rerenderScreen();
     });
 
-    document.querySelectorAll('.btn-delete-metric').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            if (confirm("Delete this metric snapshot?")) {
-                if (deleteMetricSnapshot(e.currentTarget.getAttribute('data-id'))) window.location.reload();
-            }
-        });
+    document.getElementById('btn-pipeline-less')?.addEventListener('click', () => {
+        pipelineLimit = PIPELINE_PAGE_SIZE;
+        rerenderScreen();
     });
 
     const chartToggles = document.querySelectorAll('.chart-toggles button');
@@ -741,22 +858,60 @@ function revenueAttachEvents() {
             const entries = insights.entries || [];
             const leads = store.leads?.entries || [];
             const metrics = store.metrics || [];
-            
-            let csvContent = `"--- REVENUE (SALES) ---",,,\r\n"Date","Amount","Source","Offer"\r\n`;
+            const currency = store.settings?.currency || '$';
+            const quarterStart = store.quarterStartDate ? new Date(store.quarterStartDate) : null;
+
+            // One table rather than three stacked sections. Sections meant the file
+            // could not be sorted, filtered or pivoted without cutting it up first,
+            // which defeats the point of exporting to a spreadsheet at all.
+            //
+            // Deliberately no totals row: it would sit inside the data and break
+            // sorting and pivot tables. Spreadsheets can sum a column themselves.
+            const cell = (v) => {
+                if (v === null || v === undefined) return '';
+                const s = String(v);
+                return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+            };
+            const row = (arr) => arr.map(cell).join(',') + '\r\n';
+
+            // ISO dates: toLocaleDateString() emits d/m/y, which Excel misreads as
+            // m/d/y on a US locale and silently mangles every date past the 12th.
+            const isoDate = (d) => getLocalDateString(new Date(d));
+
+            const inQuarter = (d) => quarterStart
+                ? (new Date(d).getTime() >= quarterStart.getTime() ? 'Yes' : 'No')
+                : '';
+
+            let csvContent = row([
+                'Type', 'Date', 'Amount', 'Currency', 'Source', 'Offer',
+                'Calls', 'Closes', 'Traffic', 'Social Audience',
+                'Counts Toward This Quarter', 'Notes'
+            ]);
+
             entries.forEach(e => {
-                csvContent += `"${new Date(e.date).toLocaleDateString()}","${e.amount}","${(e.source || '').replace(/"/g, '""')}","${(e.offer || '').replace(/"/g, '""')}"\r\n`;
-            });
-            
-            csvContent += `\r\n"--- LEADS GENERATED ---",,\r\n"Date","Amount","Source"\r\n`;
-            leads.forEach(e => {
-                csvContent += `"${new Date(e.date).toLocaleDateString()}","${e.amount}","${(e.source || '').replace(/"/g, '""')}"\r\n`;
+                csvContent += row([
+                    'Sale', isoDate(e.date), parseFloat(e.amount) || 0, currency,
+                    e.source || '', e.offer || '', '', '', '', '',
+                    inQuarter(e.date), e.notes || ''
+                ]);
             });
 
-            csvContent += `\r\n"--- MONTHLY SNAPSHOTS ---",,,\r\n"Date","Traffic","Calls Booked","Social Audience"\r\n`;
-            metrics.forEach(m => {
-                csvContent += `"${new Date(m.date).toLocaleDateString()}","${m.traffic}","${m.calls}","${m.social}"\r\n`;
+            leads.forEach(e => {
+                csvContent += row([
+                    'Lead', isoDate(e.date), parseFloat(e.amount) || 0, '',
+                    e.source || '', '', e.calls || 0, e.closes || 0, '', '',
+                    inQuarter(e.date), e.notes || ''
+                ]);
             });
-            
+
+            metrics.forEach(m => {
+                csvContent += row([
+                    'Snapshot', isoDate(m.date), '', '', '', '',
+                    m.calls || 0, '', m.traffic || 0, m.social || 0,
+                    inQuarter(m.date), ''
+                ]);
+            });
+
             try {
                 const blob = new Blob(["\uFEFF", csvContent], { type: 'text/csv;charset=utf-8' });
                 // Fallback to data URI if blob fails
@@ -764,7 +919,9 @@ function revenueAttachEvents() {
                 const link = document.createElement('a');
                 link.style.display = 'none';
                 link.href = url;
-                link.download = `Analytics_Export_${new Date().toISOString().split('T')[0]}.csv`;
+                const bizSlug = (store.profile?.businessName || 'CEO-Planner')
+                    .replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+                link.download = `${bizSlug}_Revenue_${getLocalDateString()}.csv`;
                 
                 document.body.appendChild(link);
                 link.click();
@@ -775,7 +932,7 @@ function revenueAttachEvents() {
                 }, 500);
             } catch (err) {
                 console.error("CSV Download Error:", err);
-                alert("Failed to download CSV. Error: " + err.message);
+                showToast("We couldn't download the CSV. Opening it in a new tab instead.", 'error');
                 
                 // Absolute fallback for highly restrictive browsers
                 window.open('data:text/csv;charset=utf-8,' + encodeURIComponent("\uFEFF" + csvContent));
@@ -803,7 +960,7 @@ function renderChart(viewMode) {
         const date = new Date(e.date);
         let key = '', label = '';
         if (viewMode === 'week') {
-            const start = new Date(date); start.setDate(date.getDate() - date.getDay());
+            const start = getWeekStart(date);
             const end = new Date(start); end.setDate(start.getDate() + 6);
             key = getLocalDateString(start);
             label = `${start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} - ${end.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;

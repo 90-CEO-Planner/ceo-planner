@@ -1,5 +1,6 @@
 // app.js
-import { getStore, seedMockData, getLocalDateString } from './store.js';
+import { getStore, seedMockData, getLocalDateString, REMINDER_WEEKLY, REMINDER_DAILY, REMINDER_FRIDAY } from './store.js';
+import { signOutAndClear } from './components/nav.js';
 
 // Screens
 // We'll import these dynamically or define them later to handle page renders
@@ -187,15 +188,15 @@ function checkPushNotifications() {
 
     const planningDay = store.profile.planningDay || 'Monday';
     
-    if (store.profile.reminderTimes.includes('Weekly Prompt') && todayName === planningDay && hour >= 8) {
+    if (store.profile.reminderTimes.includes(REMINDER_WEEKLY) && todayName === planningDay && hour >= 8) {
         fireLocalNotification('weekly_prompt', 'Weekly CEO Planning', 'Time to plan your week and stay focused on your 90-day trajectory.');
     }
 
-    if (store.profile.reminderTimes.includes('Daily Priority Check') && hour >= 12) {
+    if (store.profile.reminderTimes.includes(REMINDER_DAILY) && hour >= 12) {
         fireLocalNotification('daily_priority', 'Daily Check-in', 'Have you finalized your primary priority block for today?');
     }
 
-    if (store.profile.reminderTimes.includes('Friday Review Prompt') && todayName === 'Friday' && hour >= 14) {
+    if (store.profile.reminderTimes.includes(REMINDER_FRIDAY) && todayName === 'Friday' && hour >= 14) {
         fireLocalNotification('friday_review', 'Friday Review', 'Time to log your wins and track your revenue for the week!');
     }
 
@@ -252,9 +253,34 @@ async function revalidateAccess() {
     if (access.status !== before) router();
 }
 
+// Purge keys earlier versions wrote that should never have been stored. This runs
+// once per load and is cheap; without it, a password written before the fix would
+// sit in a user's browser indefinitely, because nothing else ever removes it.
+function purgeLegacyKeys() {
+    ['ceo_remembered_password', 'ceo_openai_key'].forEach(key => {
+        if (localStorage.getItem(key) !== null) {
+            localStorage.removeItem(key);
+            console.info(`Removed obsolete stored key: ${key}`);
+        }
+    });
+}
+
+// The nav is re-rendered by every screen, so bind logout once here by delegation
+// rather than asking each screen to remember to wire it up.
+function bindGlobalNavEvents() {
+    document.addEventListener('click', (e) => {
+        const logout = e.target.closest('#nav-logout');
+        if (!logout) return;
+        e.preventDefault();
+        signOutAndClear();
+    });
+}
+
 // Initialize
 window.addEventListener('hashchange', router);
 window.addEventListener('load', () => {
+    purgeLegacyKeys();
+    bindGlobalNavEvents();
     router();
 
     // Confirm the trial is still valid against the database, not just localStorage

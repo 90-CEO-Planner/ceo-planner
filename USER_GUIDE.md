@@ -66,7 +66,7 @@ At the start of your work week, head to the **Weekly Plan** tab to align your sh
 The **Dashboard** is your everyday command center. It is designed to cut out the noise and tell you exactly what matters today.
 
 ### The Dashboard Features:
-- **The CEO Snapshot:** A real-time glance at your Focus Score, Momentum, and Revenue generated this week.
+- **The CEO Snapshot:** A real-time glance at your Focus Score, Momentum, and Revenue generated this week. Your **Focus Score** is the percentage of your Daily 3 tasks you have ticked off during the current week — it updates by itself as you work, and nothing you fill in elsewhere changes it.
 - **Your Next Best Action:** The Executive AI Coach analyzes your recent plans and highlights the single most important action you need to take right now to maintain momentum or correct a slump.
 - **The Daily 3:** Your three core tasks for the day. Check them off as you complete them to build your daily streak.
 - **1-Tap Revenue Logging:** Log a new sale or lead instantly from the dashboard dropdown to track momentum in real-time.
@@ -90,10 +90,16 @@ The **Revenue** dashboard provides a comprehensive Analytics command center, rep
 At the end of your week (typically Friday afternoon), visit the **Friday Review** tab to close out the week mentally and log your progress.
 
 ### The Review Process:
-- **Log Your Biggest Win:** Recognize your momentum.
-- **Assess Task Completion:** Honestly rate what percentage of your plan you executed.
-- **Identify Bottlenecks:** What slowed you down?
-- **AI Synthesis:** Based on your answers, the Executive AI Coach will generate a personalized insight and assign a "CEO Focus Score" for the week.
+The review is six questions, and you can either type your answers or use **Voice Reflection** to speak them. Tap the microphone button, talk, and your words are transcribed into whichever box you last selected.
+
+- **What moved the business forward this week?** The actual needle-moving progress you made.
+- **What worked well?** Success leaves clues, and this tells you what to repeat.
+- **What felt difficult or heavy?** Naming resistance is how you find the thing to automate, delegate, or drop.
+- **How was your personal energy?** High, Medium, Low, or Burnout. This one matters more than it looks: the AI paces next week's plan against it, because burnout needs a different strategy than peak flow.
+- **Metrics (optional):** Leads or subscribers gained, and sales or revenue closed.
+- **What will you improve next week?** Pick one thing, not five.
+
+**What happens when you save:** the Executive AI Coach reads your answers and drafts your plan for next Monday. You will find it waiting in the **Monday Plan** tab, ready to review and adjust rather than starting from a blank page.
 
 Completing Monday Plans and Friday Reviews builds your **Momentum Streak**—a visual indicator of your consistency as a CEO.
 
@@ -115,7 +121,7 @@ The app functions as your objective Board of Directors, providing dynamic insigh
 The CEO Planner is built to be fast and private. Data is stored securely and accessible only by you.
 
 **Erasing Data:**
-If you want to start fresh or wipe your device, navigate to **Settings** and scroll down to the **Danger Zone**. Clicking "Erase All Local Data" will permanently delete your plans, revenue logs, and profile.
+If you want to start fresh, navigate to **Settings** and scroll down to the **Danger Zone**. Clicking "Erase All My Data" will permanently delete your plans, revenue logs, and profile, both from your device and from our servers. This cannot be undone.
 
 ---
 *Stay Focused. Take Action. Act Like the CEO.*

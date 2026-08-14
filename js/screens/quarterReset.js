@@ -1,6 +1,8 @@
 // quarterReset.js
 import { renderNav } from '../components/nav.js';
 import { resetQuarter } from '../store.js';
+import { showToast, showConfirm } from '../components/toast.js';
+import { resetWizardProgress } from './wizard.js';
 
 export function renderQuarterReset() {
     window.setScreenModule({ attachEvents: quarterResetAttachEvents });
@@ -62,7 +64,7 @@ function quarterResetAttachEvents() {
 
     const form = document.getElementById('quarter-reset-form');
     if (form) {
-        form.addEventListener('submit', (e) => {
+        form.addEventListener('submit', async (e) => {
             e.preventDefault();
 
             const reflection = {
@@ -73,21 +75,18 @@ function quarterResetAttachEvents() {
                 changeNextQuarter: document.getElementById('qr-change').value
             };
 
-            const confirmIt = confirm("Excellent reflection. Are you ready to archive this quarter and begin planning the next 90 days?");
+            const confirmIt = await showConfirm(
+                'Your goals, revenue, leads and this reflection are archived, then you start planning the next 90 days.',
+                { title: 'Archive this quarter?', confirmText: 'Archive and start fresh' }
+            );
             if (confirmIt) {
-                // Fetch the current goals before resetting to bundle with reflection
-                const store = getStore();
-                const pastQuarter = {
-                    goals: JSON.parse(JSON.stringify(store.goals)),
-                    reflection: reflection
-                };
-
-                // In a full app, we'd save `pastQuarter` to a `store.pastQuarters` array.
-                // For now, we just perform the reset.
-                resetQuarter();
-
-                // Pre-load the new reflection into store if we wanted to auto-suggest
-                // But for this MVP, we just push them to the wizard
+                // resetQuarter archives the goals, revenue, leads, metrics and plans
+                // alongside this reflection into store.pastQuarters before clearing.
+                resetQuarter(reflection);
+                // The wizard keeps its step in module state and this route change
+                // does not reload the page, so send it back to step 1 explicitly.
+                resetWizardProgress();
+                showToast('Quarter archived. Time to plan the next 90 days.');
                 window.location.hash = '#/wizard';
             }
         });

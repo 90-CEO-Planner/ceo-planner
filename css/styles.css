@@ -132,14 +132,34 @@ a:hover {
         padding: var(--spacing-md);
     }
     
-    .grid-cols-2, 
-    .grid-cols-3, 
-    .grid-cols-4, 
+    .grid-cols-2,
+    .grid-cols-3,
     .grid-sidebar,
     .grid-sidebar-right {
         grid-template-columns: 1fr;
     }
-    
+
+    /* The four KPI cards stay side by side as a 2x2 block. Stacked in one column
+       they pushed everything else on the Revenue page below the fold. The inline
+       font sizes on those cards are sized for a desktop column, hence the
+       overrides — without them the figures wrap inside a half-width card. */
+    .grid-cols-4 {
+        grid-template-columns: repeat(2, 1fr);
+        gap: var(--spacing-sm);
+    }
+
+    .grid-cols-4 > .card {
+        padding: 1rem !important;
+    }
+
+    .grid-cols-4 > .card h3 {
+        font-size: 1.15rem !important;
+    }
+
+    .grid-cols-4 > .card p {
+        font-size: 0.7rem !important;
+    }
+
     .flex-mobile-col {
         flex-direction: column !important;
         align-items: stretch !important;

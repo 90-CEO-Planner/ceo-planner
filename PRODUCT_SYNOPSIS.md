@@ -50,12 +50,13 @@ For many online entrepreneurs, coaches, and creators, the hardest part of growin
 - **CSV Data Export:** One-click download of all financial logs for accounting or team hand-offs.
 
 ### 3. The Executive AI Coach (Intelligence)
-- **Dynamic Weekly Insights:** Synthesizes the user's Friday Review and compares it to their revenue data to provide a "Focus Score."
+- **Dynamic Weekly Insights:** Reads the user's Friday Review alongside their revenue data and drafts next Monday's plan for them, so the week starts from a considered proposal rather than a blank page.
+- **CEO Focus Score:** A dashboard metric showing the percentage of Daily 3 tasks completed in the current week. Calculated automatically from task completion, not from the Friday Review.
 - **Executive Strategic Briefing:** A 1-click feature that generates a comprehensive, downloadable health report of the business funnel, identifying precise bottlenecks (e.g., "High lead volume but low close rate—fix your sales script").
 - **On-Demand Consultation:** A chat interface to bounce ideas off the AI, fully contextualized with the user's 90-day goals and current revenue metrics.
 
 ### 4. Behavioral Reinforcement
-- **Friday Review:** A structured end-of-week reflection to log wins, assess bottlenecks, and maintain the CEO mindset.
+- **Friday Review:** A structured end-of-week reflection — wins, what worked, what felt heavy, personal energy level, optional metrics, and one thing to improve. Answers can be typed or spoken via Voice Reflection.
 - **Momentum Streaks:** Visual indicators for completing weekly planning and reviews. 
 
 ---

@@ -2,6 +2,14 @@
 
 const STORE_KEY = 'ceoPlanner_store';
 
+// The reminder values, in one place. Settings writes these into
+// profile.reminderTimes and the notification engine in app.js reads them back.
+// They were previously written as 'weekly_plan' and read as 'Weekly Prompt', so
+// no reminder ever matched and none of them ever fired.
+export const REMINDER_WEEKLY = 'weekly_plan';
+export const REMINDER_DAILY = 'daily_priority';
+export const REMINDER_FRIDAY = 'friday_review';
+
 export function getLocalDateString(date = new Date()) {
     const d = new Date(date);
     const year = d.getFullYear();
@@ -10,17 +18,71 @@ export function getLocalDateString(date = new Date()) {
     return `${year}-${month}-${day}`;
 }
 
+// Turns a <input type="date"> value ("2026-08-13") into a Date in the user's own
+// timezone. `new Date("2026-08-13")` parses as UTC midnight, so anyone west of
+// GMT had their sales land on the previous day. Noon is used as the time of day
+// so no DST shift can push the date over a boundary either way.
+export function parseDateInput(value) {
+    if (!value) return new Date();
+    const parts = String(value).split('-').map(Number);
+    if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) return new Date(value);
+    const [year, month, day] = parts;
+    return new Date(year, month - 1, day, 12, 0, 0, 0);
+}
+
+// Money for display. Whole amounts stay clean ("1,500"), amounts with pence keep
+// both decimal places ("1,500.50"). Plain toLocaleString() dropped the trailing
+// zero, so a sale logged as 1500.50 was shown back to the user as "1,500.5".
+export function formatAmount(value) {
+    const n = parseFloat(value) || 0;
+    return n.toLocaleString(undefined, {
+        minimumFractionDigits: Number.isInteger(n) ? 0 : 2,
+        maximumFractionDigits: 2
+    });
+}
+
+// The single definition of "this week" for the whole app. Weeks start Monday,
+// matching the Monday planning ritual the product is built around. Anything that
+// buckets by week must use this, or two panels on one screen disagree.
+export function getWeekStart(date = new Date()) {
+    const d = new Date(date);
+    const dayOfWeek = d.getDay(); // 0 is Sunday, 1 is Monday
+    const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+    d.setDate(d.getDate() - diffToMonday);
+    d.setHours(0, 0, 0, 0);
+    return d;
+}
+
+// How many weeks of the 90-day quarter have actually run, clamped to 1..12.
+// This is deliberately a measure of elapsed *time*, not of activity — using the
+// number of logged sales here is what made the app report "Behind" to anyone who
+// logged several sales in week one.
+export function getWeeksElapsed(store, quarterWeeks = 12) {
+    const start = store?.quarterStartDate ? new Date(store.quarterStartDate) : null;
+    if (!start || !Number.isFinite(start.getTime())) return null;
+
+    // Whole days first, so the answer can't flicker between two values when the
+    // elapsed time sits a few milliseconds either side of an exact week boundary.
+    const msPerDay = 24 * 60 * 60 * 1000;
+    const daysElapsed = Math.floor((Date.now() - start.getTime()) / msPerDay);
+    const elapsed = Math.ceil(daysElapsed / 7);
+    return Math.min(quarterWeeks, Math.max(1, elapsed));
+}
+
 const defaultState = {
     profile: {
         name: '',
         businessName: '',
         logo: '',
-        stage: '', // e.g., 'beginner', 'growth'
+        stage: '', // Set on wizard step 5: 'Just starting out' | 'Growing' | 'Scaling'
         businessModel: '',
         targetAudience: '',
         industryNiche: '',
         bottleneck: '',
-        strategyMode: '', // Phase 2: 'First Sale Sprint', 'Offer Launch Quarter', 'Audience Growth Quarter', 'CEO Reset'
+        // Set on wizard step 5, changeable in Settings. weeklyPlanner.js matches on
+        // substrings of these ('first sale', 'launch', 'audience', 'reset'), so the
+        // wizard and Settings option lists must stay identical.
+        strategyMode: '', // 'First Sale Sprint' | 'Offer Launch Quarter' | 'Audience Growth' | 'CEO Reset'
         planningDay: 'Monday',
         reminderTimes: [],
         trialStartDate: '' // ISO timestamp for notification and banner scheduling
@@ -50,6 +112,11 @@ const defaultState = {
     settings: {
         currency: '$'
     },
+    // ISO timestamp for the start of the active 90-day quarter. Set on wizard
+    // completion and on quarter reset. Pace and projection maths measure from
+    // here — without it there is no way to know how much of the quarter has run.
+    quarterStartDate: '',
+    pastQuarters: [], // Array of archived quarters { dateArchived, goals, reflection, ... }
     weeklyPlans: [], // Array of plan objects
     reviews: [], // Array of review objects
     monthlyReviews: [], // Array of monthly review objects
@@ -77,6 +144,8 @@ export function getStore() {
                 leads: { ...defaultState.leads, ...(parsed.leads || {}) },
                 settings: { ...defaultState.settings, ...(parsed.settings || {}) },
                 metrics: parsed.metrics || [],
+                quarterStartDate: parsed.quarterStartDate || '',
+                pastQuarters: parsed.pastQuarters || [],
                 weeklyPlans: parsed.weeklyPlans || [],
                 reviews: parsed.reviews || [],
                 monthlyReviews: parsed.monthlyReviews || [],
@@ -96,8 +165,39 @@ export function getStore() {
                         entry.id = 'legacy_' + Date.now() + '_' + idx;
                         needsReSave = true;
                     }
+                    // Anything living in revenue.entries is a sale by definition.
+                    // Older rows predate the field and were being classified by
+                    // whether they happened to carry an 'offer' key, so a sale
+                    // logged without an offer name showed up in the pipeline as
+                    // a lead.
+                    if (!entry.type) {
+                        entry.type = 'sale';
+                        needsReSave = true;
+                    }
                 });
             }
+            if (finalStore.leads && finalStore.leads.entries) {
+                finalStore.leads.entries.forEach(entry => {
+                    if (!entry.type) {
+                        entry.type = 'lead';
+                        needsReSave = true;
+                    }
+                });
+            }
+            // Backfill the quarter start for anyone who set up before it was tracked.
+            // The earliest thing they logged is the best available origin — without
+            // one, every pace and projection figure has no time axis to measure on.
+            if (!finalStore.quarterStartDate) {
+                const stamps = [];
+                (finalStore.weeklyPlans || []).forEach(p => stamps.push(new Date(p.date).getTime()));
+                (finalStore.revenue?.entries || []).forEach(e => stamps.push(new Date(e.date).getTime()));
+                const valid = stamps.filter(t => Number.isFinite(t));
+                if (valid.length > 0) {
+                    finalStore.quarterStartDate = new Date(Math.min(...valid)).toISOString();
+                    needsReSave = true;
+                }
+            }
+
             if (needsReSave) {
                 localStorage.setItem(STORE_KEY, JSON.stringify(finalStore));
             }
@@ -168,6 +268,9 @@ export function addRevenueEntry(entry) {
     const store = getStore();
     entry.id = Date.now().toString();
     entry.date = entry.date || new Date().toISOString();
+    // Written explicitly so nothing downstream has to guess a sale from the
+    // presence of an 'offer' key — which misread every entry logged without one.
+    entry.type = 'sale';
     store.revenue.entries.push(entry);
     saveStore(store);
 }
@@ -196,6 +299,7 @@ export function addLeadEntry(entry) {
     const store = getStore();
     entry.id = Date.now().toString();
     entry.date = entry.date || new Date().toISOString();
+    entry.type = 'lead';
     store.leads.entries.push(entry);
     saveStore(store);
 }
@@ -230,19 +334,30 @@ export function getRevenueInsights() {
     const goal = parseFloat(rev.quarterlyGoal) || 0;
     const price = parseFloat(rev.averageOfferPrice) || 0;
 
+    // Every entry ever logged. The pipeline feed, the history chart and the CSV
+    // export all need the full list, so this stays unfiltered.
     const entries = rev.entries || [];
-    const totalRevenue = entries.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
+
+    // The subset that belongs to the active quarter. Entries dated before the
+    // quarter began — history someone typed in at onboarding, or an import — used
+    // to count in full towards the goal while the pace maths divided by the weeks
+    // since the quarter started. A month of back-entered sales then read as one
+    // week's work and the projection came out roughly four times too high.
+    const quarterStart = store.quarterStartDate ? new Date(store.quarterStartDate) : null;
+    const quarterEntries = (quarterStart && Number.isFinite(quarterStart.getTime()))
+        ? entries.filter(e => new Date(e.date).getTime() >= quarterStart.getTime())
+        : entries;
+
+    const totalRevenue = quarterEntries.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
+    // What was logged against earlier dates, so the Revenue screen can account for
+    // the difference rather than appearing to have lost it.
+    const revenueBeforeQuarter = entries.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0) - totalRevenue;
 
     const now = new Date();
     const currentMonth = now.getMonth();
     const currentYear = now.getFullYear();
 
-    // Calculate the start of the current week (Monday at 00:00:00)
-    const dayOfWeek = now.getDay(); // 0 is Sunday, 1 is Monday
-    const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-    const startOfWeek = new Date(now);
-    startOfWeek.setDate(now.getDate() - diffToMonday);
-    startOfWeek.setHours(0, 0, 0, 0);
+    const startOfWeek = getWeekStart(now);
 
     const revenueThisWeek = entries
         .filter(e => {
@@ -275,6 +390,9 @@ export function getRevenueInsights() {
     // Projects & Momentum
     const Q_WEEKS = 12;
     const entriesCount = entries.length;
+    // Falls back to week 1 only for a store with no quarter start and no history
+    // to backfill one from, in which case there is nothing to project anyway.
+    const weeksElapsed = getWeeksElapsed(store, Q_WEEKS) || 1;
     let projectedRevenue = 0;
     let momentum = 'Not enough data';
     let insightText = "Log more revenue entries with their sources to generate actionable insights.";
@@ -310,12 +428,15 @@ export function getRevenueInsights() {
         Object.keys(revenueByOfferQuarter).reduce((a, b) => revenueByOfferQuarter[a] > revenueByOfferQuarter[b] ? a : b) : 'None';
 
     if (entriesCount > 0) {
-        const avgPerWeek = totalRevenue / entriesCount;
+        // Average per week of the quarter that has actually elapsed. Dividing by
+        // the number of entries instead would mean five sales in week one read as
+        // five weeks of trading, and the app would call a good week "Behind".
+        const avgPerWeek = totalRevenue / weeksElapsed;
         projectedRevenue = avgPerWeek * Q_WEEKS;
 
         // Calculate remaining weekly target dynamically based on pace
         const remainingRevenue = Math.max(0, goal - totalRevenue);
-        const remainingWeeks = Math.max(1, Q_WEEKS - entriesCount);
+        const remainingWeeks = Math.max(1, Q_WEEKS - weeksElapsed);
         weeklyTargetLength = remainingRevenue / remainingWeeks;
 
         // Momentum
@@ -380,6 +501,8 @@ export function getRevenueInsights() {
         salesRemaining: Math.max(0, salesRequired - salesMade),
         projectedRevenue,
         weeklyTargetLength,
+        weeksElapsed,
+        weeksRemaining: Math.max(0, Q_WEEKS - weeksElapsed),
         momentum,
         insightText,
         revenueBySourceMonth,
@@ -388,6 +511,10 @@ export function getRevenueInsights() {
         revenueByOfferQuarter,
         topSource,
         topOffer,
+        // Logged against dates before this quarter began. Counted in `entries` but
+        // deliberately excluded from totalRevenue, progress and the projection.
+        revenueBeforeQuarter,
+        quarterEntryCount: quarterEntries.length,
         entries: entries.slice().sort((a, b) => new Date(b.date) - new Date(a.date)) // newest first
     };
 }
@@ -399,7 +526,11 @@ export function addWeeklyPlan(plan) {
     store.weeklyPlans.push(plan);
 
     // Recalculate planning streak based on consecutive weeks
-    store.planningStreak = calculateStreak(store.weeklyPlans);
+    // Only weeks the user actually committed to count. Counting the twelve
+    // generated-but-unapplied weeks would report a streak nobody had earned.
+    store.planningStreak = calculateStreak(
+        store.weeklyPlans.filter(p => p.applied || !p.generated)
+    );
 
     saveStore(store);
 }
@@ -409,6 +540,15 @@ export function updateWeeklyPlan(planId, updatedFields) {
     const index = store.weeklyPlans.findIndex(p => String(p.id) === String(planId));
     if (index !== -1) {
         store.weeklyPlans[index] = { ...store.weeklyPlans[index], ...updatedFields };
+
+        // Applying a generated week is planning, and it is how most people plan,
+        // because the roadmap pre-generates all twelve. The streak used to be
+        // recalculated only in addWeeklyPlan(), so anyone following the roadmap saw
+        // "Plan: 0w" on their dashboard forever no matter how consistent they were.
+        store.planningStreak = calculateStreak(
+            store.weeklyPlans.filter(p => p.applied || !p.generated)
+        );
+
         saveStore(store);
     }
 }
@@ -428,6 +568,27 @@ export function addReview(review) {
     // Recalculate streak based on consecutive weeks
     store.streak = calculateStreak(store.reviews);
     saveStore(store);
+}
+
+// Edit a past Friday Review in place. The original date is kept so the week it
+// belongs to (and the streak built from those dates) doesn't move when someone
+// corrects a typo weeks later.
+export function updateReview(id, updatedFields) {
+    const store = getStore();
+    const review = store.reviews.find(r => String(r.id) === String(id));
+    if (!review) return false;
+    Object.assign(review, updatedFields, { id: review.id, date: review.date });
+    saveStore(store);
+    return true;
+}
+
+export function deleteReview(id) {
+    const store = getStore();
+    const initialLen = store.reviews.length;
+    store.reviews = store.reviews.filter(r => String(r.id) !== String(id));
+    store.streak = calculateStreak(store.reviews);
+    saveStore(store);
+    return store.reviews.length < initialLen;
 }
 
 export function addMonthlyReview(review) {
@@ -464,11 +625,19 @@ export function applyGeneratedPlan(plan) {
     store.planSummary = plan.summary;
     store.planCalibration = plan.calibration;
 
-    // Clear existing weekly plans for the new quarter start
-    store.weeklyPlans = [];
+    // Keep everything the user actually lived through: plans they wrote themselves,
+    // and generated weeks they already applied. Only unapplied generated weeks are
+    // replaced. Wiping the lot meant someone eight weeks in who wanted to
+    // course-correct lost every completed week.
+    const kept = (store.weeklyPlans || []).filter(p => !p.generated || p.applied);
+    const spokenFor = new Set(
+        kept.filter(p => p.generated && p.weekNumber != null).map(p => p.weekNumber)
+    );
+    store.weeklyPlans = kept;
 
     const now = Date.now();
     plan.weeks.forEach((w, i) => {
+        if (spokenFor.has(w.weekNumber)) return; // already applied, leave it alone
         store.weeklyPlans.push({
             id: 'gen_' + (now + i).toString(),
             date: new Date(now + i).toISOString(),
@@ -547,20 +716,31 @@ function calculateStreak(reviews) {
     return streak;
 }
 
-export function resetQuarter() {
+// `reflection` is the four answers from the Quarterly Wrap-Up form. They are the
+// most considered thing a user writes all quarter, so they are archived with the
+// numbers they describe rather than discarded.
+export function resetQuarter(reflection = null) {
     const store = getStore();
 
-    // Archive current goals if they exist
-    if (store.goals && store.goals.focus) {
-        store.pastQuarters = store.pastQuarters || [];
-        store.pastQuarters.push({
-            dateArchived: new Date().toISOString(),
-            goals: { ...store.goals },
-            reviewsCount: store.reviews.length,
-            plansCount: store.weeklyPlans.length,
-            dailyLogs: store.dailyLogs ? { ...store.dailyLogs } : {}
-        });
-    }
+    // Archive unconditionally. The old version only archived when a focus had been
+    // set, so a user who skipped that one field lost 90 days of revenue history
+    // with nothing written anywhere.
+    store.pastQuarters = store.pastQuarters || [];
+    store.pastQuarters.push({
+        dateArchived: new Date().toISOString(),
+        quarterStartDate: store.quarterStartDate || '',
+        goals: { ...store.goals },
+        reflection: reflection,
+        revenueEntries: [...(store.revenue?.entries || [])],
+        revenueGoal: store.revenue?.quarterlyGoal || 0,
+        leadEntries: [...(store.leads?.entries || [])],
+        leadGoal: store.leads?.quarterlyGoal || 0,
+        metrics: [...(store.metrics || [])],
+        weeklyPlans: [...(store.weeklyPlans || [])],
+        reviewsCount: store.reviews.length,
+        plansCount: store.weeklyPlans.length,
+        dailyLogs: store.dailyLogs ? { ...store.dailyLogs } : {}
+    });
 
     // Reset goals to default
     store.goals = {
@@ -571,10 +751,16 @@ export function resetQuarter() {
         statement: ''
     };
 
-    // Reset Revenue
+    // Clear the active set. All of it is now in pastQuarters above. Leads and
+    // metrics are cleared too — carrying last quarter's leads forward inflated
+    // every conversion rate in the new quarter.
     if (store.revenue) {
         store.revenue.entries = [];
     }
+    if (store.leads) {
+        store.leads.entries = [];
+    }
+    store.metrics = [];
 
     // Clear weekly plans for the new quarter start, keep reviews for wins history
     store.weeklyPlans = [];
@@ -582,6 +768,18 @@ export function resetQuarter() {
     // Clear daily action history active log
     store.dailyLogs = {};
 
+    // The new 90 days start now. Pace maths reads this.
+    store.quarterStartDate = new Date().toISOString();
+
+    saveStore(store);
+}
+
+// Stamps the start of a fresh 90-day quarter. Called on wizard completion.
+// Deliberately not called from applyGeneratedPlan: regenerating a roadmap
+// mid-quarter must not restart the clock, or every pace figure resets with it.
+export function startNewQuarter(date = new Date()) {
+    const store = getStore();
+    store.quarterStartDate = new Date(date).toISOString();
     saveStore(store);
 }
 
@@ -627,18 +825,24 @@ export function seedMockData() {
         entries: [
             {
                 id: 'rev_1',
+                type: 'sale',
+                source: 'Email',
                 date: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
                 amount: 1500,
                 notes: 'Founding member signup from old list (Last Month)'
             },
             {
                 id: 'rev_2',
+                type: 'sale',
+                source: 'Email',
                 date: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString(),
                 amount: 3000,
                 notes: '2 signups from email list (This Month)'
             },
             {
                 id: 'rev_3',
+                type: 'sale',
+                source: 'Instagram',
                 date: new Date().toISOString(),
                 amount: 1500,
                 notes: 'New IG Client (This Week)'

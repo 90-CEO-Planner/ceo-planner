@@ -1,12 +1,51 @@
 // wizard.js
-import { getStore, updateGoals, updateProfile, applyGeneratedPlan, updateSettings, updateRevenueSettings, updateLeadGoal } from '../store.js';
+import { getStore, updateGoals, updateProfile, applyGeneratedPlan, updateSettings, updateRevenueSettings, updateLeadGoal, startNewQuarter } from '../store.js';
+import { showToast } from '../components/toast.js';
 import { generate90DayActionPlan } from '../aiService.js';
 
 let currentStep = 1;
-const TOTAL_STEPS = 7;
+const TOTAL_STEPS = 8;
+
+// Strategy mode values must stay in sync with the options in settings.js, because
+// getSmartPrompts() and getSuggestedFocus() in weeklyPlanner.js match on substrings
+// of them ('first sale', 'launch', 'audience', 'reset'), and aiService.js drops the
+// value straight into the 90-day plan prompt.
+const STRATEGY_MODES = [
+    { value: 'First Sale Sprint', label: 'First Sale Sprint', hint: 'Direct outreach and fast cash. Best if you have not made consistent sales yet.' },
+    { value: 'Offer Launch Quarter', label: 'Offer Launch Quarter', hint: 'Build hype and open the cart. Best if you have one offer to push hard.' },
+    { value: 'Audience Growth', label: 'Audience Growth', hint: 'Massive lead generation. Best if your offer converts but too few people see it.' },
+    { value: 'CEO Reset', label: 'CEO Reset', hint: 'Systems, automating and delegating. Best if you are busy but burning out.' }
+];
+
+// Free text in the AI prompt, which asks the model to match weekly intensity to the
+// stage, so these read as phrases rather than codes.
+const BUSINESS_STAGES = [
+    { value: 'Just starting out', hint: 'No consistent sales yet. Still finding the first customers.' },
+    { value: 'Growing', hint: 'Sales happen, but not predictably. Ready to build momentum.' },
+    { value: 'Scaling', hint: 'Consistent revenue. The constraint is capacity or systems.' }
+];
+
+// Symbol is what the rest of the app renders, so the value is the symbol itself.
+const CURRENCIES = [
+    { value: '£', label: '£  British Pound (GBP)' },
+    { value: '$', label: '$  US Dollar (USD)' },
+    { value: '€', label: '€  Euro (EUR)' },
+    { value: 'A$', label: 'A$  Australian Dollar (AUD)' },
+    { value: 'C$', label: 'C$  Canadian Dollar (CAD)' },
+    { value: 'R', label: 'R  South African Rand (ZAR)' }
+];
+
+// Send the wizard back to its first step. Quarter Reset routes to #/wizard without
+// a page reload, so this module's currentStep survives — someone who reset in the
+// same session they onboarded in landed on the step 8 "you're all set" screen.
+export function resetWizardProgress() {
+    currentStep = 1;
+}
 
 export function renderWizard() {
     window.setScreenModule({ attachEvents: wizardAttachEvents });
+    // Belt and braces: an empty store means a fresh start, whatever step we were on.
+    if (!getStore().goals?.focus && currentStep === TOTAL_STEPS) currentStep = 1;
     return `
         <div class="main-content" style="max-width: 600px; padding-top: 5vh;">
             <div style="margin-bottom: 2rem; text-align: center;">
@@ -15,13 +54,10 @@ export function renderWizard() {
             </div>
 
             <div class="wizard-progress" style="display: flex; justify-content: center; gap: 0.5rem; margin-bottom: 2rem;">
-                <div class="wizard-step ${currentStep >= 1 ? 'active' : ''} ${currentStep > 1 ? 'completed' : ''}">1</div>
-                <div class="wizard-step ${currentStep >= 2 ? 'active' : ''} ${currentStep > 2 ? 'completed' : ''}">2</div>
-                <div class="wizard-step ${currentStep >= 3 ? 'active' : ''} ${currentStep > 3 ? 'completed' : ''}">3</div>
-                <div class="wizard-step ${currentStep >= 4 ? 'active' : ''} ${currentStep > 4 ? 'completed' : ''}">4</div>
-                <div class="wizard-step ${currentStep >= 5 ? 'active' : ''} ${currentStep > 5 ? 'completed' : ''}">5</div>
-                <div class="wizard-step ${currentStep >= 6 ? 'active' : ''} ${currentStep > 6 ? 'completed' : ''}">6</div>
-                <div class="wizard-step ${currentStep >= 7 ? 'active' : ''}">7</div>
+                ${Array.from({ length: TOTAL_STEPS }, (_, i) => {
+                    const n = i + 1;
+                    return `<div class="wizard-step ${currentStep >= n ? 'active' : ''} ${currentStep > n && n < TOTAL_STEPS ? 'completed' : ''}">${n}</div>`;
+                }).join('')}
             </div>
 
             <div class="card" id="wizard-content" style="padding: 2.5rem; box-shadow: var(--shadow-md); border-radius: var(--radius-lg); background: white;">
@@ -80,9 +116,17 @@ function renderStepContent() {
                     </div>
                 </div>
                 <div class="form-group mb-6">
-                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">CEO Commitment Statement</label>
-                    <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-top: -0.25rem; margin-bottom: 0.5rem;">Your daily reminder shown on the dashboard.</p>
-                    <textarea id="set-commitment" class="form-input" style="border-radius: 8px; padding: 0.75rem; min-height: 80px; width: 100%; font-family: var(--font-body); font-size: 0.95rem;" required>${store.goals.statement || 'I commit to prioritizing my top tasks before checking email, and trusting my strategy.'}</textarea>
+                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">CEO Commitment Statement <span style="font-weight: 400; color: var(--color-text-muted);">(optional)</span></label>
+                    <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-top: -0.25rem; margin-bottom: 0.5rem; line-height: 1.5;">
+                        One sentence about <em>how</em> you want to work this quarter, not what you want to achieve.
+                        It sits on your dashboard every day as a reminder of the promise you made yourself.
+                        Most people write about the habit they keep breaking. You can change it any time in Settings.
+                    </p>
+                    <p style="color: var(--color-text-main); font-size: 0.85rem; margin-bottom: 0.75rem; padding: 0.6rem 0.85rem; background: var(--color-primary-light); border-radius: 8px; border-left: 3px solid var(--color-primary); line-height: 1.5;">
+                        <strong style="color: var(--color-primary-dark);">Example:</strong>
+                        <em>"I commit to protecting two deep-work mornings a week, no matter what the inbox says."</em>
+                    </p>
+                    <textarea id="set-commitment" class="form-input" style="border-radius: 8px; padding: 0.75rem; min-height: 80px; width: 100%; font-family: var(--font-body); font-size: 0.95rem;" placeholder="I commit to prioritizing my top tasks before checking email, and trusting my strategy.">${store.goals.statement || ''}</textarea>
                 </div>
                 
                 <div class="flex justify-between mt-8" style="display: flex; gap: 1rem;">
@@ -157,18 +201,44 @@ function renderStepContent() {
     }
 
     if (currentStep === 5) {
+        const currentStage = store.profile.stage || '';
+        const currentMode = store.profile.strategyMode || '';
         return `
-            <h3 class="mb-2" style="font-family: var(--font-heading); font-weight: 700;">Financial Target</h3>
-            <p class="form-helper mb-6" style="font-size: 0.95rem; color: var(--color-text-muted); line-height: 1.5;">Set a clear, measurable revenue milestone for this 90-day period.</p>
-            
+            <h3 class="mb-2" style="font-family: var(--font-heading); font-weight: 700;">Where You Are & How You'll Play It</h3>
+            <p class="form-helper mb-6" style="font-size: 0.95rem; color: var(--color-text-muted); line-height: 1.5;">These two answers shape your entire 90-day plan: how hard each week pushes, and what kind of actions it asks for.</p>
+
             <form id="wizard-form-5">
-                <div class="form-group">
-                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">What revenue target are you aiming for?</label>
-                    <div style="position: relative; display: flex; align-items: center;">
-                        <span style="position: absolute; left: 1rem; font-weight: 600; color: var(--color-text-muted);">${store.settings?.currency || '$'}</span>
-                        <input type="number" class="form-input" id="rev-goal" value="${store.revenue?.quarterlyGoal || ''}" min="0" step="1" placeholder="e.g., 15000" required style="border-radius: 8px; padding: 0.75rem 0.75rem 0.75rem 2rem; width: 100%;" />
+                <div class="form-group mb-6">
+                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.75rem; display: block;">What stage is your business at?</label>
+                    <div style="display: flex; flex-direction: column; gap: 0.6rem;">
+                        ${BUSINESS_STAGES.map((s, i) => `
+                        <label style="display: flex; align-items: flex-start; gap: 0.7rem; cursor: pointer; border: 1px solid var(--color-border); border-radius: 8px; padding: 0.75rem;">
+                            <input type="radio" name="biz-stage" value="${s.value}" ${currentStage === s.value || (!currentStage && i === 0) ? 'checked' : ''} required style="margin-top: 0.2rem; flex-shrink: 0;">
+                            <span>
+                                <span style="font-weight: 600; display: block; color: var(--color-black);">${s.value}</span>
+                                <span style="font-size: 0.82rem; color: var(--color-text-muted); line-height: 1.4;">${s.hint}</span>
+                            </span>
+                        </label>
+                        `).join('')}
                     </div>
                 </div>
+
+                <div class="form-group mb-2">
+                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.75rem; display: block;">Which describes this quarter best?</label>
+                    <div style="display: flex; flex-direction: column; gap: 0.6rem;">
+                        ${STRATEGY_MODES.map((m, i) => `
+                        <label style="display: flex; align-items: flex-start; gap: 0.7rem; cursor: pointer; border: 1px solid var(--color-border); border-radius: 8px; padding: 0.75rem;">
+                            <input type="radio" name="strategy-mode" value="${m.value}" ${currentMode === m.value || (!currentMode && i === 0) ? 'checked' : ''} required style="margin-top: 0.2rem; flex-shrink: 0;">
+                            <span>
+                                <span style="font-weight: 600; display: block; color: var(--color-black);">${m.label}</span>
+                                <span style="font-size: 0.82rem; color: var(--color-text-muted); line-height: 1.4;">${m.hint}</span>
+                            </span>
+                        </label>
+                        `).join('')}
+                    </div>
+                    <p style="font-size: 0.8rem; color: var(--color-text-muted); margin-top: 0.75rem;">You can change this later in Settings.</p>
+                </div>
+
                 <div class="flex justify-between mt-8" style="display: flex; gap: 1rem;">
                     <button type="button" class="btn btn-ghost" id="btn-back" style="flex: 1;">Back</button>
                     <button type="submit" class="btn btn-primary" style="flex: 2;">Next Step</button>
@@ -178,11 +248,57 @@ function renderStepContent() {
     }
 
     if (currentStep === 6) {
+        const cur = store.settings?.currency || '$';
+        return `
+            <h3 class="mb-2" style="font-family: var(--font-heading); font-weight: 700;">Financial Targets</h3>
+            <p class="form-helper mb-6" style="font-size: 0.95rem; color: var(--color-text-muted); line-height: 1.5;">Set a clear, measurable milestone for this 90-day period. These drive your progress bars, your pace alerts, and the number of sales your plan asks for.</p>
+
+            <form id="wizard-form-6">
+                <div class="form-group mb-4">
+                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">Which currency do you work in?</label>
+                    <select class="form-input" id="set-currency" required style="border-radius: 8px; padding: 0.75rem; width: 100%;">
+                        ${CURRENCIES.map(c => `<option value="${c.value}" ${cur === c.value ? 'selected' : ''}>${c.label}</option>`).join('')}
+                    </select>
+                </div>
+
+                <div class="form-group mb-4">
+                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">What revenue target are you aiming for this quarter?</label>
+                    <div style="position: relative; display: flex; align-items: center;">
+                        <span class="currency-prefix" style="position: absolute; left: 1rem; z-index: 1; font-weight: 600; color: var(--color-text-muted);">${cur}</span>
+                        <input type="number" class="form-input" id="rev-goal" value="${store.revenue?.quarterlyGoal || ''}" min="0" step="1" placeholder="e.g., 15000" required style="border-radius: 8px; padding: 0.75rem 0.75rem 0.75rem 2.5rem; width: 100%;" />
+                    </div>
+                </div>
+
+                <div class="form-group mb-4">
+                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">What does your main offer sell for?</label>
+                    <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-top: -0.25rem; margin-bottom: 0.5rem; line-height: 1.4;">Used to work out how many sales your target needs. A rough average is fine.</p>
+                    <div style="position: relative; display: flex; align-items: center;">
+                        <span class="currency-prefix" style="position: absolute; left: 1rem; z-index: 1; font-weight: 600; color: var(--color-text-muted);">${cur}</span>
+                        <input type="number" class="form-input" id="offer-price" value="${store.revenue?.averageOfferPrice || ''}" min="0" step="1" placeholder="e.g., 500" required style="border-radius: 8px; padding: 0.75rem 0.75rem 0.75rem 2.5rem; width: 100%;" />
+                    </div>
+                    <p id="sales-required-hint" style="font-size: 0.85rem; color: var(--color-primary-dark); margin-top: 0.5rem; min-height: 1.2em;"></p>
+                </div>
+
+                <div class="form-group mb-2">
+                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">How many new leads do you want this quarter?</label>
+                    <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-top: -0.25rem; margin-bottom: 0.5rem; line-height: 1.4;">People who show real interest, not followers. If you are not sure, pick something modest.</p>
+                    <input type="number" class="form-input" id="lead-goal" value="${store.leads?.quarterlyGoal || ''}" min="0" step="1" placeholder="e.g., 30" required style="border-radius: 8px; padding: 0.75rem; width: 100%;" />
+                </div>
+
+                <div class="flex justify-between mt-8" style="display: flex; gap: 1rem;">
+                    <button type="button" class="btn btn-ghost" id="btn-back" style="flex: 1;">Back</button>
+                    <button type="submit" class="btn btn-primary" style="flex: 2;">Next Step</button>
+                </div>
+            </form>
+        `;
+    }
+
+    if (currentStep === 7) {
         return `
             <h3 class="mb-2" style="font-family: var(--font-heading); font-weight: 700;">Choose Your Top 3 Priorities</h3>
             <p class="form-helper mb-6" style="font-size: 0.95rem; color: var(--color-text-muted); line-height: 1.5;">To achieve your focus, what are the three big projects that will move the needle?</p>
-            
-            <form id="wizard-form-6">
+
+            <form id="wizard-form-7">
                 <div class="form-group" style="display: flex; flex-direction: column; gap: 1rem;">
                     <div>
                         <label class="form-label" style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0.4rem; display: block;">Priority 1</label>
@@ -197,7 +313,7 @@ function renderStepContent() {
                         <input type="text" class="form-input" id="p3" value="${g.priorities[2] || ''}" placeholder="e.g., Host weekly IG live Q&As" required style="border-radius: 8px; padding: 0.75rem;" />
                     </div>
                 </div>
-                <div class="flex justify-between mt-8" id="wizard-step-6-buttons" style="display: flex; gap: 1rem;">
+                <div class="flex justify-between mt-8" id="wizard-step-7-buttons" style="display: flex; gap: 1rem;">
                     <button type="button" class="btn btn-ghost" id="btn-back" style="flex: 1;">Back</button>
                     <button type="submit" class="btn btn-primary" id="btn-complete-setup" style="flex: 2;">Generate My 90-Day Plan</button>
                 </div>
@@ -209,7 +325,7 @@ function renderStepContent() {
         `;
     }
 
-    if (currentStep === 7) {
+    if (currentStep === 8) {
         return `
             <div style="text-align: center; padding: 1rem 0;">
                 <div style="font-size: 3.5rem; margin-bottom: 1.5rem; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.05));">🎉</div>
@@ -291,6 +407,41 @@ function wizardAttachEvents() {
         }
     }
 
+    if (currentStep === 6) {
+        const currencySelect = document.getElementById('set-currency');
+        const revGoalInput = document.getElementById('rev-goal');
+        const offerPriceInput = document.getElementById('offer-price');
+        const hint = document.getElementById('sales-required-hint');
+
+        // Show what the two numbers mean together, so the sales-required figure is
+        // something the user watched being derived rather than a number sprung on
+        // her later on the dashboard.
+        const updateHint = () => {
+            if (!hint) return;
+            const goal = parseFloat(revGoalInput?.value) || 0;
+            const price = parseFloat(offerPriceInput?.value) || 0;
+            const symbol = currencySelect?.value || '$';
+            if (goal > 0 && price > 0) {
+                const sales = Math.ceil(goal / price);
+                hint.textContent = `That's ${sales} sale${sales === 1 ? '' : 's'} at ${symbol}${price.toLocaleString()} to reach ${symbol}${goal.toLocaleString()}.`;
+            } else {
+                hint.textContent = '';
+            }
+        };
+
+        if (currencySelect) {
+            currencySelect.addEventListener('change', () => {
+                document.querySelectorAll('.currency-prefix').forEach(el => {
+                    el.textContent = currencySelect.value;
+                });
+                updateHint();
+            });
+        }
+        revGoalInput?.addEventListener('input', updateHint);
+        offerPriceInput?.addEventListener('input', updateHint);
+        updateHint();
+    }
+
     if (form) {
         form.addEventListener('submit', (e) => {
             e.preventDefault();
@@ -344,14 +495,29 @@ function wizardAttachEvents() {
                 wizardAttachEvents();
             }
             else if (currentStep === 5) {
-                const quarterlyGoal = parseFloat(document.getElementById('rev-goal').value);
-                updateRevenueSettings({ quarterlyGoal });
+                const stage = document.querySelector('input[name="biz-stage"]:checked')?.value || '';
+                const strategyMode = document.querySelector('input[name="strategy-mode"]:checked')?.value || '';
+                updateProfile({ stage, strategyMode });
 
                 currentStep++;
                 document.getElementById('app-container').innerHTML = renderWizard();
                 wizardAttachEvents();
             }
             else if (currentStep === 6) {
+                const currency = document.getElementById('set-currency').value;
+                const quarterlyGoal = parseFloat(document.getElementById('rev-goal').value) || 0;
+                const averageOfferPrice = parseFloat(document.getElementById('offer-price').value) || 0;
+                const leadGoal = parseFloat(document.getElementById('lead-goal').value) || 0;
+
+                updateSettings({ currency });
+                updateRevenueSettings({ quarterlyGoal, averageOfferPrice });
+                updateLeadGoal(leadGoal);
+
+                currentStep++;
+                document.getElementById('app-container').innerHTML = renderWizard();
+                wizardAttachEvents();
+            }
+            else if (currentStep === 7) {
                 currentGoals.priorities = [
                     document.getElementById('p1').value.trim(),
                     document.getElementById('p2').value.trim(),
@@ -366,18 +532,13 @@ function wizardAttachEvents() {
                 // Keeps statement already set in Step 2 instead of hard-overwriting it here
                 updateGoals(currentGoals);
 
-                // Set defaults for settings
-                updateSettings({
-                    currency: store.settings?.currency || '$'
-                });
-                updateRevenueSettings({
-                    quarterlyGoal: parseFloat(store.revenue?.quarterlyGoal || 0),
-                    averageOfferPrice: 1000
-                });
-                updateLeadGoal(100);
+                // Currency, revenue goal, offer price and lead goal are all collected
+                // on step 6 now. They used to be invented here — a £1000 offer price
+                // and a 100 lead goal the user never chose, then shown back to her as
+                // "0 / 100 leads" and a sales-required figure she could not explain.
 
                 // Show loading spinner
-                const buttonsDiv = document.getElementById('wizard-step-6-buttons');
+                const buttonsDiv = document.getElementById('wizard-step-7-buttons');
                 const loadingDiv = document.getElementById('wizard-loading');
                 if (buttonsDiv && loadingDiv) {
                     buttonsDiv.style.display = 'none';
@@ -388,14 +549,20 @@ function wizardAttachEvents() {
                 generate90DayActionPlan().then(plan => {
                     if (plan) {
                         applyGeneratedPlan(plan);
-                        
+
+                        // The 90 days start here. Every pace, projection and
+                        // momentum figure measures from this stamp.
+                        startNewQuarter();
+
+                        // Stage is chosen on step 5 now, so it is no longer forced to
+                        // 'growth' here. Bottleneck is required on step 4, so the
+                        // fallback only covers a store written by an older version.
                         updateProfile({
                             trialStartDate: new Date().toISOString(),
-                            stage: store.profile?.stage || 'growth',
                             bottleneck: store.profile?.bottleneck || 'Lead Generation'
                         });
 
-                        currentStep = 7;
+                        currentStep = 8;
                         document.getElementById('app-container').innerHTML = renderWizard();
                         wizardAttachEvents();
                     } else {
@@ -403,7 +570,7 @@ function wizardAttachEvents() {
                             buttonsDiv.style.display = 'flex';
                             loadingDiv.style.display = 'none';
                         }
-                        alert("Couldn't generate your plan right now — try again in a moment.");
+                        showToast("Couldn't generate your plan right now — try again in a moment.", 'error');
                     }
                 }).catch(err => {
                     console.error("AI action plan generation failed", err);
@@ -411,7 +578,7 @@ function wizardAttachEvents() {
                         buttonsDiv.style.display = 'flex';
                         loadingDiv.style.display = 'none';
                     }
-                    alert("Couldn't generate your plan right now — try again in a moment.");
+                    showToast("Couldn't generate your plan right now — try again in a moment.", 'error');
                 });
             }
         });

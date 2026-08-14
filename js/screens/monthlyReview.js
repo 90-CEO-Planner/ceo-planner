@@ -2,6 +2,7 @@
 import { renderNav } from '../components/nav.js';
 import { getStore, addMonthlyReview } from '../store.js';
 import { renderTooltip } from '../components/tooltip.js';
+import { showToast } from '../components/toast.js';
 
 export function renderMonthlyReview() {
     window.setScreenModule({ attachEvents: monthlyReviewAttachEvents });
@@ -120,7 +121,7 @@ function monthlyReviewAttachEvents() {
         recognition.onerror = function (event) {
             console.error("Speech recognition error", event.error);
             stopRecording();
-            alert("Microphone error. Please check permissions.");
+            showToast("We couldn't reach your microphone. Check the site's permissions and try again.", 'error');
         };
 
         recognition.onend = function () {
@@ -221,7 +222,7 @@ Analyze what drained me. Be ruthless. Tell me exactly what I need to stop doing,
                     body: { messages: [{ role: 'user', content: promptText }] }
                 });
 
-                if (error) throw new Error(error.message);
+                if (error) throw new Error(await window.readFunctionError(error));
                 if (data.error) throw new Error(data.error.message || data.error);
 
                 // For simple markdown bolding and line breaks since we aren't using a markdown parser library

@@ -1,4 +1,5 @@
 // auth.js
+import { showToast } from '../components/toast.js';
 
 export function renderAuth(mode = 'login') {
     // Keep compatibility with old boolean signature
@@ -72,7 +73,7 @@ export function renderAuth(mode = 'login') {
                     ${mode === 'login' ? `
                     <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: -0.5rem; margin-bottom: 0.5rem;">
                         <input type="checkbox" id="auth-remember" style="width: 16px; height: 16px; cursor: pointer; accent-color: var(--color-primary);">
-                        <label for="auth-remember" style="font-size: 0.85rem; color: var(--color-text-muted); cursor: pointer; user-select: none;">Remember password</label>
+                        <label for="auth-remember" style="font-size: 0.85rem; color: var(--color-text-muted); cursor: pointer; user-select: none;">Remember me</label>
                     </div>
                     ` : ''}
 
@@ -111,13 +112,11 @@ function authAttachEvents() {
     if (stripeEmail && document.getElementById('auth-email')) {
         document.getElementById('auth-email').value = stripeEmail;
     } else if (!isSignup && !isForgot && !isReset) {
+        // Email only. Supabase already persists the session, so there is never a
+        // reason to keep the password anywhere on the device.
         const rememberedEmail = localStorage.getItem('ceo_remembered_email');
-        const rememberedPassword = localStorage.getItem('ceo_remembered_password');
         if (rememberedEmail && document.getElementById('auth-email')) {
             document.getElementById('auth-email').value = rememberedEmail;
-        }
-        if (rememberedPassword && document.getElementById('auth-password')) {
-            document.getElementById('auth-password').value = rememberedPassword;
         }
         if (rememberedEmail && document.getElementById('auth-remember')) {
             document.getElementById('auth-remember').checked = true;
@@ -147,9 +146,9 @@ function authAttachEvents() {
                     btn.innerText = originalText;
                     btn.style.opacity = '1';
                     if (error) {
-                        alert("Error: " + error.message);
+                        showToast("We couldn't send that reset email: " + error.message, 'error');
                     } else {
-                        alert("Password reset email sent! Please check your inbox.");
+                        showToast("Password reset email sent. Please check your inbox.");
                         window.location.hash = '#/login';
                     }
                 });
@@ -160,9 +159,9 @@ function authAttachEvents() {
                     btn.innerText = originalText;
                     btn.style.opacity = '1';
                     if (error) {
-                        alert("Reset failed: " + error.message);
+                        showToast("Reset failed: " + error.message, 'error');
                     } else {
-                        alert("Password updated successfully! Please log in with your new password.");
+                        showToast("Password updated. Please log in with your new password.");
                         window.location.hash = '#/login';
                     }
                 });
@@ -178,7 +177,7 @@ function authAttachEvents() {
                 options: { data: { name: name } }
             }).then(async ({ data: signUpData, error: signUpError }) => {
                 if (signUpError) {
-                    alert("Sign up failed: " + signUpError.message);
+                    showToast("Sign up failed: " + signUpError.message, 'error');
                     btn.innerText = originalText;
                     btn.style.opacity = '1';
                     return;
@@ -202,6 +201,12 @@ function authAttachEvents() {
                     console.warn('Loops sync failed at signup:', err.message);
                 }
 
+                // A brand new account starts empty. Without this, whatever plan and
+                // revenue happened to be in this browser — a previous user's, or a
+                // half-finished wizard — is adopted by the new account and pushed to
+                // their cloud row on the first save.
+                localStorage.removeItem('ceoPlanner_store');
+
                 localStorage.setItem('ceo_auth', 'true');
                 window.location.hash = '#/';
                 window.location.reload();
@@ -213,23 +218,33 @@ function authAttachEvents() {
                 password: password
             }).then(async ({ data, error }) => {
                 if (error) {
-                    alert("Login failed: " + error.message);
+                    showToast("Login failed: " + error.message, 'error');
                     btn.innerText = originalText;
                     btn.style.opacity = '1';
                 } else {
-                    // Fetch user's cloud data and populate local storage
+                    // Drop whoever was on this device before doing anything else.
+                    // This used to only *overwrite* on a successful cloud read, and
+                    // the read used .single(), which throws when there is no row —
+                    // so logging in as a second user on a shared browser handed them
+                    // the first user's plans and revenue, and wrote it to their row.
+                    localStorage.removeItem('ceoPlanner_store');
+
+                    // Then restore this account's own data, if they have any yet.
                     try {
                         const { data: dbData, error: dbError } = await window.db
                             .from('user_data')
                             .select('data')
                             .eq('user_id', data.user.id)
-                            .single();
-                        
+                            .maybeSingle();
+
+                        if (dbError) throw dbError;
+
                         if (dbData && dbData.data) {
                             localStorage.setItem('ceoPlanner_store', JSON.stringify(dbData.data));
                         }
                     } catch (err) {
-                        console.log("No cloud profile found or error fetching. Starting fresh.", err);
+                        // A new account with no cloud row lands here legitimately.
+                        console.log("No cloud data for this account yet. Starting fresh.", err);
                     }
 
                     // Read the real subscription and trial state from the database
@@ -240,14 +255,12 @@ function authAttachEvents() {
                         localStorage.setItem('ceo_sub_status', 'trialing');
                     }
 
-                    // Handle "Remember password"
+                    // Handle "Remember me" — the email, and only the email.
                     const rememberEl = document.getElementById('auth-remember');
                     if (rememberEl && rememberEl.checked) {
                         localStorage.setItem('ceo_remembered_email', email);
-                        localStorage.setItem('ceo_remembered_password', password);
                     } else {
                         localStorage.removeItem('ceo_remembered_email');
-                        localStorage.removeItem('ceo_remembered_password');
                     }
 
                     localStorage.setItem('ceo_auth', 'true');
