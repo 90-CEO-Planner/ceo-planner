@@ -254,6 +254,17 @@ function parseDateInput(value) {
     return new Date(year, month - 1, day, 12, 0, 0, 0);
 }
 
+// Money for display. Whole amounts stay clean ("1,500"), amounts with pence keep
+// both decimal places ("1,500.50"). Plain toLocaleString() dropped the trailing
+// zero, so a sale logged as 1500.50 was shown back to the user as "1,500.5".
+function formatAmount(value) {
+    const n = parseFloat(value) || 0;
+    return n.toLocaleString(undefined, {
+        minimumFractionDigits: Number.isInteger(n) ? 0 : 2,
+        maximumFractionDigits: 2
+    });
+}
+
 // The single definition of "this week" for the whole app. Weeks start Monday,
 // matching the Monday planning ritual the product is built around. Anything that
 // buckets by week must use this, or two panels on one screen disagree.
@@ -547,8 +558,24 @@ function getRevenueInsights() {
     const goal = parseFloat(rev.quarterlyGoal) || 0;
     const price = parseFloat(rev.averageOfferPrice) || 0;
 
+    // Every entry ever logged. The pipeline feed, the history chart and the CSV
+    // export all need the full list, so this stays unfiltered.
     const entries = rev.entries || [];
-    const totalRevenue = entries.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
+
+    // The subset that belongs to the active quarter. Entries dated before the
+    // quarter began — history someone typed in at onboarding, or an import — used
+    // to count in full towards the goal while the pace maths divided by the weeks
+    // since the quarter started. A month of back-entered sales then read as one
+    // week's work and the projection came out roughly four times too high.
+    const quarterStart = store.quarterStartDate ? new Date(store.quarterStartDate) : null;
+    const quarterEntries = (quarterStart && Number.isFinite(quarterStart.getTime()))
+        ? entries.filter(e => new Date(e.date).getTime() >= quarterStart.getTime())
+        : entries;
+
+    const totalRevenue = quarterEntries.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
+    // What was logged against earlier dates, so the Revenue screen can account for
+    // the difference rather than appearing to have lost it.
+    const revenueBeforeQuarter = entries.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0) - totalRevenue;
 
     const now = new Date();
     const currentMonth = now.getMonth();
@@ -708,6 +735,10 @@ function getRevenueInsights() {
         revenueByOfferQuarter,
         topSource,
         topOffer,
+        // Logged against dates before this quarter began. Counted in `entries` but
+        // deliberately excluded from totalRevenue, progress and the projection.
+        revenueBeforeQuarter,
+        quarterEntryCount: quarterEntries.length,
         entries: entries.slice().sort((a, b) => new Date(b.date) - new Date(a.date)) // newest first
     };
 }
@@ -719,7 +750,11 @@ function addWeeklyPlan(plan) {
     store.weeklyPlans.push(plan);
 
     // Recalculate planning streak based on consecutive weeks
-    store.planningStreak = calculateStreak(store.weeklyPlans);
+    // Only weeks the user actually committed to count. Counting the twelve
+    // generated-but-unapplied weeks would report a streak nobody had earned.
+    store.planningStreak = calculateStreak(
+        store.weeklyPlans.filter(p => p.applied || !p.generated)
+    );
 
     saveStore(store);
 }
@@ -729,6 +764,15 @@ function updateWeeklyPlan(planId, updatedFields) {
     const index = store.weeklyPlans.findIndex(p => String(p.id) === String(planId));
     if (index !== -1) {
         store.weeklyPlans[index] = { ...store.weeklyPlans[index], ...updatedFields };
+
+        // Applying a generated week is planning, and it is how most people plan,
+        // because the roadmap pre-generates all twelve. The streak used to be
+        // recalculated only in addWeeklyPlan(), so anyone following the roadmap saw
+        // "Plan: 0w" on their dashboard forever no matter how consistent they were.
+        store.planningStreak = calculateStreak(
+            store.weeklyPlans.filter(p => p.applied || !p.generated)
+        );
+
         saveStore(store);
     }
 }
@@ -1303,7 +1347,8 @@ RULES (apply all of them):
 8. Write in their voice: warm, direct, specific, no hype, no jargon. The user is a tired founder reading this on their phone.
 10. The 'successCheck' for each week MUST be highly realistic and grounded based on the user's stage. Do NOT set unattainable lag-metric checks (e.g., "10 new sales" or "50 signups" for a beginner). Instead, tie the check to the completion of the week's input actions (e.g., "Drafted 3 emails" or "Pitched 5 people").
 11. NEVER recommend tools they did not mention. NEVER assume budget or team. Default to "free or already-owned" tools.
-12. Output JSON only. No markdown, no code fences, no prose before or after.
+12. Keep each topPriorities entry under 70 characters. They are rendered in single-line inputs on the weekly planner, so anything longer is cut off mid-sentence and the user cannot read their own priorities. One action per entry, no "Task:"/"Execution:" labels, no semicolons joining two actions.
+13. Output JSON only. No markdown, no code fences, no prose before or after.
 OUTPUT FORMAT (return exactly this JSON shape):
 {
   "summary": "One paragraph (3-4 sentences) explaining the plan's logic, what's realistic, and what's stretch.",
@@ -1326,9 +1371,9 @@ OUTPUT FORMAT (return exactly this JSON shape):
       "monthIndex": 1,
       "weeklyFocus": "One sentence focus for the week, tied to monthly theme.",
       "topPriorities": [
-        "Task: [Actionable task]. Execution: [Clear step-by-step direction on how to carry it out]",
-        "Task: [Actionable task]. Execution: [Clear step-by-step direction on how to carry it out]",
-        "Task: [Actionable task]. Execution: [Clear step-by-step direction on how to carry it out]"
+        "[One specific action, max 70 characters, no 'Task:' or 'Execution:' prefix]",
+        "[One specific action, max 70 characters, no 'Task:' or 'Execution:' prefix]",
+        "[One specific action, max 70 characters, no 'Task:' or 'Execution:' prefix]"
       ],
       "visibilityAction": "ONE specific visibility task this week (audience-facing, no sale).",
       "revenueAction": "ONE specific revenue task this week (a direct invitation to buy).",
@@ -1914,8 +1959,17 @@ const CURRENCIES = [
     { value: 'R', label: 'R  South African Rand (ZAR)' }
 ];
 
+// Send the wizard back to its first step. Quarter Reset routes to #/wizard without
+// a page reload, so this module's currentStep survives — someone who reset in the
+// same session they onboarded in landed on the step 8 "you're all set" screen.
+function resetWizardProgress() {
+    currentStep = 1;
+}
+
 function renderWizard() {
     window.setScreenModule({ attachEvents: wizardAttachEvents });
+    // Belt and braces: an empty store means a fresh start, whatever step we were on.
+    if (!getStore().goals?.focus && currentStep === TOTAL_STEPS) currentStep = 1;
     return `
         <div class="main-content" style="max-width: 600px; padding-top: 5vh;">
             <div style="margin-bottom: 2rem; text-align: center;">
@@ -1986,9 +2040,17 @@ function renderStepContent() {
                     </div>
                 </div>
                 <div class="form-group mb-6">
-                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">CEO Commitment Statement</label>
-                    <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-top: -0.25rem; margin-bottom: 0.5rem;">Your daily reminder shown on the dashboard.</p>
-                    <textarea id="set-commitment" class="form-input" style="border-radius: 8px; padding: 0.75rem; min-height: 80px; width: 100%; font-family: var(--font-body); font-size: 0.95rem;" required>${store.goals.statement || 'I commit to prioritizing my top tasks before checking email, and trusting my strategy.'}</textarea>
+                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">CEO Commitment Statement <span style="font-weight: 400; color: var(--color-text-muted);">(optional)</span></label>
+                    <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-top: -0.25rem; margin-bottom: 0.5rem; line-height: 1.5;">
+                        One sentence about <em>how</em> you want to work this quarter, not what you want to achieve.
+                        It sits on your dashboard every day as a reminder of the promise you made yourself.
+                        Most people write about the habit they keep breaking. You can change it any time in Settings.
+                    </p>
+                    <p style="color: var(--color-text-main); font-size: 0.85rem; margin-bottom: 0.75rem; padding: 0.6rem 0.85rem; background: var(--color-primary-light); border-radius: 8px; border-left: 3px solid var(--color-primary); line-height: 1.5;">
+                        <strong style="color: var(--color-primary-dark);">Example:</strong>
+                        <em>"I commit to protecting two deep-work mornings a week, no matter what the inbox says."</em>
+                    </p>
+                    <textarea id="set-commitment" class="form-input" style="border-radius: 8px; padding: 0.75rem; min-height: 80px; width: 100%; font-family: var(--font-body); font-size: 0.95rem;" placeholder="I commit to prioritizing my top tasks before checking email, and trusting my strategy.">${store.goals.statement || ''}</textarea>
                 </div>
                 
                 <div class="flex justify-between mt-8" style="display: flex; gap: 1rem;">
@@ -2126,7 +2188,7 @@ function renderStepContent() {
                 <div class="form-group mb-4">
                     <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">What revenue target are you aiming for this quarter?</label>
                     <div style="position: relative; display: flex; align-items: center;">
-                        <span class="currency-prefix" style="position: absolute; left: 1rem; font-weight: 600; color: var(--color-text-muted);">${cur}</span>
+                        <span class="currency-prefix" style="position: absolute; left: 1rem; z-index: 1; font-weight: 600; color: var(--color-text-muted);">${cur}</span>
                         <input type="number" class="form-input" id="rev-goal" value="${store.revenue?.quarterlyGoal || ''}" min="0" step="1" placeholder="e.g., 15000" required style="border-radius: 8px; padding: 0.75rem 0.75rem 0.75rem 2.5rem; width: 100%;" />
                     </div>
                 </div>
@@ -2135,7 +2197,7 @@ function renderStepContent() {
                     <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">What does your main offer sell for?</label>
                     <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-top: -0.25rem; margin-bottom: 0.5rem; line-height: 1.4;">Used to work out how many sales your target needs. A rough average is fine.</p>
                     <div style="position: relative; display: flex; align-items: center;">
-                        <span class="currency-prefix" style="position: absolute; left: 1rem; font-weight: 600; color: var(--color-text-muted);">${cur}</span>
+                        <span class="currency-prefix" style="position: absolute; left: 1rem; z-index: 1; font-weight: 600; color: var(--color-text-muted);">${cur}</span>
                         <input type="number" class="form-input" id="offer-price" value="${store.revenue?.averageOfferPrice || ''}" min="0" step="1" placeholder="e.g., 500" required style="border-radius: 8px; padding: 0.75rem 0.75rem 0.75rem 2.5rem; width: 100%;" />
                     </div>
                     <p id="sales-required-hint" style="font-size: 0.85rem; color: var(--color-primary-dark); margin-top: 0.5rem; min-height: 1.2em;"></p>
@@ -3010,10 +3072,32 @@ function getQuietAdvisorPulses(store, revInsights, leadsConversion, activePlan) 
     const day = new Date().getDay(); // 0 is Sunday, 5 is Friday
 
     // Revenue Pulse Logic
-    if (revInsights.projectedRevenue < revInsights.goal && revInsights.goal > 0) {
+    const weeksElapsed = getWeeksElapsed(store) || 1;
+    const hasAnyRevenue = revInsights.totalRevenue > 0;
+    const stage = (store.profile?.stage || '').toLowerCase();
+
+    // The suggestion used to be a single hardcoded line telling everyone to contact
+    // their "3 most loyal past clients" — advice that lands badly on someone who
+    // picked "Just starting out" in the wizard and has no past clients at all.
+    const paceSuggestion = stage.includes('just starting')
+        ? 'Ask three people who know your work whether they need this, and invite one of them to buy.'
+        : stage.includes('scaling')
+            ? 'Send a custom bundle to your three most loyal past clients.'
+            : 'Send a personal invitation to the five people who engaged with you most this month.';
+
+    if (revInsights.goal > 0 && !hasAnyRevenue && weeksElapsed <= 1) {
+        // Week one with nothing logged is not "behind", it is normal. Telling a new
+        // customer they are 100% behind target on their first afternoon is the
+        // fastest way to lose them.
+        pulses.revenue = {
+            title: "First Move",
+            message: `Nothing logged yet, which is exactly right this early. ${paceSuggestion}`,
+            color: "var(--color-primary)"
+        };
+    } else if (revInsights.projectedRevenue < revInsights.goal && revInsights.goal > 0) {
         pulses.revenue = {
             title: "Pace Alert",
-            message: `You are ${(100 - revInsights.progressPercent).toFixed(0)}% behind target. Suggestion: Send custom bundle to your 3 most loyal past clients.`,
+            message: `You are ${(100 - revInsights.progressPercent).toFixed(0)}% behind target. Suggestion: ${paceSuggestion}`,
             color: "#B42318" // Red
         };
     } else if (revInsights.revenueThisWeek > 0 || revInsights.goal > 0) {
@@ -3046,6 +3130,7 @@ function getCoachingEngineData(store, activePlan, revInsights) {
     const day = new Date().getDay(); // 0 = Sunday, 1 = Monday, ..., 5 = Friday
     const userName = store.profile?.name || 'CEO';
     const streak = store.streak || 0;
+    const currency = store.settings?.currency || '$';
 
     // Check Daily Tasks completion
     const todayStr = getLocalDateString();
@@ -3057,12 +3142,26 @@ function getCoachingEngineData(store, activePlan, revInsights) {
         todaysLog.forEach(t => { if (!t.done) allDailyChecked = false; });
     }
 
+    // What has actually happened, as opposed to what day it is. Every rule below
+    // that nags the user has to check one of these first: this card used to run on
+    // the calendar alone, so it told brand new users to "close out the week strong"
+    // on their first afternoon, and kept saying it after they had already reviewed.
+    const weekStart = getWeekStart();
+    const reviewedThisWeek = (store.reviews || []).some(r => new Date(r.date) >= weekStart);
+    const hasEverPlanned = (store.weeklyPlans || []).some(p => p.applied || !p.generated);
+    const planningDay = store.profile?.planningDay || 'Monday';
+    const isPlanningDay = new Date().toLocaleDateString('en-US', { weekday: 'long' }) === planningDay;
+
     // --- State Priority Evaluation ---
 
     // 0. Quarter Reset Needed (90 days elapsed)
-    if (store.weeklyPlans && store.weeklyPlans.length > 0) {
-        const firstPlanDate = new Date(store.weeklyPlans[0].date);
-        const daysElapsed = Math.floor((Date.now() - firstPlanDate.getTime()) / (1000 * 60 * 60 * 24));
+    // Measured from quarterStartDate, which is stamped on wizard completion and on
+    // each reset. weeklyPlans[0].date is when the roadmap was *generated* — all 12
+    // carry the same timestamp, so regenerating a plan used to move the finish line.
+    const quarterOrigin = store.quarterStartDate
+        || (store.weeklyPlans && store.weeklyPlans.length > 0 ? store.weeklyPlans[0].date : null);
+    if (quarterOrigin) {
+        const daysElapsed = Math.floor((Date.now() - new Date(quarterOrigin).getTime()) / (1000 * 60 * 60 * 24));
         if (daysElapsed >= 90) {
             return {
                 title: "Quarter Complete",
@@ -3073,6 +3172,33 @@ function getCoachingEngineData(store, activePlan, revInsights) {
                 icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>`
             };
         }
+    }
+
+    // 0.4 Never planned a week yet. This outranks every calendar rule on purpose:
+    // someone who signed up on a Friday needs their first week set up, not a prompt
+    // to review a week they have not had.
+    if (!hasEverPlanned) {
+        return {
+            title: "Start Here",
+            message: `Your 90-day plan is ready, ${userName}. The next step is turning week one into three actions you'll actually do.`,
+            actionLabel: "Plan your first week",
+            actionHash: "#/monday-plan",
+            color: "#00C2CB", // Primary WEN
+            icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>`
+        };
+    }
+
+    // 0.45 It's their planning day and this week has no plan. This is the only route
+    // into the Monday Plan flow, which otherwise has no link anywhere in the app.
+    if (isPlanningDay && !activePlan) {
+        return {
+            title: `${planningDay} Planning`,
+            message: `It's ${planningDay}, ${userName}. Set this week's focus now, before the week sets it for you.`,
+            actionLabel: "Plan my week",
+            actionHash: "#/monday-plan",
+            color: "#00C2CB",
+            icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>`
+        };
     }
 
     // 0.5 Monthly Review Needed
@@ -3117,8 +3243,11 @@ function getCoachingEngineData(store, activePlan, revInsights) {
         };
     }
 
-    // 2. Missing Friday Review
-    if (day === 5 || (day === 6 && activePlan)) {
+    // 2. Missing Friday Review. Gated on there being a week to review and on not
+    // having already done it: this used to fire on the day of the week alone, so it
+    // nagged people who had just submitted their review and greeted brand new users
+    // with a prompt to close out a week they never had.
+    if ((day === 5 || day === 6) && activePlan && !reviewedThisWeek) {
         return {
             title: "Weekly Wrap-up",
             message: `It's time to review your week, ${userName}. What moved the business forward? Log your lessons and close out the week strong.`,
@@ -3129,11 +3258,24 @@ function getCoachingEngineData(store, activePlan, revInsights) {
         };
     }
 
+    // 2.5 Review already done and the week is winding down. Says something true
+    // rather than falling through to a generic "you are on track".
+    if ((day === 5 || day === 6 || day === 0) && reviewedThisWeek) {
+        return {
+            title: "Week Closed Out",
+            message: `Review logged, ${userName}. Your coach has drafted next week already, so rest properly — it'll be waiting on ${planningDay}.`,
+            actionLabel: "See next week's draft",
+            actionHash: "#/monday-plan",
+            color: "#027A48", // Green
+            icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>`
+        };
+    }
+
     // 3. Revenue Celebration
     if (revInsights.totalRevenue >= revInsights.goal && revInsights.goal > 0) {
         return {
             title: "Celebration",
-            message: `Incredible work, ${userName}! You've hit your quarterly revenue goal of $${revInsights.goal.toLocaleString()}. Take a moment to celebrate.`,
+            message: `Incredible work, ${userName}! You've hit your quarterly revenue goal of ${currency}${revInsights.goal.toLocaleString()}. Take a moment to celebrate.`,
             actionLabel: "Review Your Wins",
             actionHash: "#/progress",
             color: "#00C2CB", // Primary WEN
@@ -3145,7 +3287,7 @@ function getCoachingEngineData(store, activePlan, revInsights) {
     if (activePlan && (!activePlan.revenueAction || activePlan.revenueAction.trim().length < 5)) {
         return {
             title: "Business Bottleneck",
-            message: `${userName}, there are no revenue-generating actions in your plan this week. We can't hit your $${revInsights.goal.toLocaleString()} goal without invitations.`,
+            message: `${userName}, there are no revenue-generating actions in your plan this week. We can't hit your ${currency}${revInsights.goal.toLocaleString()} goal without invitations.`,
             actionLabel: "Add Revenue Action",
             actionHash: "#/planner",
             color: "#B42318", // Red
@@ -4099,6 +4241,10 @@ let pipelineFilter = 'all'; // 'all' | 'sale' | 'lead'
 let pipelineLimit = 15;
 const PIPELINE_PAGE_SIZE = 15;
 
+// Which logging tab is open. Module level for the same reason as the pipeline
+// state above: saving re-renders the screen, and the tab should not move.
+let activeLogTab = 'tab-rev';
+
 function renderRevenue() {
     window.setScreenModule({ attachEvents: revenueAttachEvents });
     const store = getStore();
@@ -4143,7 +4289,9 @@ function renderRevenue() {
     // Conversion Rates
     const leadToSaleConversion = totalLeads > 0 ? ((effectiveCloses / totalLeads) * 100).toFixed(1) : 0;
     const callBookingRate = totalLeads > 0 ? ((totalCalls / totalLeads) * 100).toFixed(1) : 0;
-    const callCloseRate = totalCalls > 0 ? ((effectiveCloses / totalCalls) * 100).toFixed(1) : (effectiveCloses > 0 ? 100 : 0);
+    // No calls logged means there is no close rate to report. This used to return
+    // 100% off a single sale and zero calls, which read as a perfect record.
+    const callCloseRate = totalCalls > 0 ? ((effectiveCloses / totalCalls) * 100).toFixed(1) : null;
 
     return `
         ${renderNav()}
@@ -4179,6 +4327,10 @@ function renderRevenue() {
                         Quarter Revenue Goal
                     </p>
                     <h3 style="font-size: 1.75rem; color: var(--color-black); margin: 0;">${currency}${insights.goal.toLocaleString()}</h3>
+                    ${insights.revenueBeforeQuarter > 0 ? `
+                    <p style="font-size: 0.7rem; color: var(--color-text-muted); margin: 0.5rem 0 0 0; line-height: 1.35;">
+                        Plus ${currency}${insights.revenueBeforeQuarter.toLocaleString(undefined, { maximumFractionDigits: 2 })} logged before this quarter started, kept in your history but not counted towards this goal.
+                    </p>` : ''}
                 </div>
                 <div class="card" style="padding: 1.5rem; text-align: center; border: 2px solid var(--color-primary-light);">
                     <p style="display: flex; align-items: center; justify-content: center; font-size: 0.8rem; color: var(--color-primary-dark); font-weight: 600; margin-bottom: 0.5rem; text-transform: uppercase;">
@@ -4196,7 +4348,7 @@ function renderRevenue() {
                     <p style="display: flex; align-items: center; justify-content: center; font-size: 0.8rem; color: var(--color-text-muted); font-weight: 600; margin-bottom: 0.5rem; text-transform: uppercase;">
                         Call Close Rate
                     </p>
-                    <h3 style="font-size: 1.75rem; color: var(--color-black); margin: 0;">${callCloseRate}%</h3>
+                    <h3 style="font-size: 1.75rem; color: var(--color-black); margin: 0;">${callCloseRate === null ? '&mdash;' : callCloseRate + '%'}</h3>
                 </div>
             </div>
 
@@ -4529,7 +4681,7 @@ function renderPipelineEvents(entries, leads, currency) {
             return `
                 <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.75rem; border-bottom: 1px solid var(--color-border);">
                     <div>
-                        <span style="font-weight: 600; color: var(--color-black); display: block;">${currency}${parseFloat(e.amount).toLocaleString()}</span>
+                        <span style="font-weight: 600; color: var(--color-black); display: block;">${currency}${formatAmount(e.amount)}</span>
                         <span style="font-size: 0.8rem; color: var(--color-text-muted);">SALE • ${new Date(e.date).toLocaleDateString()}${e.source ? ' • ' + e.source : ''}${e.offer ? ' • ' + e.offer : ''}</span>
                     </div>
                     <button type="button" class="btn btn-ghost btn-sm btn-delete-revenue" data-id="${e.id}" style="padding: 0.25rem; color: var(--color-text-muted);">🗑️</button>
@@ -4624,17 +4776,34 @@ window.generateAiReport = async function() {
     try {
         const store = window.currentScreenModuleStore || JSON.parse(localStorage.getItem('ceoPlanner_store') || '{}');
         const insights = getRevenueInsights();
+        const currency = store.settings?.currency || '$';
         const leads = store.leads?.entries || [];
         const metrics = store.metrics || [];
         
-        let prompt = `Analyze this exact SaaS / Business revenue data and provide a brutally honest Executive Summary.
-        
+        // Tone deliberately matches the 90-day plan prompt in aiService.js. Asking
+        // for "brutally honest" produced reports calling a week-one founder's
+        // numbers "abysmal" and "a failure", which is not what this audience is
+        // paying for and is a fast route to a cancelled subscription.
+        // Currency must be stated: without it the model defaults to $ and a UK
+        // user who set £ gets their own figures back in dollars.
+        let prompt = `Analyze this business revenue data and provide a clear, honest Executive Summary.
+
+        Tone: direct and specific, warm rather than harsh. Name problems plainly and
+        without euphemism, but never insult the reader or their results. They are a
+        founder doing their best with limited time. If the numbers are early or thin,
+        say so as context rather than as failure.
+
+        Currency: all money figures below are in ${currency}. Use the ${currency}
+        symbol throughout your report and never substitute another currency.
+
         Formatting: Use markdown. Break the report into 3 sections:
         1. 📊 The Data Snapshot (Summarize the numbers clearly)
         2. 🔍 The Funnel Diagnosis (Where is the bottleneck? Are they failing to capture leads, book calls, or close sales?)
         3. ⚡ Immediate Directive (Exactly what they must do this week to fix the primary bottleneck)
-        
+
         Data:
+        Business stage: ${store.profile?.stage || 'not stated'}
+        Weeks elapsed in this 90-day quarter: ${insights.weeksElapsed} of 12
         Current Quarter Revenue Goal: ${store.revenue?.quarterlyGoal}
         Total Revenue Generated: ${insights.totalRevenue}
         Total Core Sales Made: ${insights.entries?.length || 0}
@@ -4709,8 +4878,25 @@ function revenueAttachEvents() {
         { id: 'tab-quick-settings', formId: 'quick-offers-form' }
     ];
 
+    // Show whichever tab the user was last on. Saving a lead re-renders the screen,
+    // which used to drop them back on the Sale form — so logging three lead batches
+    // in a row meant re-selecting the Leads tab every single time.
+    const activateTab = (tabId) => {
+        const target = toggleTabs.find(t => t.id === tabId) || toggleTabs[0];
+        toggleTabs.forEach(tab => {
+            const btn = document.getElementById(tab.id);
+            const form = document.getElementById(tab.formId);
+            if (!btn || !form) return;
+            const isActive = tab.id === target.id;
+            btn.style.color = isActive ? 'var(--color-primary-dark)' : 'var(--color-text-muted)';
+            btn.style.fontWeight = isActive ? '600' : 'normal';
+            form.style.display = isActive ? 'block' : 'none';
+        });
+    };
+
     toggleTabs.forEach(t => {
         document.getElementById(t.id)?.addEventListener('click', (e) => {
+            activeLogTab = t.id;
             // Unset all
             toggleTabs.forEach(tab => {
                 document.getElementById(tab.id).style.color = 'var(--color-text-muted)';
@@ -4724,6 +4910,9 @@ function revenueAttachEvents() {
         });
     });
 
+    // Restore the tab the user was on before the last save re-rendered the screen
+    activateTab(activeLogTab);
+
     const logRevForm = document.getElementById('log-revenue-form');
     if (logRevForm) {
         logRevForm.addEventListener('submit', (e) => {
@@ -4736,7 +4925,7 @@ function revenueAttachEvents() {
                 date: parseDateInput(document.getElementById('log-date').value).toISOString()
             });
             const currency = getStore().settings?.currency || '$';
-            showToast(`Sale logged: ${currency}${amount.toLocaleString()}`);
+            showToast(`Sale logged: ${currency}${formatAmount(amount)}`);
             rerenderScreen();
         });
     }
@@ -4762,7 +4951,7 @@ function revenueAttachEvents() {
                 notes: '1-Tap entry'
             });
             const currency = store.settings?.currency || '$';
-            showToast(`Sale logged: ${currency}${(parseFloat(offerConf.price) || 0).toLocaleString()}`);
+            showToast(`Sale logged: ${currency}${formatAmount(offerConf.price)}`);
             setTimeout(() => { rerenderScreen(); }, 600);
         }
     });
@@ -4899,22 +5088,60 @@ function revenueAttachEvents() {
             const entries = insights.entries || [];
             const leads = store.leads?.entries || [];
             const metrics = store.metrics || [];
-            
-            let csvContent = `"--- REVENUE (SALES) ---",,,\r\n"Date","Amount","Source","Offer"\r\n`;
+            const currency = store.settings?.currency || '$';
+            const quarterStart = store.quarterStartDate ? new Date(store.quarterStartDate) : null;
+
+            // One table rather than three stacked sections. Sections meant the file
+            // could not be sorted, filtered or pivoted without cutting it up first,
+            // which defeats the point of exporting to a spreadsheet at all.
+            //
+            // Deliberately no totals row: it would sit inside the data and break
+            // sorting and pivot tables. Spreadsheets can sum a column themselves.
+            const cell = (v) => {
+                if (v === null || v === undefined) return '';
+                const s = String(v);
+                return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+            };
+            const row = (arr) => arr.map(cell).join(',') + '\r\n';
+
+            // ISO dates: toLocaleDateString() emits d/m/y, which Excel misreads as
+            // m/d/y on a US locale and silently mangles every date past the 12th.
+            const isoDate = (d) => getLocalDateString(new Date(d));
+
+            const inQuarter = (d) => quarterStart
+                ? (new Date(d).getTime() >= quarterStart.getTime() ? 'Yes' : 'No')
+                : '';
+
+            let csvContent = row([
+                'Type', 'Date', 'Amount', 'Currency', 'Source', 'Offer',
+                'Calls', 'Closes', 'Traffic', 'Social Audience',
+                'Counts Toward This Quarter', 'Notes'
+            ]);
+
             entries.forEach(e => {
-                csvContent += `"${new Date(e.date).toLocaleDateString()}","${e.amount}","${(e.source || '').replace(/"/g, '""')}","${(e.offer || '').replace(/"/g, '""')}"\r\n`;
-            });
-            
-            csvContent += `\r\n"--- LEADS GENERATED ---",,\r\n"Date","Amount","Source"\r\n`;
-            leads.forEach(e => {
-                csvContent += `"${new Date(e.date).toLocaleDateString()}","${e.amount}","${(e.source || '').replace(/"/g, '""')}"\r\n`;
+                csvContent += row([
+                    'Sale', isoDate(e.date), parseFloat(e.amount) || 0, currency,
+                    e.source || '', e.offer || '', '', '', '', '',
+                    inQuarter(e.date), e.notes || ''
+                ]);
             });
 
-            csvContent += `\r\n"--- MONTHLY SNAPSHOTS ---",,,\r\n"Date","Traffic","Calls Booked","Social Audience"\r\n`;
-            metrics.forEach(m => {
-                csvContent += `"${new Date(m.date).toLocaleDateString()}","${m.traffic}","${m.calls}","${m.social}"\r\n`;
+            leads.forEach(e => {
+                csvContent += row([
+                    'Lead', isoDate(e.date), parseFloat(e.amount) || 0, '',
+                    e.source || '', '', e.calls || 0, e.closes || 0, '', '',
+                    inQuarter(e.date), e.notes || ''
+                ]);
             });
-            
+
+            metrics.forEach(m => {
+                csvContent += row([
+                    'Snapshot', isoDate(m.date), '', '', '', '',
+                    m.calls || 0, '', m.traffic || 0, m.social || 0,
+                    inQuarter(m.date), ''
+                ]);
+            });
+
             try {
                 const blob = new Blob(["\uFEFF", csvContent], { type: 'text/csv;charset=utf-8' });
                 // Fallback to data URI if blob fails
@@ -4922,7 +5149,9 @@ function revenueAttachEvents() {
                 const link = document.createElement('a');
                 link.style.display = 'none';
                 link.href = url;
-                link.download = `Analytics_Export_${new Date().toISOString().split('T')[0]}.csv`;
+                const bizSlug = (store.profile?.businessName || 'CEO-Planner')
+                    .replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+                link.download = `${bizSlug}_Revenue_${getLocalDateString()}.csv`;
                 
                 document.body.appendChild(link);
                 link.click();
@@ -5608,6 +5837,18 @@ function progressAttachEvents() {
 // --- js\screens\settings.js ---
 // settings.js
 
+// Must stay identical to CURRENCIES in wizard.js. The wizard was the only place
+// currency could ever be set, so anyone who accepted the default $ by mistake had
+// no way back — and the symbol in that wizard field was invisible at the time.
+const SETTINGS_CURRENCIES = [
+    { value: '£', label: '£  British Pound (GBP)' },
+    { value: '$', label: '$  US Dollar (USD)' },
+    { value: '€', label: '€  Euro (EUR)' },
+    { value: 'A$', label: 'A$  Australian Dollar (AUD)' },
+    { value: 'C$', label: 'C$  Canadian Dollar (CAD)' },
+    { value: 'R', label: 'R  South African Rand (ZAR)' }
+];
+
 function renderSettings() {
     // We bind the event listeners after HTML is rendered using setScreenModule
     window.setScreenModule({ attachEvents: settingsAttachEvents });
@@ -5743,9 +5984,16 @@ function renderSettings() {
                 <input type="text" id="set-outcome" class="form-input" value="${store.goals.outcome || ''}" placeholder="e.g. 10 beta clients at $1.5k" required>
             </div>
             <div class="form-group mb-4">
+                <label class="form-label" style="font-weight: 600;">Currency</label>
+                <select id="set-currency" class="form-select">
+                    ${SETTINGS_CURRENCIES.map(c => `<option value="${c.value}" ${(store.settings?.currency || '$') === c.value ? 'selected' : ''}>${c.label}</option>`).join('')}
+                </select>
+                <span class="form-helper">Used everywhere money appears. Changing it relabels your figures, it does not convert them.</span>
+            </div>
+            <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Quarterly Revenue Goal</label>
                 <div style="position: relative; display: flex; align-items: center;">
-                    <span style="position: absolute; left: 1rem; font-weight: 600; color: var(--color-text-muted);">${store.settings?.currency || '$'}</span>
+                    <span style="position: absolute; left: 1rem; z-index: 1; font-weight: 600; color: var(--color-text-muted);">${store.settings?.currency || '$'}</span>
                     <input type="number" id="set-revenue-goal" class="form-input" value="${store.revenue?.quarterlyGoal || 0}" min="0" required style="padding-left: 2rem;">
                 </div>
             </div>
@@ -5948,6 +6196,9 @@ function settingsAttachEvents() {
                 reminderTimes: newReminders,
                 planningDay: planningDay
             });
+
+            const currency = document.getElementById('set-currency')?.value;
+            if (currency) updateSettings({ currency });
 
             updateRevenueSettings({ quarterlyGoal: revenueGoal });
             updateLeadGoal(leadGoal);
@@ -6154,6 +6405,9 @@ function quarterResetAttachEvents() {
                 // resetQuarter archives the goals, revenue, leads, metrics and plans
                 // alongside this reflection into store.pastQuarters before clearing.
                 resetQuarter(reflection);
+                // The wizard keeps its step in module state and this route change
+                // does not reload the page, so send it back to step 1 explicitly.
+                resetWizardProgress();
                 showToast('Quarter archived. Time to plan the next 90 days.');
                 window.location.hash = '#/wizard';
             }
@@ -6828,15 +7082,15 @@ function renderMondayPlan() {
                 <form id="monday-form-2">
                     <div style="display: flex; flex-direction: column; gap: 1rem;">
                         <div style="position: relative;">
-                            <span style="position: absolute; left: 1rem; top: 1rem; color: #F2C21D; font-weight: bold; font-size: 1.1rem;">1.</span>
+                            <span style="position: absolute; left: 1rem; top: 1rem; z-index: 1; color: #F2C21D; font-weight: bold; font-size: 1.1rem;">1.</span>
                             <input type="text" id="w-p1" class="form-input" style="padding: 1rem 1rem 1rem 2.5rem; font-size: 1.05rem; border-radius: 8px;" placeholder="Priority One" value="${mondayPlanData.priorities[0]}" required autocomplete="off"/>
                         </div>
                         <div style="position: relative;">
-                            <span style="position: absolute; left: 1rem; top: 1rem; color: #F2C21D; font-weight: bold; font-size: 1.1rem;">2.</span>
+                            <span style="position: absolute; left: 1rem; top: 1rem; z-index: 1; color: #F2C21D; font-weight: bold; font-size: 1.1rem;">2.</span>
                             <input type="text" id="w-p2" class="form-input" style="padding: 1rem 1rem 1rem 2.5rem; font-size: 1.05rem; border-radius: 8px;" placeholder="Priority Two" value="${mondayPlanData.priorities[1]}" required autocomplete="off"/>
                         </div>
                         <div style="position: relative;">
-                            <span style="position: absolute; left: 1rem; top: 1rem; color: #F2C21D; font-weight: bold; font-size: 1.1rem;">3.</span>
+                            <span style="position: absolute; left: 1rem; top: 1rem; z-index: 1; color: #F2C21D; font-weight: bold; font-size: 1.1rem;">3.</span>
                             <input type="text" id="w-p3" class="form-input" style="padding: 1rem 1rem 1rem 2.5rem; font-size: 1.05rem; border-radius: 8px;" placeholder="Priority Three" value="${mondayPlanData.priorities[2]}" required autocomplete="off"/>
                         </div>
                     </div>
@@ -7107,17 +7361,30 @@ function reRender() {
 
 // AI Helper Function - Smart Breakdown Engine
 function generateDaily3Suggestions(data) {
-    const tasks = [];
+    // The 90-day plan already asked the model for three daily micro-tasks for every
+    // week, and applyGeneratedPlan stores them as `daily3`. They are written against
+    // the user's real business, so they beat anything the keyword fallback below can
+    // produce. This data was being generated, saved, and then ignored.
+    const store = getStore();
+    const plans = store.weeklyPlans || [];
+    const source = data.generatedPlanId
+        ? plans.find(p => String(p.id) === String(data.generatedPlanId))
+        : plans.filter(p => p.generated && !p.applied).sort((a, b) => a.weekNumber - b.weekNumber)[0];
 
-    // Analyze Priority 1
+    const fromPlan = (source && Array.isArray(source.daily3))
+        ? source.daily3.filter(t => typeof t === 'string' && t.trim() !== '')
+        : [];
+
+    if (fromPlan.length >= 3) return fromPlan.slice(0, 3);
+
+    // Fallback: derive from what the user typed this week.
+    const tasks = [];
     const p1 = data.priorities[0] || '';
     tasks.push(breakdownTask(p1, 'Focus block on top priority'));
 
-    // Analyze Priority 2
     const p2 = data.priorities[1] || '';
     tasks.push(breakdownTask(p2, 'Execute next step for second priority'));
 
-    // Analyze Revenue Action
     const rev = data.revenueAction || '';
     if (rev.trim() !== '') {
         tasks.push(breakdownTask(rev, 'Complete revenue-generating action'));
@@ -7126,56 +7393,47 @@ function generateDaily3Suggestions(data) {
         tasks.push(breakdownTask(p3, 'Take action on third priority'));
     }
 
+    // Top up from the plan if it had one or two usable tasks
+    for (let i = 0; i < fromPlan.length && i < 3; i++) tasks[i] = fromPlan[i];
+
     return tasks;
 }
 
 function breakdownTask(taskText, fallback) {
     if (!taskText || taskText.trim() === '') return fallback;
-    const lower = taskText.toLowerCase();
 
-    // Context-Aware Keyword Matching for Daily Actions
-    if (lower.match(/launch|beta/)) {
-        const options = ['Draft the launch email sequence', 'Create a list of VIPs to invite to the beta', 'Outline the core offer for the launch', 'Set up the checkout or registration page'];
-        return options[Math.floor(Math.random() * options.length)];
-    }
-    if (lower.match(/podcast|collab|pitch/)) {
-        return 'Research 3-5 potential podcasts/creators and draft a custom pitch';
-    }
-    if (lower.match(/course|program|module/)) {
-        return 'Outline the curriculum or record the first module for the course';
-    }
-    if (lower.match(/email|newsletter|sequence/)) {
-        return 'Draft the outline and first draft of the email sequence';
-    }
-    if (lower.match(/post|reel|tiktok|content|video/)) {
-        return 'Script or outline 3 pieces of content and batch record/write them';
-    }
-    if (lower.match(/lead|magnet|freebie|opt-in/)) {
-        return 'Design the core asset for the lead magnet (PDF, video outline, checklist)';
-    }
-    if (lower.match(/sales|sell|close|revenue|income/)) {
-        return 'Identify 5 warm leads from recent interactions and send a personalized DM/email';
-    }
-    if (lower.match(/webinar|masterclass|live/)) {
-        return 'Draft the slide deck outline focusing on the core problem and solution';
-    }
-    if (lower.match(/website|landing page|sales page/)) {
-        return 'Draft the copy for the top three sections of the page (Headline, Problem, Solution)';
-    }
-    if (lower.match(/hire|va|delegate/)) {
-        return 'Document the step-by-step SOP for the task you want to delegate';
-    }
-    if (lower.match(/brand|niche|messaging/)) {
-        return 'Write down 3 core beliefs your brand stands for to use in upcoming messaging';
-    }
+    // Strip the "Task: ... Execution: ..." scaffolding older generated plans used,
+    // so the user's actual action is what gets matched and shown.
+    let clean = taskText.replace(/^\s*task:\s*/i, '').split(/\bexecution:\s*/i)[0].trim();
+    if (clean.length > 80) clean = clean.substring(0, 77).trim() + '...';
+    const lower = clean.toLowerCase();
 
-    // Generic fallbacks for unrecognized text
-    const genericOptions = [
-        `Outline the first three actionable steps for: ${taskText.substring(0, 30)}${taskText.length > 30 ? '...' : ''}`,
-        `Block out 60 minutes of uninterrupted time to start: ${taskText.substring(0, 30)}${taskText.length > 30 ? '...' : ''}`,
-        `Gather all resources, links, and documents needed to execute: ${taskText.substring(0, 30)}${taskText.length > 30 ? '...' : ''}`
+    // Word-boundary matching, most specific pattern first. Plain substring matching
+    // produced nonsense: "deliverables" contains "live" and matched the webinar
+    // branch, "leads" (people) matched the lead-magnet branch, and "content" beat
+    // "landing page" purely because it was listed higher up.
+    const RULES = [
+        [/\b(landing page|sales page|website|web page)\b/, 'Draft the copy for the top three sections of the page (headline, problem, solution)'],
+        [/\b(lead magnet|freebie|opt-?in|magnet)\b/, 'Design the core asset for the lead magnet (PDF, video outline, checklist)'],
+        [/\b(webinar|masterclass|live session|live stream)\b/, 'Draft the slide deck outline focusing on the core problem and solution'],
+        [/\b(podcast|collab|collaboration|guest)\b/, 'Research 3-5 potential podcasts or creators and draft a custom pitch'],
+        [/\b(course|programme|program|module|curriculum)\b/, 'Outline the curriculum or record the first module'],
+        [/\b(email|newsletter|sequence)\b/, 'Draft the outline and first draft of the email sequence'],
+        [/\b(reel|tiktok|short|video|blog|article)\b/, 'Script or outline 3 pieces of content and batch create them'],
+        [/\b(launch|beta|pre-?sale)\b/, 'Outline the core offer and set up the checkout or registration page'],
+        [/\b(follow[- ]?up|outreach|dm|invite|invitation|pitch)\b/, 'Pick 5 specific people and send each of them a personal message today'],
+        [/\b(sell|selling|close|closing|revenue|sales call)\b/, 'Identify 5 warm leads from recent conversations and make a direct offer'],
+        [/\b(hire|hiring|va|delegate|sop|automate)\b/, 'Document the step-by-step SOP for the task you want to hand over'],
+        [/\b(brand|niche|messaging|positioning)\b/, 'Write down 3 core beliefs your brand stands for, to use in your messaging']
     ];
-    return genericOptions[Math.floor(Math.random() * genericOptions.length)];
+
+    for (const [pattern, suggestion] of RULES) {
+        if (pattern.test(lower)) return suggestion;
+    }
+
+    // No confident match: hand back their own words rather than inventing a task.
+    // This is always relevant, which the random canned lines frequently were not.
+    return `Make a start on: ${clean}`;
 }
 
 
@@ -7382,6 +7640,12 @@ function authAttachEvents() {
                     console.warn('Loops sync failed at signup:', err.message);
                 }
 
+                // A brand new account starts empty. Without this, whatever plan and
+                // revenue happened to be in this browser — a previous user's, or a
+                // half-finished wizard — is adopted by the new account and pushed to
+                // their cloud row on the first save.
+                localStorage.removeItem('ceoPlanner_store');
+
                 localStorage.setItem('ceo_auth', 'true');
                 window.location.hash = '#/';
                 window.location.reload();
@@ -7397,19 +7661,29 @@ function authAttachEvents() {
                     btn.innerText = originalText;
                     btn.style.opacity = '1';
                 } else {
-                    // Fetch user's cloud data and populate local storage
+                    // Drop whoever was on this device before doing anything else.
+                    // This used to only *overwrite* on a successful cloud read, and
+                    // the read used .single(), which throws when there is no row —
+                    // so logging in as a second user on a shared browser handed them
+                    // the first user's plans and revenue, and wrote it to their row.
+                    localStorage.removeItem('ceoPlanner_store');
+
+                    // Then restore this account's own data, if they have any yet.
                     try {
                         const { data: dbData, error: dbError } = await window.db
                             .from('user_data')
                             .select('data')
                             .eq('user_id', data.user.id)
-                            .single();
-                        
+                            .maybeSingle();
+
+                        if (dbError) throw dbError;
+
                         if (dbData && dbData.data) {
                             localStorage.setItem('ceoPlanner_store', JSON.stringify(dbData.data));
                         }
                     } catch (err) {
-                        console.log("No cloud profile found or error fetching. Starting fresh.", err);
+                        // A new account with no cloud row lands here legitimately.
+                        console.log("No cloud data for this account yet. Starting fresh.", err);
                     }
 
                     // Read the real subscription and trial state from the database
@@ -7473,7 +7747,10 @@ function renderRoadmap() {
         <div class="main-content dashboard-layout">
             <div style="margin-bottom: 2rem;">
                 <h2>Your 90-Day Roadmap</h2>
-                <p style="color: var(--color-text-muted); font-size: 1.1rem; line-height: 1.5;">${planSummary}</p>
+                <!-- Muted grey over the mesh gradient was close to unreadable here.
+                     This paragraph is the AI's explanation of the whole quarter, so
+                     it gets a solid surface and full-strength text. -->
+                <p style="color: var(--color-text-main); font-size: 1.1rem; line-height: 1.6; background: var(--glass-bg); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); padding: 1rem 1.25rem; border-radius: var(--radius-md); margin-top: 0.75rem;">${planSummary}</p>
                 <div style="background: var(--color-primary-light); color: var(--color-primary-dark); padding: 0.75rem 1rem; border-radius: var(--radius-sm); font-size: 0.9rem; font-weight: 500; border-left: 3px solid var(--color-primary); margin-top: 1rem;">
                     ${planCalibration}
                 </div>

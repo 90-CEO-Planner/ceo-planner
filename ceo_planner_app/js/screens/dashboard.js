@@ -1,4 +1,4 @@
-import { getStore, getRevenueInsights, addRevenueEntry, updateDailyLog, addLeadEntry, applyGeneratedPlan, updateProfile, getLocalDateString, parseDateInput } from '../store.js';
+import { getStore, getRevenueInsights, addRevenueEntry, updateDailyLog, addLeadEntry, applyGeneratedPlan, updateProfile, getLocalDateString, parseDateInput, getWeekStart, getWeeksElapsed } from '../store.js';
 import { renderNav } from '../components/nav.js';
 import { renderTooltip } from '../components/tooltip.js';
 import { generate90DayActionPlan } from '../aiService.js';
@@ -544,10 +544,32 @@ function getQuietAdvisorPulses(store, revInsights, leadsConversion, activePlan) 
     const day = new Date().getDay(); // 0 is Sunday, 5 is Friday
 
     // Revenue Pulse Logic
-    if (revInsights.projectedRevenue < revInsights.goal && revInsights.goal > 0) {
+    const weeksElapsed = getWeeksElapsed(store) || 1;
+    const hasAnyRevenue = revInsights.totalRevenue > 0;
+    const stage = (store.profile?.stage || '').toLowerCase();
+
+    // The suggestion used to be a single hardcoded line telling everyone to contact
+    // their "3 most loyal past clients" — advice that lands badly on someone who
+    // picked "Just starting out" in the wizard and has no past clients at all.
+    const paceSuggestion = stage.includes('just starting')
+        ? 'Ask three people who know your work whether they need this, and invite one of them to buy.'
+        : stage.includes('scaling')
+            ? 'Send a custom bundle to your three most loyal past clients.'
+            : 'Send a personal invitation to the five people who engaged with you most this month.';
+
+    if (revInsights.goal > 0 && !hasAnyRevenue && weeksElapsed <= 1) {
+        // Week one with nothing logged is not "behind", it is normal. Telling a new
+        // customer they are 100% behind target on their first afternoon is the
+        // fastest way to lose them.
+        pulses.revenue = {
+            title: "First Move",
+            message: `Nothing logged yet, which is exactly right this early. ${paceSuggestion}`,
+            color: "var(--color-primary)"
+        };
+    } else if (revInsights.projectedRevenue < revInsights.goal && revInsights.goal > 0) {
         pulses.revenue = {
             title: "Pace Alert",
-            message: `You are ${(100 - revInsights.progressPercent).toFixed(0)}% behind target. Suggestion: Send custom bundle to your 3 most loyal past clients.`,
+            message: `You are ${(100 - revInsights.progressPercent).toFixed(0)}% behind target. Suggestion: ${paceSuggestion}`,
             color: "#B42318" // Red
         };
     } else if (revInsights.revenueThisWeek > 0 || revInsights.goal > 0) {
@@ -580,6 +602,7 @@ function getCoachingEngineData(store, activePlan, revInsights) {
     const day = new Date().getDay(); // 0 = Sunday, 1 = Monday, ..., 5 = Friday
     const userName = store.profile?.name || 'CEO';
     const streak = store.streak || 0;
+    const currency = store.settings?.currency || '$';
 
     // Check Daily Tasks completion
     const todayStr = getLocalDateString();
@@ -591,12 +614,26 @@ function getCoachingEngineData(store, activePlan, revInsights) {
         todaysLog.forEach(t => { if (!t.done) allDailyChecked = false; });
     }
 
+    // What has actually happened, as opposed to what day it is. Every rule below
+    // that nags the user has to check one of these first: this card used to run on
+    // the calendar alone, so it told brand new users to "close out the week strong"
+    // on their first afternoon, and kept saying it after they had already reviewed.
+    const weekStart = getWeekStart();
+    const reviewedThisWeek = (store.reviews || []).some(r => new Date(r.date) >= weekStart);
+    const hasEverPlanned = (store.weeklyPlans || []).some(p => p.applied || !p.generated);
+    const planningDay = store.profile?.planningDay || 'Monday';
+    const isPlanningDay = new Date().toLocaleDateString('en-US', { weekday: 'long' }) === planningDay;
+
     // --- State Priority Evaluation ---
 
     // 0. Quarter Reset Needed (90 days elapsed)
-    if (store.weeklyPlans && store.weeklyPlans.length > 0) {
-        const firstPlanDate = new Date(store.weeklyPlans[0].date);
-        const daysElapsed = Math.floor((Date.now() - firstPlanDate.getTime()) / (1000 * 60 * 60 * 24));
+    // Measured from quarterStartDate, which is stamped on wizard completion and on
+    // each reset. weeklyPlans[0].date is when the roadmap was *generated* — all 12
+    // carry the same timestamp, so regenerating a plan used to move the finish line.
+    const quarterOrigin = store.quarterStartDate
+        || (store.weeklyPlans && store.weeklyPlans.length > 0 ? store.weeklyPlans[0].date : null);
+    if (quarterOrigin) {
+        const daysElapsed = Math.floor((Date.now() - new Date(quarterOrigin).getTime()) / (1000 * 60 * 60 * 24));
         if (daysElapsed >= 90) {
             return {
                 title: "Quarter Complete",
@@ -607,6 +644,33 @@ function getCoachingEngineData(store, activePlan, revInsights) {
                 icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>`
             };
         }
+    }
+
+    // 0.4 Never planned a week yet. This outranks every calendar rule on purpose:
+    // someone who signed up on a Friday needs their first week set up, not a prompt
+    // to review a week they have not had.
+    if (!hasEverPlanned) {
+        return {
+            title: "Start Here",
+            message: `Your 90-day plan is ready, ${userName}. The next step is turning week one into three actions you'll actually do.`,
+            actionLabel: "Plan your first week",
+            actionHash: "#/monday-plan",
+            color: "#00C2CB", // Primary WEN
+            icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>`
+        };
+    }
+
+    // 0.45 It's their planning day and this week has no plan. This is the only route
+    // into the Monday Plan flow, which otherwise has no link anywhere in the app.
+    if (isPlanningDay && !activePlan) {
+        return {
+            title: `${planningDay} Planning`,
+            message: `It's ${planningDay}, ${userName}. Set this week's focus now, before the week sets it for you.`,
+            actionLabel: "Plan my week",
+            actionHash: "#/monday-plan",
+            color: "#00C2CB",
+            icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>`
+        };
     }
 
     // 0.5 Monthly Review Needed
@@ -651,8 +715,11 @@ function getCoachingEngineData(store, activePlan, revInsights) {
         };
     }
 
-    // 2. Missing Friday Review
-    if (day === 5 || (day === 6 && activePlan)) {
+    // 2. Missing Friday Review. Gated on there being a week to review and on not
+    // having already done it: this used to fire on the day of the week alone, so it
+    // nagged people who had just submitted their review and greeted brand new users
+    // with a prompt to close out a week they never had.
+    if ((day === 5 || day === 6) && activePlan && !reviewedThisWeek) {
         return {
             title: "Weekly Wrap-up",
             message: `It's time to review your week, ${userName}. What moved the business forward? Log your lessons and close out the week strong.`,
@@ -663,11 +730,24 @@ function getCoachingEngineData(store, activePlan, revInsights) {
         };
     }
 
+    // 2.5 Review already done and the week is winding down. Says something true
+    // rather than falling through to a generic "you are on track".
+    if ((day === 5 || day === 6 || day === 0) && reviewedThisWeek) {
+        return {
+            title: "Week Closed Out",
+            message: `Review logged, ${userName}. Your coach has drafted next week already, so rest properly — it'll be waiting on ${planningDay}.`,
+            actionLabel: "See next week's draft",
+            actionHash: "#/monday-plan",
+            color: "#027A48", // Green
+            icon: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>`
+        };
+    }
+
     // 3. Revenue Celebration
     if (revInsights.totalRevenue >= revInsights.goal && revInsights.goal > 0) {
         return {
             title: "Celebration",
-            message: `Incredible work, ${userName}! You've hit your quarterly revenue goal of $${revInsights.goal.toLocaleString()}. Take a moment to celebrate.`,
+            message: `Incredible work, ${userName}! You've hit your quarterly revenue goal of ${currency}${revInsights.goal.toLocaleString()}. Take a moment to celebrate.`,
             actionLabel: "Review Your Wins",
             actionHash: "#/progress",
             color: "#00C2CB", // Primary WEN
@@ -679,7 +759,7 @@ function getCoachingEngineData(store, activePlan, revInsights) {
     if (activePlan && (!activePlan.revenueAction || activePlan.revenueAction.trim().length < 5)) {
         return {
             title: "Business Bottleneck",
-            message: `${userName}, there are no revenue-generating actions in your plan this week. We can't hit your $${revInsights.goal.toLocaleString()} goal without invitations.`,
+            message: `${userName}, there are no revenue-generating actions in your plan this week. We can't hit your ${currency}${revInsights.goal.toLocaleString()} goal without invitations.`,
             actionLabel: "Add Revenue Action",
             actionHash: "#/planner",
             color: "#B42318", // Red

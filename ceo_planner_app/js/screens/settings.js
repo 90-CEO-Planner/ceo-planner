@@ -1,7 +1,19 @@
 // settings.js
 import { renderNav } from '../components/nav.js';
-import { getStore, updateProfile, updateGoals, updateRevenueSettings, updateLeadGoal, REMINDER_WEEKLY, REMINDER_DAILY, REMINDER_FRIDAY } from '../store.js';
+import { getStore, updateProfile, updateGoals, updateRevenueSettings, updateLeadGoal, updateSettings, REMINDER_WEEKLY, REMINDER_DAILY, REMINDER_FRIDAY } from '../store.js';
 import { showToast, showConfirm, rerenderScreen } from '../components/toast.js';
+
+// Must stay identical to CURRENCIES in wizard.js. The wizard was the only place
+// currency could ever be set, so anyone who accepted the default $ by mistake had
+// no way back — and the symbol in that wizard field was invisible at the time.
+const SETTINGS_CURRENCIES = [
+    { value: '£', label: '£  British Pound (GBP)' },
+    { value: '$', label: '$  US Dollar (USD)' },
+    { value: '€', label: '€  Euro (EUR)' },
+    { value: 'A$', label: 'A$  Australian Dollar (AUD)' },
+    { value: 'C$', label: 'C$  Canadian Dollar (CAD)' },
+    { value: 'R', label: 'R  South African Rand (ZAR)' }
+];
 
 export function renderSettings() {
     // We bind the event listeners after HTML is rendered using setScreenModule
@@ -138,9 +150,16 @@ export function renderSettings() {
                 <input type="text" id="set-outcome" class="form-input" value="${store.goals.outcome || ''}" placeholder="e.g. 10 beta clients at $1.5k" required>
             </div>
             <div class="form-group mb-4">
+                <label class="form-label" style="font-weight: 600;">Currency</label>
+                <select id="set-currency" class="form-select">
+                    ${SETTINGS_CURRENCIES.map(c => `<option value="${c.value}" ${(store.settings?.currency || '$') === c.value ? 'selected' : ''}>${c.label}</option>`).join('')}
+                </select>
+                <span class="form-helper">Used everywhere money appears. Changing it relabels your figures, it does not convert them.</span>
+            </div>
+            <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Quarterly Revenue Goal</label>
                 <div style="position: relative; display: flex; align-items: center;">
-                    <span style="position: absolute; left: 1rem; font-weight: 600; color: var(--color-text-muted);">${store.settings?.currency || '$'}</span>
+                    <span style="position: absolute; left: 1rem; z-index: 1; font-weight: 600; color: var(--color-text-muted);">${store.settings?.currency || '$'}</span>
                     <input type="number" id="set-revenue-goal" class="form-input" value="${store.revenue?.quarterlyGoal || 0}" min="0" required style="padding-left: 2rem;">
                 </div>
             </div>
@@ -343,6 +362,9 @@ function settingsAttachEvents() {
                 reminderTimes: newReminders,
                 planningDay: planningDay
             });
+
+            const currency = document.getElementById('set-currency')?.value;
+            if (currency) updateSettings({ currency });
 
             updateRevenueSettings({ quarterlyGoal: revenueGoal });
             updateLeadGoal(leadGoal);

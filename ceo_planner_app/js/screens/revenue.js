@@ -1,6 +1,6 @@
 // revenue.js
 import { renderNav } from '../components/nav.js';
-import { getStore, updateQuickOffers, addRevenueEntry, deleteRevenueEntry, getRevenueInsights, addLeadEntry, deleteLeadEntry, addMetricSnapshot, deleteMetricSnapshot, getLocalDateString, getWeekStart, parseDateInput } from '../store.js';
+import { getStore, updateQuickOffers, addRevenueEntry, deleteRevenueEntry, getRevenueInsights, addLeadEntry, deleteLeadEntry, addMetricSnapshot, deleteMetricSnapshot, getLocalDateString, getWeekStart, parseDateInput, formatAmount } from '../store.js';
 import { renderTooltip } from '../components/tooltip.js';
 import { showToast, showConfirm, rerenderScreen } from '../components/toast.js';
 
@@ -10,6 +10,10 @@ import { showToast, showConfirm, rerenderScreen } from '../components/toast.js';
 let pipelineFilter = 'all'; // 'all' | 'sale' | 'lead'
 let pipelineLimit = 15;
 const PIPELINE_PAGE_SIZE = 15;
+
+// Which logging tab is open. Module level for the same reason as the pipeline
+// state above: saving re-renders the screen, and the tab should not move.
+let activeLogTab = 'tab-rev';
 
 export function renderRevenue() {
     window.setScreenModule({ attachEvents: revenueAttachEvents });
@@ -55,7 +59,9 @@ export function renderRevenue() {
     // Conversion Rates
     const leadToSaleConversion = totalLeads > 0 ? ((effectiveCloses / totalLeads) * 100).toFixed(1) : 0;
     const callBookingRate = totalLeads > 0 ? ((totalCalls / totalLeads) * 100).toFixed(1) : 0;
-    const callCloseRate = totalCalls > 0 ? ((effectiveCloses / totalCalls) * 100).toFixed(1) : (effectiveCloses > 0 ? 100 : 0);
+    // No calls logged means there is no close rate to report. This used to return
+    // 100% off a single sale and zero calls, which read as a perfect record.
+    const callCloseRate = totalCalls > 0 ? ((effectiveCloses / totalCalls) * 100).toFixed(1) : null;
 
     return `
         ${renderNav()}
@@ -91,6 +97,10 @@ export function renderRevenue() {
                         Quarter Revenue Goal
                     </p>
                     <h3 style="font-size: 1.75rem; color: var(--color-black); margin: 0;">${currency}${insights.goal.toLocaleString()}</h3>
+                    ${insights.revenueBeforeQuarter > 0 ? `
+                    <p style="font-size: 0.7rem; color: var(--color-text-muted); margin: 0.5rem 0 0 0; line-height: 1.35;">
+                        Plus ${currency}${insights.revenueBeforeQuarter.toLocaleString(undefined, { maximumFractionDigits: 2 })} logged before this quarter started, kept in your history but not counted towards this goal.
+                    </p>` : ''}
                 </div>
                 <div class="card" style="padding: 1.5rem; text-align: center; border: 2px solid var(--color-primary-light);">
                     <p style="display: flex; align-items: center; justify-content: center; font-size: 0.8rem; color: var(--color-primary-dark); font-weight: 600; margin-bottom: 0.5rem; text-transform: uppercase;">
@@ -108,7 +118,7 @@ export function renderRevenue() {
                     <p style="display: flex; align-items: center; justify-content: center; font-size: 0.8rem; color: var(--color-text-muted); font-weight: 600; margin-bottom: 0.5rem; text-transform: uppercase;">
                         Call Close Rate
                     </p>
-                    <h3 style="font-size: 1.75rem; color: var(--color-black); margin: 0;">${callCloseRate}%</h3>
+                    <h3 style="font-size: 1.75rem; color: var(--color-black); margin: 0;">${callCloseRate === null ? '&mdash;' : callCloseRate + '%'}</h3>
                 </div>
             </div>
 
@@ -441,7 +451,7 @@ function renderPipelineEvents(entries, leads, currency) {
             return `
                 <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.75rem; border-bottom: 1px solid var(--color-border);">
                     <div>
-                        <span style="font-weight: 600; color: var(--color-black); display: block;">${currency}${parseFloat(e.amount).toLocaleString()}</span>
+                        <span style="font-weight: 600; color: var(--color-black); display: block;">${currency}${formatAmount(e.amount)}</span>
                         <span style="font-size: 0.8rem; color: var(--color-text-muted);">SALE • ${new Date(e.date).toLocaleDateString()}${e.source ? ' • ' + e.source : ''}${e.offer ? ' • ' + e.offer : ''}</span>
                     </div>
                     <button type="button" class="btn btn-ghost btn-sm btn-delete-revenue" data-id="${e.id}" style="padding: 0.25rem; color: var(--color-text-muted);">🗑️</button>
@@ -536,17 +546,34 @@ window.generateAiReport = async function() {
     try {
         const store = window.currentScreenModuleStore || JSON.parse(localStorage.getItem('ceoPlanner_store') || '{}');
         const insights = getRevenueInsights();
+        const currency = store.settings?.currency || '$';
         const leads = store.leads?.entries || [];
         const metrics = store.metrics || [];
         
-        let prompt = `Analyze this exact SaaS / Business revenue data and provide a brutally honest Executive Summary.
-        
+        // Tone deliberately matches the 90-day plan prompt in aiService.js. Asking
+        // for "brutally honest" produced reports calling a week-one founder's
+        // numbers "abysmal" and "a failure", which is not what this audience is
+        // paying for and is a fast route to a cancelled subscription.
+        // Currency must be stated: without it the model defaults to $ and a UK
+        // user who set £ gets their own figures back in dollars.
+        let prompt = `Analyze this business revenue data and provide a clear, honest Executive Summary.
+
+        Tone: direct and specific, warm rather than harsh. Name problems plainly and
+        without euphemism, but never insult the reader or their results. They are a
+        founder doing their best with limited time. If the numbers are early or thin,
+        say so as context rather than as failure.
+
+        Currency: all money figures below are in ${currency}. Use the ${currency}
+        symbol throughout your report and never substitute another currency.
+
         Formatting: Use markdown. Break the report into 3 sections:
         1. 📊 The Data Snapshot (Summarize the numbers clearly)
         2. 🔍 The Funnel Diagnosis (Where is the bottleneck? Are they failing to capture leads, book calls, or close sales?)
         3. ⚡ Immediate Directive (Exactly what they must do this week to fix the primary bottleneck)
-        
+
         Data:
+        Business stage: ${store.profile?.stage || 'not stated'}
+        Weeks elapsed in this 90-day quarter: ${insights.weeksElapsed} of 12
         Current Quarter Revenue Goal: ${store.revenue?.quarterlyGoal}
         Total Revenue Generated: ${insights.totalRevenue}
         Total Core Sales Made: ${insights.entries?.length || 0}
@@ -621,8 +648,25 @@ function revenueAttachEvents() {
         { id: 'tab-quick-settings', formId: 'quick-offers-form' }
     ];
 
+    // Show whichever tab the user was last on. Saving a lead re-renders the screen,
+    // which used to drop them back on the Sale form — so logging three lead batches
+    // in a row meant re-selecting the Leads tab every single time.
+    const activateTab = (tabId) => {
+        const target = toggleTabs.find(t => t.id === tabId) || toggleTabs[0];
+        toggleTabs.forEach(tab => {
+            const btn = document.getElementById(tab.id);
+            const form = document.getElementById(tab.formId);
+            if (!btn || !form) return;
+            const isActive = tab.id === target.id;
+            btn.style.color = isActive ? 'var(--color-primary-dark)' : 'var(--color-text-muted)';
+            btn.style.fontWeight = isActive ? '600' : 'normal';
+            form.style.display = isActive ? 'block' : 'none';
+        });
+    };
+
     toggleTabs.forEach(t => {
         document.getElementById(t.id)?.addEventListener('click', (e) => {
+            activeLogTab = t.id;
             // Unset all
             toggleTabs.forEach(tab => {
                 document.getElementById(tab.id).style.color = 'var(--color-text-muted)';
@@ -636,6 +680,9 @@ function revenueAttachEvents() {
         });
     });
 
+    // Restore the tab the user was on before the last save re-rendered the screen
+    activateTab(activeLogTab);
+
     const logRevForm = document.getElementById('log-revenue-form');
     if (logRevForm) {
         logRevForm.addEventListener('submit', (e) => {
@@ -648,7 +695,7 @@ function revenueAttachEvents() {
                 date: parseDateInput(document.getElementById('log-date').value).toISOString()
             });
             const currency = getStore().settings?.currency || '$';
-            showToast(`Sale logged: ${currency}${amount.toLocaleString()}`);
+            showToast(`Sale logged: ${currency}${formatAmount(amount)}`);
             rerenderScreen();
         });
     }
@@ -674,7 +721,7 @@ function revenueAttachEvents() {
                 notes: '1-Tap entry'
             });
             const currency = store.settings?.currency || '$';
-            showToast(`Sale logged: ${currency}${(parseFloat(offerConf.price) || 0).toLocaleString()}`);
+            showToast(`Sale logged: ${currency}${formatAmount(offerConf.price)}`);
             setTimeout(() => { rerenderScreen(); }, 600);
         }
     });
@@ -811,22 +858,60 @@ function revenueAttachEvents() {
             const entries = insights.entries || [];
             const leads = store.leads?.entries || [];
             const metrics = store.metrics || [];
-            
-            let csvContent = `"--- REVENUE (SALES) ---",,,\r\n"Date","Amount","Source","Offer"\r\n`;
+            const currency = store.settings?.currency || '$';
+            const quarterStart = store.quarterStartDate ? new Date(store.quarterStartDate) : null;
+
+            // One table rather than three stacked sections. Sections meant the file
+            // could not be sorted, filtered or pivoted without cutting it up first,
+            // which defeats the point of exporting to a spreadsheet at all.
+            //
+            // Deliberately no totals row: it would sit inside the data and break
+            // sorting and pivot tables. Spreadsheets can sum a column themselves.
+            const cell = (v) => {
+                if (v === null || v === undefined) return '';
+                const s = String(v);
+                return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+            };
+            const row = (arr) => arr.map(cell).join(',') + '\r\n';
+
+            // ISO dates: toLocaleDateString() emits d/m/y, which Excel misreads as
+            // m/d/y on a US locale and silently mangles every date past the 12th.
+            const isoDate = (d) => getLocalDateString(new Date(d));
+
+            const inQuarter = (d) => quarterStart
+                ? (new Date(d).getTime() >= quarterStart.getTime() ? 'Yes' : 'No')
+                : '';
+
+            let csvContent = row([
+                'Type', 'Date', 'Amount', 'Currency', 'Source', 'Offer',
+                'Calls', 'Closes', 'Traffic', 'Social Audience',
+                'Counts Toward This Quarter', 'Notes'
+            ]);
+
             entries.forEach(e => {
-                csvContent += `"${new Date(e.date).toLocaleDateString()}","${e.amount}","${(e.source || '').replace(/"/g, '""')}","${(e.offer || '').replace(/"/g, '""')}"\r\n`;
-            });
-            
-            csvContent += `\r\n"--- LEADS GENERATED ---",,\r\n"Date","Amount","Source"\r\n`;
-            leads.forEach(e => {
-                csvContent += `"${new Date(e.date).toLocaleDateString()}","${e.amount}","${(e.source || '').replace(/"/g, '""')}"\r\n`;
+                csvContent += row([
+                    'Sale', isoDate(e.date), parseFloat(e.amount) || 0, currency,
+                    e.source || '', e.offer || '', '', '', '', '',
+                    inQuarter(e.date), e.notes || ''
+                ]);
             });
 
-            csvContent += `\r\n"--- MONTHLY SNAPSHOTS ---",,,\r\n"Date","Traffic","Calls Booked","Social Audience"\r\n`;
-            metrics.forEach(m => {
-                csvContent += `"${new Date(m.date).toLocaleDateString()}","${m.traffic}","${m.calls}","${m.social}"\r\n`;
+            leads.forEach(e => {
+                csvContent += row([
+                    'Lead', isoDate(e.date), parseFloat(e.amount) || 0, '',
+                    e.source || '', '', e.calls || 0, e.closes || 0, '', '',
+                    inQuarter(e.date), e.notes || ''
+                ]);
             });
-            
+
+            metrics.forEach(m => {
+                csvContent += row([
+                    'Snapshot', isoDate(m.date), '', '', '', '',
+                    m.calls || 0, '', m.traffic || 0, m.social || 0,
+                    inQuarter(m.date), ''
+                ]);
+            });
+
             try {
                 const blob = new Blob(["\uFEFF", csvContent], { type: 'text/csv;charset=utf-8' });
                 // Fallback to data URI if blob fails
@@ -834,7 +919,9 @@ function revenueAttachEvents() {
                 const link = document.createElement('a');
                 link.style.display = 'none';
                 link.href = url;
-                link.download = `Analytics_Export_${new Date().toISOString().split('T')[0]}.csv`;
+                const bizSlug = (store.profile?.businessName || 'CEO-Planner')
+                    .replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+                link.download = `${bizSlug}_Revenue_${getLocalDateString()}.csv`;
                 
                 document.body.appendChild(link);
                 link.click();

@@ -103,7 +103,9 @@
     bottom: var(--spacing-lg);
     left: 50%;
     transform: translateX(-50%);
-    z-index: 1000;
+    /* Must clear the AI chat widget (z-index 9999) or a confirm dialog opened
+       while the coach panel is showing has its buttons covered and unclickable. */
+    z-index: 10000;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -159,7 +161,7 @@
     inset: 0;
     background: rgba(15, 23, 42, 0.45);
     backdrop-filter: blur(2px);
-    z-index: 1001;
+    z-index: 10001;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -316,7 +318,10 @@
     background-color: var(--color-primary-light);
 }
 
-@media (max-width: 768px) {
+/* 1080px, not 768px: the logo plus ten nav links need 1079px to fit, so between
+   769px and 1078px the bar used to overflow and push "Log Out" off the screen —
+   iPad landscape, small laptops, and any half-width desktop window. */
+@media (max-width: 1080px) {
     .app-header {
         flex-wrap: wrap;
     }
@@ -417,8 +422,11 @@
 }
 
 .tooltip-content {
-    visibility: hidden;
-    opacity: 0;
+    /* display:none rather than visibility:hidden. A hidden tooltip is still laid
+       out, and at 280px wide near the right edge it pushed the document wider than
+       the viewport, so every page with a tooltip scrolled sideways. The cost is the
+       fade-in, which is not worth a horizontally scrolling app. */
+    display: none;
     position: absolute;
     bottom: calc(100% + 12px);
     left: 50%;
@@ -455,8 +463,7 @@
 
 .tooltip-container:hover .tooltip-content,
 .tooltip-container:focus .tooltip-content {
-    visibility: visible;
-    opacity: 1;
+    display: block;
     transform: translateX(-50%) translateY(0);
 }
 

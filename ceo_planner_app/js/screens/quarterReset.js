@@ -2,6 +2,7 @@
 import { renderNav } from '../components/nav.js';
 import { resetQuarter } from '../store.js';
 import { showToast, showConfirm } from '../components/toast.js';
+import { resetWizardProgress } from './wizard.js';
 
 export function renderQuarterReset() {
     window.setScreenModule({ attachEvents: quarterResetAttachEvents });
@@ -82,6 +83,9 @@ function quarterResetAttachEvents() {
                 // resetQuarter archives the goals, revenue, leads, metrics and plans
                 // alongside this reflection into store.pastQuarters before clearing.
                 resetQuarter(reflection);
+                // The wizard keeps its step in module state and this route change
+                // does not reload the page, so send it back to step 1 explicitly.
+                resetWizardProgress();
                 showToast('Quarter archived. Time to plan the next 90 days.');
                 window.location.hash = '#/wizard';
             }

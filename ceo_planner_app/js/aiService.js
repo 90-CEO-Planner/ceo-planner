@@ -255,7 +255,8 @@ RULES (apply all of them):
 8. Write in their voice: warm, direct, specific, no hype, no jargon. The user is a tired founder reading this on their phone.
 10. The 'successCheck' for each week MUST be highly realistic and grounded based on the user's stage. Do NOT set unattainable lag-metric checks (e.g., "10 new sales" or "50 signups" for a beginner). Instead, tie the check to the completion of the week's input actions (e.g., "Drafted 3 emails" or "Pitched 5 people").
 11. NEVER recommend tools they did not mention. NEVER assume budget or team. Default to "free or already-owned" tools.
-12. Output JSON only. No markdown, no code fences, no prose before or after.
+12. Keep each topPriorities entry under 70 characters. They are rendered in single-line inputs on the weekly planner, so anything longer is cut off mid-sentence and the user cannot read their own priorities. One action per entry, no "Task:"/"Execution:" labels, no semicolons joining two actions.
+13. Output JSON only. No markdown, no code fences, no prose before or after.
 OUTPUT FORMAT (return exactly this JSON shape):
 {
   "summary": "One paragraph (3-4 sentences) explaining the plan's logic, what's realistic, and what's stretch.",
@@ -278,9 +279,9 @@ OUTPUT FORMAT (return exactly this JSON shape):
       "monthIndex": 1,
       "weeklyFocus": "One sentence focus for the week, tied to monthly theme.",
       "topPriorities": [
-        "Task: [Actionable task]. Execution: [Clear step-by-step direction on how to carry it out]",
-        "Task: [Actionable task]. Execution: [Clear step-by-step direction on how to carry it out]",
-        "Task: [Actionable task]. Execution: [Clear step-by-step direction on how to carry it out]"
+        "[One specific action, max 70 characters, no 'Task:' or 'Execution:' prefix]",
+        "[One specific action, max 70 characters, no 'Task:' or 'Execution:' prefix]",
+        "[One specific action, max 70 characters, no 'Task:' or 'Execution:' prefix]"
       ],
       "visibilityAction": "ONE specific visibility task this week (audience-facing, no sale).",
       "revenueAction": "ONE specific revenue task this week (a direct invitation to buy).",

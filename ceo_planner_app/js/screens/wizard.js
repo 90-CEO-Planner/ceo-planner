@@ -35,8 +35,17 @@ const CURRENCIES = [
     { value: 'R', label: 'R  South African Rand (ZAR)' }
 ];
 
+// Send the wizard back to its first step. Quarter Reset routes to #/wizard without
+// a page reload, so this module's currentStep survives — someone who reset in the
+// same session they onboarded in landed on the step 8 "you're all set" screen.
+export function resetWizardProgress() {
+    currentStep = 1;
+}
+
 export function renderWizard() {
     window.setScreenModule({ attachEvents: wizardAttachEvents });
+    // Belt and braces: an empty store means a fresh start, whatever step we were on.
+    if (!getStore().goals?.focus && currentStep === TOTAL_STEPS) currentStep = 1;
     return `
         <div class="main-content" style="max-width: 600px; padding-top: 5vh;">
             <div style="margin-bottom: 2rem; text-align: center;">
@@ -107,9 +116,17 @@ function renderStepContent() {
                     </div>
                 </div>
                 <div class="form-group mb-6">
-                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">CEO Commitment Statement</label>
-                    <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-top: -0.25rem; margin-bottom: 0.5rem;">Your daily reminder shown on the dashboard.</p>
-                    <textarea id="set-commitment" class="form-input" style="border-radius: 8px; padding: 0.75rem; min-height: 80px; width: 100%; font-family: var(--font-body); font-size: 0.95rem;" required>${store.goals.statement || 'I commit to prioritizing my top tasks before checking email, and trusting my strategy.'}</textarea>
+                    <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">CEO Commitment Statement <span style="font-weight: 400; color: var(--color-text-muted);">(optional)</span></label>
+                    <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-top: -0.25rem; margin-bottom: 0.5rem; line-height: 1.5;">
+                        One sentence about <em>how</em> you want to work this quarter, not what you want to achieve.
+                        It sits on your dashboard every day as a reminder of the promise you made yourself.
+                        Most people write about the habit they keep breaking. You can change it any time in Settings.
+                    </p>
+                    <p style="color: var(--color-text-main); font-size: 0.85rem; margin-bottom: 0.75rem; padding: 0.6rem 0.85rem; background: var(--color-primary-light); border-radius: 8px; border-left: 3px solid var(--color-primary); line-height: 1.5;">
+                        <strong style="color: var(--color-primary-dark);">Example:</strong>
+                        <em>"I commit to protecting two deep-work mornings a week, no matter what the inbox says."</em>
+                    </p>
+                    <textarea id="set-commitment" class="form-input" style="border-radius: 8px; padding: 0.75rem; min-height: 80px; width: 100%; font-family: var(--font-body); font-size: 0.95rem;" placeholder="I commit to prioritizing my top tasks before checking email, and trusting my strategy.">${store.goals.statement || ''}</textarea>
                 </div>
                 
                 <div class="flex justify-between mt-8" style="display: flex; gap: 1rem;">
@@ -247,7 +264,7 @@ function renderStepContent() {
                 <div class="form-group mb-4">
                     <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">What revenue target are you aiming for this quarter?</label>
                     <div style="position: relative; display: flex; align-items: center;">
-                        <span class="currency-prefix" style="position: absolute; left: 1rem; font-weight: 600; color: var(--color-text-muted);">${cur}</span>
+                        <span class="currency-prefix" style="position: absolute; left: 1rem; z-index: 1; font-weight: 600; color: var(--color-text-muted);">${cur}</span>
                         <input type="number" class="form-input" id="rev-goal" value="${store.revenue?.quarterlyGoal || ''}" min="0" step="1" placeholder="e.g., 15000" required style="border-radius: 8px; padding: 0.75rem 0.75rem 0.75rem 2.5rem; width: 100%;" />
                     </div>
                 </div>
@@ -256,7 +273,7 @@ function renderStepContent() {
                     <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">What does your main offer sell for?</label>
                     <p style="color: var(--color-text-muted); font-size: 0.85rem; margin-top: -0.25rem; margin-bottom: 0.5rem; line-height: 1.4;">Used to work out how many sales your target needs. A rough average is fine.</p>
                     <div style="position: relative; display: flex; align-items: center;">
-                        <span class="currency-prefix" style="position: absolute; left: 1rem; font-weight: 600; color: var(--color-text-muted);">${cur}</span>
+                        <span class="currency-prefix" style="position: absolute; left: 1rem; z-index: 1; font-weight: 600; color: var(--color-text-muted);">${cur}</span>
                         <input type="number" class="form-input" id="offer-price" value="${store.revenue?.averageOfferPrice || ''}" min="0" step="1" placeholder="e.g., 500" required style="border-radius: 8px; padding: 0.75rem 0.75rem 0.75rem 2.5rem; width: 100%;" />
                     </div>
                     <p id="sales-required-hint" style="font-size: 0.85rem; color: var(--color-primary-dark); margin-top: 0.5rem; min-height: 1.2em;"></p>

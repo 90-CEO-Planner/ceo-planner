@@ -30,6 +30,17 @@ export function parseDateInput(value) {
     return new Date(year, month - 1, day, 12, 0, 0, 0);
 }
 
+// Money for display. Whole amounts stay clean ("1,500"), amounts with pence keep
+// both decimal places ("1,500.50"). Plain toLocaleString() dropped the trailing
+// zero, so a sale logged as 1500.50 was shown back to the user as "1,500.5".
+export function formatAmount(value) {
+    const n = parseFloat(value) || 0;
+    return n.toLocaleString(undefined, {
+        minimumFractionDigits: Number.isInteger(n) ? 0 : 2,
+        maximumFractionDigits: 2
+    });
+}
+
 // The single definition of "this week" for the whole app. Weeks start Monday,
 // matching the Monday planning ritual the product is built around. Anything that
 // buckets by week must use this, or two panels on one screen disagree.
@@ -323,8 +334,24 @@ export function getRevenueInsights() {
     const goal = parseFloat(rev.quarterlyGoal) || 0;
     const price = parseFloat(rev.averageOfferPrice) || 0;
 
+    // Every entry ever logged. The pipeline feed, the history chart and the CSV
+    // export all need the full list, so this stays unfiltered.
     const entries = rev.entries || [];
-    const totalRevenue = entries.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
+
+    // The subset that belongs to the active quarter. Entries dated before the
+    // quarter began — history someone typed in at onboarding, or an import — used
+    // to count in full towards the goal while the pace maths divided by the weeks
+    // since the quarter started. A month of back-entered sales then read as one
+    // week's work and the projection came out roughly four times too high.
+    const quarterStart = store.quarterStartDate ? new Date(store.quarterStartDate) : null;
+    const quarterEntries = (quarterStart && Number.isFinite(quarterStart.getTime()))
+        ? entries.filter(e => new Date(e.date).getTime() >= quarterStart.getTime())
+        : entries;
+
+    const totalRevenue = quarterEntries.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
+    // What was logged against earlier dates, so the Revenue screen can account for
+    // the difference rather than appearing to have lost it.
+    const revenueBeforeQuarter = entries.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0) - totalRevenue;
 
     const now = new Date();
     const currentMonth = now.getMonth();
@@ -484,6 +511,10 @@ export function getRevenueInsights() {
         revenueByOfferQuarter,
         topSource,
         topOffer,
+        // Logged against dates before this quarter began. Counted in `entries` but
+        // deliberately excluded from totalRevenue, progress and the projection.
+        revenueBeforeQuarter,
+        quarterEntryCount: quarterEntries.length,
         entries: entries.slice().sort((a, b) => new Date(b.date) - new Date(a.date)) // newest first
     };
 }
@@ -495,7 +526,11 @@ export function addWeeklyPlan(plan) {
     store.weeklyPlans.push(plan);
 
     // Recalculate planning streak based on consecutive weeks
-    store.planningStreak = calculateStreak(store.weeklyPlans);
+    // Only weeks the user actually committed to count. Counting the twelve
+    // generated-but-unapplied weeks would report a streak nobody had earned.
+    store.planningStreak = calculateStreak(
+        store.weeklyPlans.filter(p => p.applied || !p.generated)
+    );
 
     saveStore(store);
 }
@@ -505,6 +540,15 @@ export function updateWeeklyPlan(planId, updatedFields) {
     const index = store.weeklyPlans.findIndex(p => String(p.id) === String(planId));
     if (index !== -1) {
         store.weeklyPlans[index] = { ...store.weeklyPlans[index], ...updatedFields };
+
+        // Applying a generated week is planning, and it is how most people plan,
+        // because the roadmap pre-generates all twelve. The streak used to be
+        // recalculated only in addWeeklyPlan(), so anyone following the roadmap saw
+        // "Plan: 0w" on their dashboard forever no matter how consistent they were.
+        store.planningStreak = calculateStreak(
+            store.weeklyPlans.filter(p => p.applied || !p.generated)
+        );
+
         saveStore(store);
     }
 }

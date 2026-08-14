@@ -65,7 +65,11 @@ old code from their service worker:
 2. `sw.js` — `CACHE_NAME`
 3. `sw.js` — the `?v=` entries in `urlsToCache`
 
-Currently at **v17** (CSS files are on their own counter, currently **v8**).
+Currently at **v19** (CSS files are on their own counter, currently **v13**).
+
+Bump the number *after* you finish editing, not before. Bumping first means the new
+version number gets cached against the old file, and your change silently doesn't
+ship.
 
 `USER_GUIDE.md` sits inside `ceo_planner_app/` on purpose: the build script reads it
 and injects it into the AI coach's system prompt, so the coach explains the app as

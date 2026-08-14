@@ -111,15 +111,15 @@ export function renderMondayPlan() {
                 <form id="monday-form-2">
                     <div style="display: flex; flex-direction: column; gap: 1rem;">
                         <div style="position: relative;">
-                            <span style="position: absolute; left: 1rem; top: 1rem; color: #F2C21D; font-weight: bold; font-size: 1.1rem;">1.</span>
+                            <span style="position: absolute; left: 1rem; top: 1rem; z-index: 1; color: #F2C21D; font-weight: bold; font-size: 1.1rem;">1.</span>
                             <input type="text" id="w-p1" class="form-input" style="padding: 1rem 1rem 1rem 2.5rem; font-size: 1.05rem; border-radius: 8px;" placeholder="Priority One" value="${mondayPlanData.priorities[0]}" required autocomplete="off"/>
                         </div>
                         <div style="position: relative;">
-                            <span style="position: absolute; left: 1rem; top: 1rem; color: #F2C21D; font-weight: bold; font-size: 1.1rem;">2.</span>
+                            <span style="position: absolute; left: 1rem; top: 1rem; z-index: 1; color: #F2C21D; font-weight: bold; font-size: 1.1rem;">2.</span>
                             <input type="text" id="w-p2" class="form-input" style="padding: 1rem 1rem 1rem 2.5rem; font-size: 1.05rem; border-radius: 8px;" placeholder="Priority Two" value="${mondayPlanData.priorities[1]}" required autocomplete="off"/>
                         </div>
                         <div style="position: relative;">
-                            <span style="position: absolute; left: 1rem; top: 1rem; color: #F2C21D; font-weight: bold; font-size: 1.1rem;">3.</span>
+                            <span style="position: absolute; left: 1rem; top: 1rem; z-index: 1; color: #F2C21D; font-weight: bold; font-size: 1.1rem;">3.</span>
                             <input type="text" id="w-p3" class="form-input" style="padding: 1rem 1rem 1rem 2.5rem; font-size: 1.05rem; border-radius: 8px;" placeholder="Priority Three" value="${mondayPlanData.priorities[2]}" required autocomplete="off"/>
                         </div>
                     </div>
@@ -390,17 +390,30 @@ function reRender() {
 
 // AI Helper Function - Smart Breakdown Engine
 function generateDaily3Suggestions(data) {
-    const tasks = [];
+    // The 90-day plan already asked the model for three daily micro-tasks for every
+    // week, and applyGeneratedPlan stores them as `daily3`. They are written against
+    // the user's real business, so they beat anything the keyword fallback below can
+    // produce. This data was being generated, saved, and then ignored.
+    const store = getStore();
+    const plans = store.weeklyPlans || [];
+    const source = data.generatedPlanId
+        ? plans.find(p => String(p.id) === String(data.generatedPlanId))
+        : plans.filter(p => p.generated && !p.applied).sort((a, b) => a.weekNumber - b.weekNumber)[0];
 
-    // Analyze Priority 1
+    const fromPlan = (source && Array.isArray(source.daily3))
+        ? source.daily3.filter(t => typeof t === 'string' && t.trim() !== '')
+        : [];
+
+    if (fromPlan.length >= 3) return fromPlan.slice(0, 3);
+
+    // Fallback: derive from what the user typed this week.
+    const tasks = [];
     const p1 = data.priorities[0] || '';
     tasks.push(breakdownTask(p1, 'Focus block on top priority'));
 
-    // Analyze Priority 2
     const p2 = data.priorities[1] || '';
     tasks.push(breakdownTask(p2, 'Execute next step for second priority'));
 
-    // Analyze Revenue Action
     const rev = data.revenueAction || '';
     if (rev.trim() !== '') {
         tasks.push(breakdownTask(rev, 'Complete revenue-generating action'));
@@ -409,54 +422,45 @@ function generateDaily3Suggestions(data) {
         tasks.push(breakdownTask(p3, 'Take action on third priority'));
     }
 
+    // Top up from the plan if it had one or two usable tasks
+    for (let i = 0; i < fromPlan.length && i < 3; i++) tasks[i] = fromPlan[i];
+
     return tasks;
 }
 
 function breakdownTask(taskText, fallback) {
     if (!taskText || taskText.trim() === '') return fallback;
-    const lower = taskText.toLowerCase();
 
-    // Context-Aware Keyword Matching for Daily Actions
-    if (lower.match(/launch|beta/)) {
-        const options = ['Draft the launch email sequence', 'Create a list of VIPs to invite to the beta', 'Outline the core offer for the launch', 'Set up the checkout or registration page'];
-        return options[Math.floor(Math.random() * options.length)];
-    }
-    if (lower.match(/podcast|collab|pitch/)) {
-        return 'Research 3-5 potential podcasts/creators and draft a custom pitch';
-    }
-    if (lower.match(/course|program|module/)) {
-        return 'Outline the curriculum or record the first module for the course';
-    }
-    if (lower.match(/email|newsletter|sequence/)) {
-        return 'Draft the outline and first draft of the email sequence';
-    }
-    if (lower.match(/post|reel|tiktok|content|video/)) {
-        return 'Script or outline 3 pieces of content and batch record/write them';
-    }
-    if (lower.match(/lead|magnet|freebie|opt-in/)) {
-        return 'Design the core asset for the lead magnet (PDF, video outline, checklist)';
-    }
-    if (lower.match(/sales|sell|close|revenue|income/)) {
-        return 'Identify 5 warm leads from recent interactions and send a personalized DM/email';
-    }
-    if (lower.match(/webinar|masterclass|live/)) {
-        return 'Draft the slide deck outline focusing on the core problem and solution';
-    }
-    if (lower.match(/website|landing page|sales page/)) {
-        return 'Draft the copy for the top three sections of the page (Headline, Problem, Solution)';
-    }
-    if (lower.match(/hire|va|delegate/)) {
-        return 'Document the step-by-step SOP for the task you want to delegate';
-    }
-    if (lower.match(/brand|niche|messaging/)) {
-        return 'Write down 3 core beliefs your brand stands for to use in upcoming messaging';
-    }
+    // Strip the "Task: ... Execution: ..." scaffolding older generated plans used,
+    // so the user's actual action is what gets matched and shown.
+    let clean = taskText.replace(/^\s*task:\s*/i, '').split(/\bexecution:\s*/i)[0].trim();
+    if (clean.length > 80) clean = clean.substring(0, 77).trim() + '...';
+    const lower = clean.toLowerCase();
 
-    // Generic fallbacks for unrecognized text
-    const genericOptions = [
-        `Outline the first three actionable steps for: ${taskText.substring(0, 30)}${taskText.length > 30 ? '...' : ''}`,
-        `Block out 60 minutes of uninterrupted time to start: ${taskText.substring(0, 30)}${taskText.length > 30 ? '...' : ''}`,
-        `Gather all resources, links, and documents needed to execute: ${taskText.substring(0, 30)}${taskText.length > 30 ? '...' : ''}`
+    // Word-boundary matching, most specific pattern first. Plain substring matching
+    // produced nonsense: "deliverables" contains "live" and matched the webinar
+    // branch, "leads" (people) matched the lead-magnet branch, and "content" beat
+    // "landing page" purely because it was listed higher up.
+    const RULES = [
+        [/\b(landing page|sales page|website|web page)\b/, 'Draft the copy for the top three sections of the page (headline, problem, solution)'],
+        [/\b(lead magnet|freebie|opt-?in|magnet)\b/, 'Design the core asset for the lead magnet (PDF, video outline, checklist)'],
+        [/\b(webinar|masterclass|live session|live stream)\b/, 'Draft the slide deck outline focusing on the core problem and solution'],
+        [/\b(podcast|collab|collaboration|guest)\b/, 'Research 3-5 potential podcasts or creators and draft a custom pitch'],
+        [/\b(course|programme|program|module|curriculum)\b/, 'Outline the curriculum or record the first module'],
+        [/\b(email|newsletter|sequence)\b/, 'Draft the outline and first draft of the email sequence'],
+        [/\b(reel|tiktok|short|video|blog|article)\b/, 'Script or outline 3 pieces of content and batch create them'],
+        [/\b(launch|beta|pre-?sale)\b/, 'Outline the core offer and set up the checkout or registration page'],
+        [/\b(follow[- ]?up|outreach|dm|invite|invitation|pitch)\b/, 'Pick 5 specific people and send each of them a personal message today'],
+        [/\b(sell|selling|close|closing|revenue|sales call)\b/, 'Identify 5 warm leads from recent conversations and make a direct offer'],
+        [/\b(hire|hiring|va|delegate|sop|automate)\b/, 'Document the step-by-step SOP for the task you want to hand over'],
+        [/\b(brand|niche|messaging|positioning)\b/, 'Write down 3 core beliefs your brand stands for, to use in your messaging']
     ];
-    return genericOptions[Math.floor(Math.random() * genericOptions.length)];
+
+    for (const [pattern, suggestion] of RULES) {
+        if (pattern.test(lower)) return suggestion;
+    }
+
+    // No confident match: hand back their own words rather than inventing a task.
+    // This is always relevant, which the random canned lines frequently were not.
+    return `Make a start on: ${clean}`;
 }

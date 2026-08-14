@@ -35,7 +35,10 @@ export function renderRoadmap() {
         <div class="main-content dashboard-layout">
             <div style="margin-bottom: 2rem;">
                 <h2>Your 90-Day Roadmap</h2>
-                <p style="color: var(--color-text-muted); font-size: 1.1rem; line-height: 1.5;">${planSummary}</p>
+                <!-- Muted grey over the mesh gradient was close to unreadable here.
+                     This paragraph is the AI's explanation of the whole quarter, so
+                     it gets a solid surface and full-strength text. -->
+                <p style="color: var(--color-text-main); font-size: 1.1rem; line-height: 1.6; background: var(--glass-bg); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); padding: 1rem 1.25rem; border-radius: var(--radius-md); margin-top: 0.75rem;">${planSummary}</p>
                 <div style="background: var(--color-primary-light); color: var(--color-primary-dark); padding: 0.75rem 1rem; border-radius: var(--radius-sm); font-size: 0.9rem; font-weight: 500; border-left: 3px solid var(--color-primary); margin-top: 1rem;">
                     ${planCalibration}
                 </div>
