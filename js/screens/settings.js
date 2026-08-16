@@ -1,6 +1,6 @@
 // settings.js
 import { renderNav } from '../components/nav.js';
-import { getStore, updateProfile, updateGoals, updateRevenueSettings, updateLeadGoal, updateSettings, REMINDER_WEEKLY, REMINDER_DAILY, REMINDER_FRIDAY } from '../store.js';
+import { getStore, updateProfile, updateGoals, updateRevenueSettings, updateLeadGoal, updateSettings, REMINDER_WEEKLY, REMINDER_DAILY, REMINDER_FRIDAY, REMINDER_SNAPSHOT } from '../store.js';
 import { showToast, rerenderScreen } from '../components/toast.js';
 import { proTeaser } from '../components/proGate.js';
 
@@ -236,6 +236,14 @@ export function renderSettings() {
                         <div>
                             <span style="font-weight: 500; display: block; color: var(--color-black);">Friday CEO Review</span>
                             <span style="font-size: 0.8rem; color: var(--color-text-muted);">Afternoon prompt to log wins and close out the week</span>
+                        </div>
+                    </label>
+
+                    <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer;">
+                        <input type="checkbox" name="reminder" value="${REMINDER_SNAPSHOT}" ${isChecked(REMINDER_SNAPSHOT)} style="margin-top: 0.25rem;">
+                        <div>
+                            <span style="font-weight: 500; display: block; color: var(--color-black);">Monthly Funnel Snapshot</span>
+                            <span style="font-size: 0.8rem; color: var(--color-text-muted);">On the 1st of each month, a nudge to log your website visitors, calls and closes</span>
                         </div>
                     </label>
                 </div>

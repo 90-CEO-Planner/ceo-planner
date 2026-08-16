@@ -51,19 +51,29 @@ function buildSystemPrompt() {
     }
     const leadGoal = store.leads?.quarterlyGoal || 0;
     
+    // Straight from getFunnelInsights, the same source the Revenue screen reads.
+    // This used to divide total sales by total calls and fall back to a hardcoded
+    // "100%", so the Coach would confidently quote a close rate that was wrong and
+    // sometimes impossible — and disagree with the figure on screen while doing it.
+    const funnel = getFunnelInsights();
+
     let metricsContext = "No monthly snapshot metrics available.";
-    let callCloseRate = "Unknown";
-    if (store.metrics && store.metrics.length > 0) {
-        const lastSnapshot = store.metrics[store.metrics.length - 1];
-        metricsContext = `Recent Snapshot: ${lastSnapshot.traffic} traffic, ${lastSnapshot.calls} calls booked, ${lastSnapshot.social} total social audience.`;
-        const totalCalls = store.metrics.reduce((sum, m) => sum + (parseFloat(m.calls) || 0), 0);
-        const salesCount = store.revenue?.entries ? store.revenue.entries.length : 0;
-        if (totalCalls > 0) {
-            callCloseRate = ((salesCount / totalCalls) * 100).toFixed(1) + "%";
-        } else if (salesCount > 0) {
-            callCloseRate = "100%";
+    if (funnel.latestSnapshot) {
+        const s = funnel.latestSnapshot;
+        const closesPart = (s.closes === undefined || s.closes === null)
+            ? 'closes not recorded that month'
+            : `${s.closes} of those calls closed`;
+        metricsContext = `Recent Snapshot: ${s.traffic} website visitors, ${s.calls} calls booked, ${closesPart}, ${s.social} total social audience.`;
+        if (funnel.visitorToCallRate !== null) {
+            metricsContext += ` Across all snapshots, ${funnel.visitorToCallRate.toFixed(1)}% of website visitors booked a call.`;
         }
     }
+
+    // "Not recorded yet" rather than a number, so the model says the user should
+    // log her closes instead of inventing a conversion rate to talk about.
+    const callCloseRate = funnel.callCloseRate === null
+        ? 'Not recorded yet (the user has not logged how many calls closed)'
+        : `${funnel.callCloseRate.toFixed(1)}% (${funnel.totalCloses} closed from ${funnel.totalCalls} calls)`;
 
     // 1. Weekly Plan Data
     const recentPlan = store.weeklyPlans && store.weeklyPlans.length > 0 

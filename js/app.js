@@ -1,5 +1,5 @@
 // app.js
-import { getStore, seedMockData, getLocalDateString, REMINDER_WEEKLY, REMINDER_DAILY, REMINDER_FRIDAY } from './store.js';
+import { getStore, seedMockData, getLocalDateString, REMINDER_WEEKLY, REMINDER_DAILY, REMINDER_FRIDAY, REMINDER_SNAPSHOT } from './store.js';
 import { signOutAndClear } from './components/nav.js';
 import { initProGate } from './components/proGate.js';
 import { applyStripePreviewParam } from './stripeImport.js';
@@ -204,6 +204,29 @@ function checkPushNotifications() {
 
     if (store.profile.reminderTimes.includes(REMINDER_FRIDAY) && todayName === 'Friday' && hour >= 14) {
         fireLocalNotification('friday_review', 'Friday Review', 'Time to log your wins and track your revenue for the week!');
+    }
+
+    // Monthly, on the 1st. Keyed by month rather than by day like the others, so
+    // it fires once and not every time the app is opened on the 1st.
+    //
+    // Skipped entirely if this month's snapshot is already logged — a reminder to
+    // do something you have already done is how people learn to ignore reminders.
+    if (store.profile.reminderTimes.includes(REMINDER_SNAPSHOT) && now.getDate() === 1 && hour >= 9) {
+        const alreadyLogged = (store.metrics || []).some(m => {
+            const d = new Date(m.date);
+            return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
+        });
+        if (!alreadyLogged) {
+            const monthKey = `snapshot_${currentYear}_${currentMonth}`;
+            if (!localStorage.getItem(monthKey)) {
+                fireLocalNotification(
+                    monthKey,
+                    'Monthly Funnel Snapshot',
+                    'Log last month\'s website visitors, calls booked and calls closed to see where your funnel is leaking.'
+                );
+                localStorage.setItem(monthKey, 'fired');
+            }
+        }
     }
 
     // --- Trial Notification Sequence ---

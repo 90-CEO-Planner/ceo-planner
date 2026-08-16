@@ -292,6 +292,11 @@ const STORE_KEY = 'ceoPlanner_store';
 const REMINDER_WEEKLY = 'weekly_plan';
 const REMINDER_DAILY = 'daily_priority';
 const REMINDER_FRIDAY = 'friday_review';
+// Monthly, unlike the other three. The funnel card is only as good as the numbers
+// behind it, and those are the one input nothing else in the app prompts for —
+// sales and leads get logged as they happen, traffic and social only ever get
+// logged because someone remembered.
+const REMINDER_SNAPSHOT = 'monthly_snapshot';
 
 function getLocalDateString(date = new Date()) {
     const d = new Date(date);
@@ -644,6 +649,175 @@ function mergeImportedSales(manualEntries, importedEntries) {
     });
 
     return manualEntries.concat(flagged);
+}
+
+// The funnel: visitors, calls booked, calls closed, and the rates between them.
+//
+// One place, because there were three. The Revenue screen worked it out inline,
+// the AI Coach worked it out again in aiService.js, and the executive report
+// printed raw numbers and let the model divide. They disagreed: the screen was
+// corrected to count only recorded closes, while the Coach carried on dividing
+// total sales by total calls and telling the user things like a 150% close rate.
+//
+// A number the dashboard and the AI disagree about is worse than either being
+// wrong on its own, so both now read from here.
+//
+// callCloseRate is null when there is no answer to give, never 0. An empty closes
+// box means "not recorded", and reporting that as "none of your calls closed" is
+// a claim the data does not support.
+function getFunnelInsights() {
+    const store = getStore();
+    const leads = store.leads?.entries || [];
+    const metrics = store.metrics || [];
+
+    const snapshotTraffic = metrics.reduce((s, m) => s + (parseFloat(m.traffic) || 0), 0);
+    const snapshotCalls = metrics.reduce((s, m) => s + (parseFloat(m.calls) || 0), 0);
+    const snapshotCloses = metrics.reduce((s, m) => s + (parseFloat(m.closes) || 0), 0);
+    const leadCalls = leads.reduce((s, l) => s + (parseFloat(l.calls) || 0), 0);
+    const leadCloses = leads.reduce((s, l) => s + (parseFloat(l.closes) || 0), 0);
+    const totalLeads = leads.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
+
+    const totalCalls = snapshotCalls + leadCalls;
+    const totalCloses = snapshotCloses + leadCloses;
+
+    const anyClosesEverLogged =
+        leads.some(l => (parseFloat(l.closes) || 0) > 0) ||
+        metrics.some(m => (parseFloat(m.closes) || 0) > 0);
+
+    const callCloseRate = (totalCalls > 0 && anyClosesEverLogged)
+        ? (Math.min(totalCloses, totalCalls) / totalCalls) * 100
+        : null;
+
+    const visitorToCallRate = snapshotTraffic > 0
+        ? (snapshotCalls / snapshotTraffic) * 100
+        : null;
+
+    return {
+        snapshotTraffic,
+        snapshotCalls,
+        snapshotCloses,
+        leadCalls,
+        leadCloses,
+        totalLeads,
+        totalCalls,
+        totalCloses,
+        anyClosesEverLogged,
+        callCloseRate,
+        visitorToCallRate,
+        latestSnapshot: metrics.length ? metrics[metrics.length - 1] : null
+    };
+}
+
+// Which channel actually earns.
+//
+// The monthly snapshot funnel is site-wide: a visitor count cannot be split by
+// source. But leads and sales both already carry one, so the rest of the funnel
+// can be broken down per channel with nothing new to log.
+//
+// Two deliberate decisions in here:
+//
+// Imported Stripe payments are grouped as "Not attributed" rather than appearing
+// as a channel called Stripe. Stripe is how the money arrived, not what caused
+// the sale, and a row labelled Stripe sitting above Instagram would read as a
+// top-performing channel while meaning nothing. Grouping them honestly also
+// surfaces a real cost of automatic importing: the more revenue arrives on its
+// own, the less of it can be traced back to an effort.
+//
+// Sources are matched on a trimmed, lowercased key, so "instagram" and
+// "Instagram " become one row. Nothing cleverer than that — "IG Story" and
+// "Instagram" stay separate, because silently merging two things the user named
+// differently would be the app deciding it knows better than she does. Where two
+// names look related, they are flagged for her to judge rather than combined.
+const NOT_ATTRIBUTED = 'Not attributed';
+
+function getChannelFunnel() {
+    const store = getStore();
+    const leads = store.leads?.entries || [];
+    const sales = getRevenueInsights().entries || [];
+
+    const normalise = (s) => String(s || '').trim().toLowerCase();
+    const rows = new Map();
+
+    const bucket = (key, label) => {
+        if (!rows.has(key)) {
+            rows.set(key, { key, label, leads: 0, calls: 0, closes: 0, revenue: 0, hasClosesLogged: false });
+        }
+        return rows.get(key);
+    };
+
+    leads.forEach(l => {
+        const key = normalise(l.source) || '__unattributed__';
+        const label = key === '__unattributed__' ? NOT_ATTRIBUTED : String(l.source).trim();
+        const r = bucket(key, label);
+        r.leads += parseFloat(l.amount) || 0;
+        r.calls += parseFloat(l.calls) || 0;
+        r.closes += parseFloat(l.closes) || 0;
+        if ((parseFloat(l.closes) || 0) > 0) r.hasClosesLogged = true;
+    });
+
+    sales.forEach(s => {
+        // An imported payment has no marketing source, whatever its source field
+        // happens to say.
+        const key = s.imported ? '__unattributed__' : (normalise(s.source) || '__unattributed__');
+        const label = key === '__unattributed__' ? NOT_ATTRIBUTED : String(s.source).trim();
+        const r = bucket(key, label);
+        r.revenue += parseFloat(s.amount) || 0;
+    });
+
+    const list = Array.from(rows.values()).map(r => ({
+        ...r,
+        // null, not 0, when there is nothing to divide by — same rule as the rest
+        // of the funnel. "No calls booked from this channel" is not "0% booked".
+        callRate: r.leads > 0 ? (Math.min(r.calls, r.leads) / r.leads) * 100 : null,
+        closeRate: (r.calls > 0 && r.hasClosesLogged) ? (Math.min(r.closes, r.calls) / r.calls) * 100 : null
+    }));
+
+    // Flag names that look like the same channel spelled two ways, so she can
+    // decide. Nothing is merged automatically.
+    //
+    // Substring alone is not enough: it catches "Instagram" against "Instagram
+    // Ads" but misses "IG Story" against "Instagram", which is exactly what this
+    // audience types. The abbreviations below are the handful worth knowing — a
+    // short list of real shorthand beats a clever string-distance algorithm that
+    // would also decide "Email" and "Meta" are related.
+    const ALIASES = [
+        ['ig', 'insta', 'instagram'],
+        ['fb', 'facebook', 'meta'],
+        ['li', 'linkedin'],
+        ['yt', 'youtube'],
+        ['tt', 'tiktok'],
+        ['x', 'twitter'],
+        ['pin', 'pinterest'],
+        ['newsletter', 'email', 'mailing list']
+    ];
+    const family = (key) => {
+        const words = key.split(/[^a-z0-9]+/).filter(Boolean);
+        return ALIASES.findIndex(group =>
+            group.some(term => words.includes(term) || key.includes(term) && term.length >= 4)
+        );
+    };
+
+    list.forEach(a => {
+        const aFamily = family(a.key);
+        a.similarTo = list
+            .filter(b => {
+                if (b.key === a.key) return false;
+                if (a.key === '__unattributed__' || b.key === '__unattributed__') return false;
+                const substring = a.key.length >= 3 && b.key.length >= 3
+                    && (a.key.includes(b.key) || b.key.includes(a.key));
+                const sameFamily = aFamily !== -1 && aFamily === family(b.key);
+                return substring || sameFamily;
+            })
+            .map(b => b.label);
+    });
+
+    // Earners first. Unattributed always last: it is a gap to close, not a
+    // channel to compare against.
+    return list.sort((a, b) => {
+        if (a.key === '__unattributed__') return 1;
+        if (b.key === '__unattributed__') return -1;
+        return b.revenue - a.revenue;
+    });
 }
 
 function getRevenueInsights() {
@@ -1511,19 +1685,29 @@ function buildSystemPrompt() {
     }
     const leadGoal = store.leads?.quarterlyGoal || 0;
     
+    // Straight from getFunnelInsights, the same source the Revenue screen reads.
+    // This used to divide total sales by total calls and fall back to a hardcoded
+    // "100%", so the Coach would confidently quote a close rate that was wrong and
+    // sometimes impossible — and disagree with the figure on screen while doing it.
+    const funnel = getFunnelInsights();
+
     let metricsContext = "No monthly snapshot metrics available.";
-    let callCloseRate = "Unknown";
-    if (store.metrics && store.metrics.length > 0) {
-        const lastSnapshot = store.metrics[store.metrics.length - 1];
-        metricsContext = `Recent Snapshot: ${lastSnapshot.traffic} traffic, ${lastSnapshot.calls} calls booked, ${lastSnapshot.social} total social audience.`;
-        const totalCalls = store.metrics.reduce((sum, m) => sum + (parseFloat(m.calls) || 0), 0);
-        const salesCount = store.revenue?.entries ? store.revenue.entries.length : 0;
-        if (totalCalls > 0) {
-            callCloseRate = ((salesCount / totalCalls) * 100).toFixed(1) + "%";
-        } else if (salesCount > 0) {
-            callCloseRate = "100%";
+    if (funnel.latestSnapshot) {
+        const s = funnel.latestSnapshot;
+        const closesPart = (s.closes === undefined || s.closes === null)
+            ? 'closes not recorded that month'
+            : `${s.closes} of those calls closed`;
+        metricsContext = `Recent Snapshot: ${s.traffic} website visitors, ${s.calls} calls booked, ${closesPart}, ${s.social} total social audience.`;
+        if (funnel.visitorToCallRate !== null) {
+            metricsContext += ` Across all snapshots, ${funnel.visitorToCallRate.toFixed(1)}% of website visitors booked a call.`;
         }
     }
+
+    // "Not recorded yet" rather than a number, so the model says the user should
+    // log her closes instead of inventing a conversion rate to talk about.
+    const callCloseRate = funnel.callCloseRate === null
+        ? 'Not recorded yet (the user has not logged how many calls closed)'
+        : `${funnel.callCloseRate.toFixed(1)}% (${funnel.totalCloses} closed from ${funnel.totalCalls} calls)`;
 
     // 1. Weekly Plan Data
     const recentPlan = store.weeklyPlans && store.weeklyPlans.length > 0 
@@ -2232,16 +2416,23 @@ function renderNav() {
 // --- js\components\tooltip.js ---
 // tooltip.js
 
-function renderTooltip(whatStr, whyStr, position = 'top') {
+// labels lets a caller rename the two headings. "What it is / Why it matters"
+// suits a single metric, but a whole card is better explained as "what this
+// answers / how to use it". Defaults are unchanged, so every existing tooltip
+// keeps the wording it already had.
+function renderTooltip(whatStr, whyStr, position = 'top', labels = {}) {
     // Generate a unique ID for aria properties
     const id = 'tt_' + Math.random().toString(36).substr(2, 9);
 
+    const whatLabel = labels.what || 'What it is';
+    const whyLabel = labels.why || 'Why it matters';
+
     let content = '';
     if (whatStr) {
-        content += `<span class="tooltip-section"><strong>What it is:</strong> ${whatStr}</span>`;
+        content += `<span class="tooltip-section"><strong>${whatLabel}:</strong> ${whatStr}</span>`;
     }
     if (whyStr) {
-        content += `<span class="tooltip-section"><strong>Why it matters:</strong> ${whyStr}</span>`;
+        content += `<span class="tooltip-section"><strong>${whyLabel}:</strong> ${whyStr}</span>`;
     }
 
     return `
@@ -5060,38 +5251,15 @@ function renderRevenue() {
     const salesCount = (insights.entries || []).filter(e => !e.imported).length;
     const metrics = store.metrics || [];
     
-    // Calls arrive from two places, so closes have to as well. Snapshots used to
-    // contribute calls but had nowhere to record how many of them closed, which
-    // meant a month logged as a snapshot pushed the close rate towards zero with
-    // no way to correct it. Both halves of the sum now come from both sources.
-    // Calls arrive from two places, so closes have to as well. Snapshots used to
-    // contribute calls but had nowhere to record how many of them closed, which
-    // meant a month logged as a snapshot pushed the close rate towards zero with
-    // no way to correct it. Both halves of the sum now come from both sources.
-    const snapshotCalls = metrics.reduce((sum, m) => sum + (parseFloat(m.calls) || 0), 0);
-    const snapshotCloses = metrics.reduce((sum, m) => sum + (parseFloat(m.closes) || 0), 0);
-    const leadCalls = leads.reduce((sum, l) => sum + (parseFloat(l.calls) || 0), 0);
-    const leadCloses = leads.reduce((sum, l) => sum + (parseFloat(l.closes) || 0), 0);
-    const totalCalls = snapshotCalls + leadCalls;
-    const totalCloses = snapshotCloses + leadCloses;
+    // Calls and closes both arrive from two places, leads and monthly snapshots.
+    // That sum now lives in getFunnelInsights rather than here, so this screen,
+    // the AI Coach and the executive report cannot drift apart — which they had:
+    // the Coach was still dividing total sales by total calls and quoting
+    // impossible close rates long after this screen had been corrected.
+    const funnel = getFunnelInsights();
+    const { totalCalls, totalCloses, anyClosesEverLogged } = funnel;
     const effectiveCloses = Math.max(salesCount, totalCloses);
 
-    // Has a close ever been recorded, on any lead, at any time?
-    //
-    // An empty "closes" box is ambiguous: it can mean none of them closed, or it
-    // can mean nobody wrote it down. The app cannot tell the two apart, and
-    // printing 0% picks the more damaging reading and states it as fact. On a
-    // screen someone opens to judge how their business is going, a wrong 0% is
-    // worse than a wrong 150%: the broken number makes the app look untrustworthy,
-    // the discouraging one makes the person feel it about themselves.
-    //
-    // So: until at least one close exists anywhere, the close rate reports nothing
-    // and asks for the missing input instead. After that, a 0% for a given period
-    // is a real zero and is shown as one.
-    const anyClosesEverLogged =
-        leads.some(l => (parseFloat(l.closes) || 0) > 0) ||
-        metrics.some(m => (parseFloat(m.closes) || 0) > 0);
-    
     // Conversion Rates
     //
     // Every one of these is a proportion of something, so none can exceed 100%.
@@ -5119,11 +5287,11 @@ function renderRevenue() {
     //
     // null means "no answer to give", and renders as an em dash rather than a
     // number. Two ways to get there: no calls at all, or calls with no close ever
-    // recorded against them. See anyClosesEverLogged above for why the second one
-    // is not reported as 0%.
-    const callCloseRate = (totalCalls > 0 && anyClosesEverLogged)
-        ? ((Math.min(totalCloses, totalCalls) / totalCalls) * 100).toFixed(1)
-        : null;
+    // recorded against them. getFunnelInsights decides which, so the Coach reaches
+    // the same conclusion from the same data.
+    const callCloseRate = funnel.callCloseRate === null
+        ? null
+        : funnel.callCloseRate.toFixed(1);
     // Which of the two "no answer" cases we are in, so the card can ask for the
     // thing that is actually missing instead of showing a bare dash.
     const closeRateNeedsCloses = totalCalls > 0 && !anyClosesEverLogged;
@@ -5271,17 +5439,42 @@ function renderRevenue() {
                    <div class="card mt-6">
                         <div class="flex justify-between items-center mb-4">
                             <h3 class="mb-0">Monthly Funnel</h3>
-                            ${renderTooltip("Where your visitors drop out on the way to buying.", "Logged once a month on the Snapshot tab. The percentages are worked out for you, so you can see which stage is losing people rather than which number is biggest.", "bottom")}
+                            ${renderTooltip(
+                                "Where people fall out on the way to buying from you. Plenty of website visitors but almost no calls means the problem is your site or your offer, not your selling. Plenty of calls but few closes means the opposite. Knowing which it is saves you fixing the wrong thing for a month.",
+                                "Once a month, open the Snapshot tab on the right and log your website visitors, calls booked and how many closed. Turn on the monthly reminder in Settings if you would rather not remember. For a written breakdown of what these numbers mean and what to do next, press AI Executive Report at the top of this page.",
+                                "bottom",
+                                { what: 'What this answers', why: 'How to use it' }
+                            )}
                         </div>
-                        ${renderSnapshotFunnel(metrics)}
+                        ${renderSnapshotFunnel(metrics, insights.entries, currency)}
                    </div>
 
-                   <!-- Revenue Sources Breakdown -->
+                   <!-- Which channel earns -->
                    <div class="card mt-6">
-                        <h3 class="mb-4" style="display: flex; align-items: center;">
-                            Revenue Sources This Month
-                        </h3>
-                        ${renderPieChart(insights.revenueBySourceMonth || {}, currency)}
+                        <div class="flex justify-between items-center mb-4">
+                            <h3 class="mb-0">Which Channel Earns</h3>
+                            ${renderTooltip(
+                                "Which of your channels actually turns into money, rather than which one is loudest. A channel with fewer leads that closes most of them is usually worth more of your week than a busy one that rarely converts.",
+                                "Nothing extra to log. It builds from the Source you pick when logging a sale and the Lead Source you type when logging leads, so the more consistently you name them, the sharper this gets. Not attributed holds imported payments and anything logged without a source.",
+                                "bottom",
+                                { what: 'What this answers', why: 'How to use it' }
+                            )}
+                        </div>
+                        ${renderChannelFunnel(currency)}
+                   </div>
+
+                   <!-- Which offer sells -->
+                   <div class="card mt-6">
+                        <div class="flex justify-between items-center mb-4">
+                            <h3 class="mb-0">Which Offer Sells</h3>
+                            ${renderTooltip(
+                                "Which of your offers is actually bringing the money in this month, so you can see what people want rather than what you assumed they wanted.",
+                                "Built from the Offer Name you enter when logging a sale, so name your offers consistently to keep this clean. It shows this month only, which is what makes it different from Which Channel Earns — that one compares where people came from, over all time.",
+                                "bottom",
+                                { what: 'What this answers', why: 'How to use it' }
+                            )}
+                        </div>
+                        ${renderPieChart(insights.revenueByOfferMonth || {}, currency)}
                    </div>
                 </div>
 
@@ -5591,9 +5784,9 @@ function renderPipelineEvents(entries, leads, currency) {
 // they are going, and the funnel drawn to scale so a narrow step is obvious at a
 // glance. The point of logging traffic every month is to find out which stage is
 // leaking, and that is a question about rates, not counts.
-function renderSnapshotFunnel(metrics) {
+function renderSnapshotFunnel(metrics, allSales, currency) {
     if (!metrics || metrics.length === 0) {
-        return '<p style="color: var(--color-text-muted); font-size: 0.9rem;">No monthly snapshots logged yet. Log traffic, calls and closes once a month to see where your funnel is leaking.</p>';
+        return '<p style="color: var(--color-text-muted); font-size: 0.9rem;">Nothing logged yet. Log your first snapshot on the Snapshot tab, and the second one gives you a trend.</p>';
     }
 
     // A rate needs something to divide by, and closes were only added to the
@@ -5605,19 +5798,48 @@ function renderSnapshotFunnel(metrics) {
     };
     const pct = (v) => v === null ? '&mdash;' : `${v.toFixed(v < 10 ? 1 : 0)}%`;
 
+    // Sales for the same month, counted from entries already logged. Not everyone
+    // who uses this app books calls — a digital product seller goes straight from
+    // visitor to sale — so the funnel has to end somewhere universal. Sales is the
+    // one stage every business has, and it needs no extra input because the sales
+    // are already there with dates on them.
+    const salesFor = (dateStr) => {
+        const d = new Date(dateStr);
+        const inMonth = (allSales || []).filter(s => {
+            const sd = new Date(s.date);
+            return sd.getMonth() === d.getMonth() && sd.getFullYear() === d.getFullYear();
+        });
+        return {
+            count: inMonth.length,
+            revenue: inMonth.reduce((sum, s) => sum + (parseFloat(s.amount) || 0), 0)
+        };
+    };
+
     const sorted = metrics.slice().sort((a, b) => new Date(a.date) - new Date(b.date));
-    const rows = sorted.map(m => ({
-        date: m.date,
-        id: m.id,
-        traffic: parseFloat(m.traffic) || 0,
-        calls: parseFloat(m.calls) || 0,
-        closes: (m.closes === undefined || m.closes === null) ? null : (parseFloat(m.closes) || 0),
-        social: parseFloat(m.social) || 0,
-        month: new Date(m.date).toLocaleDateString(undefined, { month: 'short', year: '2-digit' })
-    })).map(r => ({
+    const rows = sorted.map(m => {
+        const sales = salesFor(m.date);
+        const calls = parseFloat(m.calls) || 0;
+        return {
+            date: m.date,
+            id: m.id,
+            traffic: parseFloat(m.traffic) || 0,
+            calls,
+            closes: (m.closes === undefined || m.closes === null) ? null : (parseFloat(m.closes) || 0),
+            social: parseFloat(m.social) || 0,
+            salesCount: sales.count,
+            salesRevenue: sales.revenue,
+            // The call stages are hidden entirely for a month with no calls, rather
+            // than shown as two empty rows. Someone who never gets on a call should
+            // not have to read past a stage that will always be blank for them.
+            usesCalls: calls > 0,
+            month: new Date(m.date).toLocaleDateString(undefined, { month: 'short', year: '2-digit' })
+        };
+    }).map(r => ({
         ...r,
         visitorToCall: rate(r.calls, r.traffic),
-        callToClose: rate(r.closes, r.calls)
+        callToClose: rate(r.closes, r.calls),
+        callToSale: rate(r.salesCount, r.calls),
+        visitorToSale: rate(r.salesCount, r.traffic)
     }));
 
     // Trend: both series are percentages, so they share a 0-100 scale and can be
@@ -5644,7 +5866,7 @@ function renderSnapshotFunnel(metrics) {
 
     const trend = trendMonths.length > 1 ? `
         <div style="margin-bottom: 1.25rem;">
-            ${trendSeries('Visitors who booked a call', 'visitorToCall', 'var(--color-primary)')}
+            ${trendSeries('Website visitors who booked a call', 'visitorToCall', 'var(--color-primary)')}
             ${trendSeries('Calls that closed', 'callToClose', 'var(--color-secondary)')}
         </div>` : '';
 
@@ -5659,17 +5881,30 @@ function renderSnapshotFunnel(metrics) {
             return `<span style="font-size: 0.7rem; color: ${up ? 'var(--color-primary-dark)' : 'var(--color-error)'};">${up ? '↑' : '↓'} ${Math.abs(d).toFixed(1)} pts</span>`;
         };
 
-        // Funnel widths are all relative to traffic, so the narrowing is to scale
-        // and the leaky step is the one that visibly collapses.
-        const w = (n) => r.traffic > 0 ? Math.max(1.5, (n / r.traffic) * 100) : 0;
+        // Each bar shows the conversion FROM THE STEP ABOVE, not a share of
+        // traffic.
+        //
+        // Scaling everything to traffic looked right on paper and was useless in
+        // practice: 12 calls out of 1,500 visitors is 0.8%, and 3 closes is 0.2%,
+        // so both bars hit the minimum width and rendered identical. A funnel
+        // where every stage looks the same length tells you nothing.
+        //
+        // Against the previous step, closes read 25% of calls, which is a bar you
+        // can actually see and compare month to month. The percentage is printed
+        // beside it either way, so the bar carries the gist and the text carries
+        // the precision.
+        const stepWidth = (num, den) => {
+            if (!(den > 0) || num === null || num === undefined) return 0;
+            return Math.max(1, Math.min(100, (num / den) * 100));
+        };
         const bar = (label, count, width, colour, note) => `
             <div style="margin-bottom: 0.4rem;">
                 <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--color-text-muted); margin-bottom: 0.15rem;">
                     <span><strong style="color: var(--color-black);">${label}</strong> ${count}</span>
                     <span>${note}</span>
                 </div>
-                <div style="height: 8px; background: var(--color-bg-light); border-radius: 4px; overflow: hidden;">
-                    <div style="height: 100%; width: ${width}%; background: ${colour}; border-radius: 4px;"></div>
+                <div style="height: 10px; background: rgba(16,24,40,0.08); border-radius: 5px; overflow: hidden;">
+                    <div style="height: 100%; width: ${width}%; background: ${colour}; border-radius: 5px;"></div>
                 </div>
             </div>`;
 
@@ -5679,14 +5914,76 @@ function renderSnapshotFunnel(metrics) {
                 <span style="font-weight: 600; color: var(--color-black);">${new Date(r.date).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}</span>
                 <button type="button" class="btn btn-ghost btn-sm btn-delete-metric" data-id="${r.id}" style="padding: 0.25rem 0.5rem; color: var(--color-text-muted);" title="Delete Entry">🗑️</button>
             </div>
-            ${bar('Visitors', r.traffic.toLocaleString(), 100, 'var(--color-border)', '')}
-            ${bar('Booked a call', r.calls.toLocaleString(), w(r.calls), 'var(--color-primary)', `${pct(r.visitorToCall)} of visitors ${delta(r.visitorToCall, prev?.visitorToCall)}`)}
-            ${bar('Closed', r.closes === null ? 'not recorded' : r.closes.toLocaleString(), r.closes === null ? 0 : w(r.closes), 'var(--color-secondary)', r.closes === null ? '' : `${pct(r.callToClose)} of calls ${delta(r.callToClose, prev?.callToClose)}`)}
+            ${/* Solid colours only. Two attempts at this bar used --color-border and
+                  then --color-primary-light (#E5F9FA), both of which are near-white
+                  and rendered as an empty track on an empty track. The top of the
+                  funnel is always 100% wide, so if it is not clearly filled it just
+                  looks like nothing was recorded. */''}
+            ${bar('Website visitors', r.traffic.toLocaleString(), 100, 'var(--color-primary-dark)', '')}
+            ${r.usesCalls ? `
+                ${bar('Booked a call', r.calls.toLocaleString(), stepWidth(r.calls, r.traffic), 'var(--color-primary)', `${pct(r.visitorToCall)} of visitors ${delta(r.visitorToCall, prev?.visitorToCall)}`)}
+                ${bar('Calls closed', r.closes === null ? 'not recorded' : r.closes.toLocaleString(), stepWidth(r.closes, r.calls), 'var(--color-secondary)', r.closes === null ? '' : `${pct(r.callToClose)} of calls ${delta(r.callToClose, prev?.callToClose)}`)}
+            ` : ''}
+            ${bar(
+                'Sales',
+                `${r.salesCount.toLocaleString()} &middot; ${currency}${formatAmount(r.salesRevenue)}`,
+                stepWidth(r.salesCount, r.usesCalls ? r.calls : r.traffic),
+                'var(--color-secondary-dark)',
+                `${pct(r.usesCalls ? r.callToSale : r.visitorToSale)} of ${r.usesCalls ? 'calls' : 'visitors'} ${delta(r.usesCalls ? r.callToSale : r.visitorToSale, r.usesCalls ? prev?.callToSale : prev?.visitorToSale)}`
+            )}
             <p style="font-size: 0.75rem; color: var(--color-text-muted); margin: 0.5rem 0 0;">Social audience ${r.social.toLocaleString()}</p>
         </div>`;
     }).join('');
 
     return `${trend}<div style="display: flex; flex-direction: column; gap: 1rem;">${monthRows}</div>`;
+}
+
+// Which channel earns. Built entirely from data already logged against leads and
+// sales, so there is nothing extra to fill in.
+function renderChannelFunnel(currency) {
+    const channels = getChannelFunnel();
+    const real = channels.filter(c => c.label !== NOT_ATTRIBUTED);
+
+    if (channels.length === 0) {
+        return '<p style="color: var(--color-text-muted); font-size: 0.9rem;">Nothing to compare yet. Log a few sales and leads with their sources and your channels will appear here.</p>';
+    }
+
+    const pct = (v) => v === null ? '&mdash;' : `${v.toFixed(v < 10 ? 1 : 0)}%`;
+    const maxRevenue = Math.max(...channels.map(c => c.revenue), 0);
+
+    // A bar per channel, sized by revenue, with the funnel rates underneath. The
+    // bar is the point: it answers "which of these is actually big" before you
+    // have read a single number.
+    const rows = channels.map(c => {
+        const unattributed = c.label === NOT_ATTRIBUTED;
+        const width = maxRevenue > 0 ? Math.max(c.revenue > 0 ? 2 : 0, (c.revenue / maxRevenue) * 100) : 0;
+        const colour = unattributed ? 'var(--color-border)' : 'var(--color-primary)';
+
+        return `
+        <div style="margin-bottom: 0.9rem; ${unattributed ? 'opacity: 0.8;' : ''}">
+            <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; margin-bottom: 0.25rem;">
+                <span style="font-weight: 600; color: var(--color-black); font-size: 0.875rem;">${c.label}</span>
+                <span style="font-weight: 600; color: var(--color-black); font-size: 0.875rem;">${currency}${formatAmount(c.revenue)}</span>
+            </div>
+            <div style="height: 10px; background: var(--color-bg-light); border-radius: 5px; overflow: hidden; margin-bottom: 0.25rem;">
+                <div style="height: 100%; width: ${width}%; background: ${colour}; border-radius: 5px;"></div>
+            </div>
+            <div style="font-size: 0.72rem; color: var(--color-text-muted);">
+                ${unattributed
+                    ? 'Imported payments and anything logged without a source. Not a channel, a gap.'
+                    : `${c.leads ? c.leads.toLocaleString() + ' leads' : 'no leads logged'} &middot; ${c.calls.toLocaleString()} calls (${pct(c.callRate)}) &middot; ${c.hasClosesLogged ? c.closes.toLocaleString() + ' closed (' + pct(c.closeRate) + ')' : 'closes not logged'}`}
+            </div>
+            ${c.similarTo && c.similarTo.length ? `<div style="font-size: 0.72rem; color: #B54708; margin-top: 0.2rem;">Might be the same channel as ${c.similarTo.join(', ')}. Kept separate, since only you can say.</div>` : ''}
+        </div>`;
+    }).join('');
+
+    // Only worth saying when there is something to compare against.
+    const best = real.filter(c => c.closeRate !== null).sort((a, b) => b.closeRate - a.closeRate)[0];
+    const takeaway = (real.length > 1 && best)
+        ? `<p style="font-size: 0.8rem; color: var(--color-text-muted); margin: 0.75rem 0 0;"><strong style="color: var(--color-black);">${best.label}</strong> closes the highest share of its calls at ${best.closeRate.toFixed(0)}%. Worth asking what you do differently there.</p>`
+        : '';
+
+    return `${rows}${takeaway}`;
 }
 
 function renderPieChart(sources, currency) {
@@ -5755,7 +6052,10 @@ window.generateAiReport = async function() {
         const currency = store.settings?.currency || '$';
         const leads = store.leads?.entries || [];
         const metrics = store.metrics || [];
-        
+        // Same funnel figures the Revenue screen shows, so the report cannot quote
+        // a close rate that contradicts the card the user is looking at.
+        const funnel = getFunnelInsights();
+
         // Tone deliberately matches the 90-day plan prompt in aiService.js. Asking
         // for "brutally honest" produced reports calling a week-one founder's
         // numbers "abysmal" and "a failure", which is not what this audience is
@@ -5787,8 +6087,18 @@ window.generateAiReport = async function() {
         Current Quarter Lead Goal: ${store.leads?.quarterlyGoal}
         Total Leads Generated: ${leads.reduce((sum, l) => sum + (parseFloat(l.amount) || 0), 0)}
         
-        Recent Monthly Snapshots (Traffic / Calls / Socials):
-        ${metrics.slice(-3).map(m => `Date: ${new Date(m.date).toLocaleDateString()}, Traffic: ${m.traffic}, Calls Booked: ${m.calls}, Social Audience: ${m.social}`).join('\n')}
+        Recent Monthly Funnel Snapshots:
+        ${metrics.slice(-3).map(m => {
+            const closes = (m.closes === undefined || m.closes === null) ? 'not recorded' : m.closes;
+            const toCall = m.traffic > 0 ? ((m.calls / m.traffic) * 100).toFixed(1) + '%' : 'n/a';
+            const toClose = (m.calls > 0 && m.closes !== undefined && m.closes !== null)
+                ? ((m.closes / m.calls) * 100).toFixed(1) + '%'
+                : 'n/a';
+            return `Date: ${new Date(m.date).toLocaleDateString()}, Website Visitors: ${m.traffic}, Calls Booked: ${m.calls} (${toCall} of visitors), Calls Closed: ${closes} (${toClose} of calls), Social Audience: ${m.social}`;
+        }).join('\n')}
+        ${funnel.callCloseRate === null
+            ? 'Overall call close rate: not recorded yet. The user has logged calls but not how many closed, so do not quote or estimate a close rate — tell her to log it.'
+            : `Overall call close rate: ${funnel.callCloseRate.toFixed(1)}% (${funnel.totalCloses} closed from ${funnel.totalCalls} calls).`}
         
         Recent Revenue Sources:
         ${insights.entries.slice(-5).map(e => `Source: ${e.source}, Amount: ${e.amount}`).join('\n')}
@@ -7155,6 +7465,14 @@ function renderSettings() {
                         <div>
                             <span style="font-weight: 500; display: block; color: var(--color-black);">Friday CEO Review</span>
                             <span style="font-size: 0.8rem; color: var(--color-text-muted);">Afternoon prompt to log wins and close out the week</span>
+                        </div>
+                    </label>
+
+                    <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer;">
+                        <input type="checkbox" name="reminder" value="${REMINDER_SNAPSHOT}" ${isChecked(REMINDER_SNAPSHOT)} style="margin-top: 0.25rem;">
+                        <div>
+                            <span style="font-weight: 500; display: block; color: var(--color-black);">Monthly Funnel Snapshot</span>
+                            <span style="font-size: 0.8rem; color: var(--color-text-muted);">On the 1st of each month, a nudge to log your website visitors, calls and closes</span>
                         </div>
                     </label>
                 </div>
@@ -10036,6 +10354,29 @@ function checkPushNotifications() {
 
     if (store.profile.reminderTimes.includes(REMINDER_FRIDAY) && todayName === 'Friday' && hour >= 14) {
         fireLocalNotification('friday_review', 'Friday Review', 'Time to log your wins and track your revenue for the week!');
+    }
+
+    // Monthly, on the 1st. Keyed by month rather than by day like the others, so
+    // it fires once and not every time the app is opened on the 1st.
+    //
+    // Skipped entirely if this month's snapshot is already logged — a reminder to
+    // do something you have already done is how people learn to ignore reminders.
+    if (store.profile.reminderTimes.includes(REMINDER_SNAPSHOT) && now.getDate() === 1 && hour >= 9) {
+        const alreadyLogged = (store.metrics || []).some(m => {
+            const d = new Date(m.date);
+            return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
+        });
+        if (!alreadyLogged) {
+            const monthKey = `snapshot_${currentYear}_${currentMonth}`;
+            if (!localStorage.getItem(monthKey)) {
+                fireLocalNotification(
+                    monthKey,
+                    'Monthly Funnel Snapshot',
+                    'Log last month\'s website visitors, calls booked and calls closed to see where your funnel is leaking.'
+                );
+                localStorage.setItem(monthKey, 'fired');
+            }
+        }
     }
 
     // --- Trial Notification Sequence ---

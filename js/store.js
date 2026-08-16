@@ -15,6 +15,11 @@ const STORE_KEY = 'ceoPlanner_store';
 export const REMINDER_WEEKLY = 'weekly_plan';
 export const REMINDER_DAILY = 'daily_priority';
 export const REMINDER_FRIDAY = 'friday_review';
+// Monthly, unlike the other three. The funnel card is only as good as the numbers
+// behind it, and those are the one input nothing else in the app prompts for —
+// sales and leads get logged as they happen, traffic and social only ever get
+// logged because someone remembered.
+export const REMINDER_SNAPSHOT = 'monthly_snapshot';
 
 export function getLocalDateString(date = new Date()) {
     const d = new Date(date);
@@ -367,6 +372,175 @@ function mergeImportedSales(manualEntries, importedEntries) {
     });
 
     return manualEntries.concat(flagged);
+}
+
+// The funnel: visitors, calls booked, calls closed, and the rates between them.
+//
+// One place, because there were three. The Revenue screen worked it out inline,
+// the AI Coach worked it out again in aiService.js, and the executive report
+// printed raw numbers and let the model divide. They disagreed: the screen was
+// corrected to count only recorded closes, while the Coach carried on dividing
+// total sales by total calls and telling the user things like a 150% close rate.
+//
+// A number the dashboard and the AI disagree about is worse than either being
+// wrong on its own, so both now read from here.
+//
+// callCloseRate is null when there is no answer to give, never 0. An empty closes
+// box means "not recorded", and reporting that as "none of your calls closed" is
+// a claim the data does not support.
+export function getFunnelInsights() {
+    const store = getStore();
+    const leads = store.leads?.entries || [];
+    const metrics = store.metrics || [];
+
+    const snapshotTraffic = metrics.reduce((s, m) => s + (parseFloat(m.traffic) || 0), 0);
+    const snapshotCalls = metrics.reduce((s, m) => s + (parseFloat(m.calls) || 0), 0);
+    const snapshotCloses = metrics.reduce((s, m) => s + (parseFloat(m.closes) || 0), 0);
+    const leadCalls = leads.reduce((s, l) => s + (parseFloat(l.calls) || 0), 0);
+    const leadCloses = leads.reduce((s, l) => s + (parseFloat(l.closes) || 0), 0);
+    const totalLeads = leads.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
+
+    const totalCalls = snapshotCalls + leadCalls;
+    const totalCloses = snapshotCloses + leadCloses;
+
+    const anyClosesEverLogged =
+        leads.some(l => (parseFloat(l.closes) || 0) > 0) ||
+        metrics.some(m => (parseFloat(m.closes) || 0) > 0);
+
+    const callCloseRate = (totalCalls > 0 && anyClosesEverLogged)
+        ? (Math.min(totalCloses, totalCalls) / totalCalls) * 100
+        : null;
+
+    const visitorToCallRate = snapshotTraffic > 0
+        ? (snapshotCalls / snapshotTraffic) * 100
+        : null;
+
+    return {
+        snapshotTraffic,
+        snapshotCalls,
+        snapshotCloses,
+        leadCalls,
+        leadCloses,
+        totalLeads,
+        totalCalls,
+        totalCloses,
+        anyClosesEverLogged,
+        callCloseRate,
+        visitorToCallRate,
+        latestSnapshot: metrics.length ? metrics[metrics.length - 1] : null
+    };
+}
+
+// Which channel actually earns.
+//
+// The monthly snapshot funnel is site-wide: a visitor count cannot be split by
+// source. But leads and sales both already carry one, so the rest of the funnel
+// can be broken down per channel with nothing new to log.
+//
+// Two deliberate decisions in here:
+//
+// Imported Stripe payments are grouped as "Not attributed" rather than appearing
+// as a channel called Stripe. Stripe is how the money arrived, not what caused
+// the sale, and a row labelled Stripe sitting above Instagram would read as a
+// top-performing channel while meaning nothing. Grouping them honestly also
+// surfaces a real cost of automatic importing: the more revenue arrives on its
+// own, the less of it can be traced back to an effort.
+//
+// Sources are matched on a trimmed, lowercased key, so "instagram" and
+// "Instagram " become one row. Nothing cleverer than that — "IG Story" and
+// "Instagram" stay separate, because silently merging two things the user named
+// differently would be the app deciding it knows better than she does. Where two
+// names look related, they are flagged for her to judge rather than combined.
+export const NOT_ATTRIBUTED = 'Not attributed';
+
+export function getChannelFunnel() {
+    const store = getStore();
+    const leads = store.leads?.entries || [];
+    const sales = getRevenueInsights().entries || [];
+
+    const normalise = (s) => String(s || '').trim().toLowerCase();
+    const rows = new Map();
+
+    const bucket = (key, label) => {
+        if (!rows.has(key)) {
+            rows.set(key, { key, label, leads: 0, calls: 0, closes: 0, revenue: 0, hasClosesLogged: false });
+        }
+        return rows.get(key);
+    };
+
+    leads.forEach(l => {
+        const key = normalise(l.source) || '__unattributed__';
+        const label = key === '__unattributed__' ? NOT_ATTRIBUTED : String(l.source).trim();
+        const r = bucket(key, label);
+        r.leads += parseFloat(l.amount) || 0;
+        r.calls += parseFloat(l.calls) || 0;
+        r.closes += parseFloat(l.closes) || 0;
+        if ((parseFloat(l.closes) || 0) > 0) r.hasClosesLogged = true;
+    });
+
+    sales.forEach(s => {
+        // An imported payment has no marketing source, whatever its source field
+        // happens to say.
+        const key = s.imported ? '__unattributed__' : (normalise(s.source) || '__unattributed__');
+        const label = key === '__unattributed__' ? NOT_ATTRIBUTED : String(s.source).trim();
+        const r = bucket(key, label);
+        r.revenue += parseFloat(s.amount) || 0;
+    });
+
+    const list = Array.from(rows.values()).map(r => ({
+        ...r,
+        // null, not 0, when there is nothing to divide by — same rule as the rest
+        // of the funnel. "No calls booked from this channel" is not "0% booked".
+        callRate: r.leads > 0 ? (Math.min(r.calls, r.leads) / r.leads) * 100 : null,
+        closeRate: (r.calls > 0 && r.hasClosesLogged) ? (Math.min(r.closes, r.calls) / r.calls) * 100 : null
+    }));
+
+    // Flag names that look like the same channel spelled two ways, so she can
+    // decide. Nothing is merged automatically.
+    //
+    // Substring alone is not enough: it catches "Instagram" against "Instagram
+    // Ads" but misses "IG Story" against "Instagram", which is exactly what this
+    // audience types. The abbreviations below are the handful worth knowing — a
+    // short list of real shorthand beats a clever string-distance algorithm that
+    // would also decide "Email" and "Meta" are related.
+    const ALIASES = [
+        ['ig', 'insta', 'instagram'],
+        ['fb', 'facebook', 'meta'],
+        ['li', 'linkedin'],
+        ['yt', 'youtube'],
+        ['tt', 'tiktok'],
+        ['x', 'twitter'],
+        ['pin', 'pinterest'],
+        ['newsletter', 'email', 'mailing list']
+    ];
+    const family = (key) => {
+        const words = key.split(/[^a-z0-9]+/).filter(Boolean);
+        return ALIASES.findIndex(group =>
+            group.some(term => words.includes(term) || key.includes(term) && term.length >= 4)
+        );
+    };
+
+    list.forEach(a => {
+        const aFamily = family(a.key);
+        a.similarTo = list
+            .filter(b => {
+                if (b.key === a.key) return false;
+                if (a.key === '__unattributed__' || b.key === '__unattributed__') return false;
+                const substring = a.key.length >= 3 && b.key.length >= 3
+                    && (a.key.includes(b.key) || b.key.includes(a.key));
+                const sameFamily = aFamily !== -1 && aFamily === family(b.key);
+                return substring || sameFamily;
+            })
+            .map(b => b.label);
+    });
+
+    // Earners first. Unattributed always last: it is a gap to close, not a
+    // channel to compare against.
+    return list.sort((a, b) => {
+        if (a.key === '__unattributed__') return 1;
+        if (b.key === '__unattributed__') return -1;
+        return b.revenue - a.revenue;
+    });
 }
 
 export function getRevenueInsights() {

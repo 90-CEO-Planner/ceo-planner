@@ -1,15 +1,22 @@
 // tooltip.js
 
-export function renderTooltip(whatStr, whyStr, position = 'top') {
+// labels lets a caller rename the two headings. "What it is / Why it matters"
+// suits a single metric, but a whole card is better explained as "what this
+// answers / how to use it". Defaults are unchanged, so every existing tooltip
+// keeps the wording it already had.
+export function renderTooltip(whatStr, whyStr, position = 'top', labels = {}) {
     // Generate a unique ID for aria properties
     const id = 'tt_' + Math.random().toString(36).substr(2, 9);
 
+    const whatLabel = labels.what || 'What it is';
+    const whyLabel = labels.why || 'Why it matters';
+
     let content = '';
     if (whatStr) {
-        content += `<span class="tooltip-section"><strong>What it is:</strong> ${whatStr}</span>`;
+        content += `<span class="tooltip-section"><strong>${whatLabel}:</strong> ${whatStr}</span>`;
     }
     if (whyStr) {
-        content += `<span class="tooltip-section"><strong>Why it matters:</strong> ${whyStr}</span>`;
+        content += `<span class="tooltip-section"><strong>${whyLabel}:</strong> ${whyStr}</span>`;
     }
 
     return `
