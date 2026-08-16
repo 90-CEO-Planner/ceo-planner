@@ -7002,28 +7002,33 @@ function renderConnectionsCard() {
 // the charge itself, so without them every imported sale reads "Subscription
 // update".
 //
-// Two things here came from watching Jen do it for real on 16 Aug 2026, and both
-// are the kind of detail that turns a five-minute job into an abandoned one:
+// ⚠️ THE ORDER OF THESE STEPS IS NOT A GUESS. It is the order Stripe actually
+// puts them in, walked through on a real account on 16 Aug 2026: name the key,
+// choose the permissions, and THEN Stripe interrupts with its identity check as
+// you go to create it. An earlier draft put the verification first, which is
+// wrong and worse than leaving it out — someone reading a step that hasn't
+// happened yet assumes they have missed something. Don't reorder without walking
+// it through again.
 //
-//   1. Stripe interrupts with an identity check ("Verification required") before
-//      it will create a key. Unwarned, that reads like something has gone wrong
-//      with OUR app, at the exact moment we are asking for a credential.
-//   2. The resource is labelled "Charges and Refunds", not "Charges", and the
+// Two other details from the same walk-through:
+//
+//   1. The resource is labelled "Charges and Refunds", not "Charges", and the
 //      permissions table has TWO columns — the second is Connect permissions,
 //      which is for platforms acting on other people's accounts and is not what
 //      we need. Telling people to use the filter box beats telling them to scroll
 //      a list of sixty resources, and it survives Stripe renaming things.
+//   2. The identity check ("Verification required" — security key, or email plus
+//      one more) reads like OUR app has broken, at the exact moment we are asking
+//      for a credential. Naming it before it appears is the whole point.
+//
+// The screenshot link in step 3 is hidden until the image is actually present —
+// see revealPermissionsHelp(). No broken image ever renders.
 function connectFormHtml() {
     return `
     <ol style="margin: 0 0 1.25rem 0; padding-left: 1.25rem; line-height: 1.7; color: var(--color-text-muted);">
         <li style="margin-bottom: 0.5rem;">
             Open <a href="${STRIPE_KEY_PAGE}" target="_blank" rel="noopener noreferrer" style="color: var(--color-primary-dark); font-weight: 600;">Stripe's create-a-key page</a>
             (you'll need to be signed in to Stripe).
-        </li>
-        <li style="margin-bottom: 0.5rem;">
-            Stripe will ask you to <strong style="color: var(--color-black);">verify it's really you</strong>,
-            with a security key or by email plus one more check. That's Stripe protecting
-            your account, not us. Get that out of the way first.
         </li>
         <li style="margin-bottom: 0.5rem;">Name the key <strong style="color: var(--color-black);">CEO Planner</strong>, so you can recognise it later.</li>
         <li style="margin-bottom: 0.5rem;">
@@ -7035,10 +7040,16 @@ function connectFormHtml() {
             <strong style="color: var(--color-black);">Invoices</strong>,
             <strong style="color: var(--color-black);">Products</strong> and
             <strong style="color: var(--color-black);">Checkout Sessions</strong>.
-            Leave everything else on None, and ignore the second
-            <em>Connect permissions</em> column completely.
+            Leave everything else on <strong style="color: var(--color-black);">None</strong>
+            (ignore the second <em>Connect permissions</em> column completely).
+            <a href="#" id="stripe-permissions-help" style="display: none; margin-left: 0.25rem; color: var(--color-primary-dark); font-weight: 600;">See what this looks like</a>
         </li>
-        <li style="margin-bottom: 0.5rem;">Create the key and copy it. It starts with <code>rk_</code>.</li>
+        <li style="margin-bottom: 0.5rem;">
+            When you create the key, Stripe will ask you to
+            <strong style="color: var(--color-black);">verify it's really you</strong> — a security key, or
+            email plus one more check. That's Stripe protecting your account, not us.
+        </li>
+        <li style="margin-bottom: 0.5rem;">Copy the key it gives you. It starts with <code>rk_</code>.</li>
         <li>Paste it below.</li>
     </ol>
 
@@ -7117,6 +7128,76 @@ function renderDangerCard() {
     `;
 }
 
+// The screenshot of Stripe's permissions table, shown on request from step 3.
+// Lives at the site root beside logo.png and the icons, which is where every
+// other image in this app already sits.
+const PERMISSIONS_HELP_IMAGE = './stripe-key-permissions.png';
+
+// Reveal the "See what this looks like" link only once the image genuinely
+// loads. The alternative — rendering the link unconditionally — means a broken
+// image icon on a screen whose entire job is to look trustworthy enough to be
+// handed a credential. Drop the file in and the link appears by itself; leave it
+// out and the card reads exactly as it did before.
+function revealPermissionsHelp() {
+    const link = document.getElementById('stripe-permissions-help');
+    if (!link) return;
+
+    const probe = new Image();
+    probe.onload = () => {
+        link.style.display = 'inline';
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            showImageModal(
+                PERMISSIONS_HELP_IMAGE,
+                "Stripe's Create restricted API key page, with Charges and Refunds set to Read",
+                'Set each of the five to Read in the first Permissions column. Everything else stays on None.'
+            );
+        });
+    };
+    probe.src = PERMISSIONS_HELP_IMAGE;
+}
+
+// A picture in a dialog. Structure, Escape handling, click-outside and focus
+// return all mirror showConfirm() in toast.js, so every dialog in this app
+// behaves the same way.
+function showImageModal(src, alt, caption) {
+    const overlay = document.createElement('div');
+    overlay.className = 'confirm-overlay';
+    overlay.innerHTML = `
+        <div class="confirm-card card" role="dialog" aria-modal="true" aria-label="${alt}" style="max-width: 720px; text-align: left;">
+            <img src="${src}" alt="${alt}" style="width: 100%; height: auto; border: 1px solid var(--color-border); border-radius: var(--radius-sm);">
+            <p class="confirm-message" style="margin-top: 1rem;"></p>
+            <div class="confirm-actions">
+                <button type="button" class="btn btn-primary confirm-ok">Close</button>
+            </div>
+        </div>
+    `;
+    overlay.querySelector('.confirm-message').textContent = caption;
+
+    const previouslyFocused = document.activeElement;
+
+    const close = () => {
+        document.removeEventListener('keydown', onKeydown);
+        overlay.remove();
+        if (previouslyFocused && typeof previouslyFocused.focus === 'function') {
+            previouslyFocused.focus();
+        }
+    };
+
+    const onKeydown = (e) => {
+        if (e.key === 'Escape') close();
+    };
+
+    overlay.querySelector('.confirm-ok').addEventListener('click', close);
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) close();
+    });
+    document.addEventListener('keydown', onKeydown);
+
+    document.body.appendChild(overlay);
+    overlay.querySelector('.confirm-ok').focus();
+}
+
 // Paints the connection panel and wires its buttons. Re-entrant: every action
 // re-paints, so there is one place that decides what the panel says.
 async function paintStripeConnection() {
@@ -7127,6 +7208,7 @@ async function paintStripeConnection() {
 
     if (!conn) {
         host.innerHTML = connectFormHtml();
+        revealPermissionsHelp();
 
         const input = document.getElementById('stripe-key-input');
         const button = document.getElementById('btn-stripe-connect');
