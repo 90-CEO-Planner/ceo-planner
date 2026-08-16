@@ -403,9 +403,24 @@ async function paintStripeConnection() {
     const host = document.getElementById('stripe-connection-state');
     if (!host) return;
 
-    const conn = await fetchStripeConnection();
+    const { state, conn } = await fetchStripeConnection();
 
-    if (!conn) {
+    // Couldn't find out. Never show the connect form here: telling someone to
+    // paste a new key because a request failed is how a working connection gets
+    // replaced for no reason.
+    if (state === 'unknown') {
+        host.innerHTML = `
+            <p style="margin: 0 0 0.75rem 0;">Couldn't check your Stripe connection just now. Nothing has been lost.</p>
+            <button type="button" id="btn-stripe-recheck" class="btn btn-outline btn-sm" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Try again</button>
+        `;
+        document.getElementById('btn-stripe-recheck')?.addEventListener('click', () => {
+            host.innerHTML = 'Checking…';
+            paintStripeConnection();
+        });
+        return;
+    }
+
+    if (state === 'none') {
         host.innerHTML = connectFormHtml();
         revealPermissionsHelp();
 

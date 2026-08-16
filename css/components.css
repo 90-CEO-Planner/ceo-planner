@@ -603,7 +603,10 @@
     margin-bottom: 0.15rem;
 }
 
-.pro-teaser-tag {
+/* The teaser's chip is a touch smaller than a standalone one. Targeted by
+   context rather than by an extra class, so proCardHeading can emit a plain
+   .pro-badge everywhere and each container decides how big it sits. */
+.pro-teaser-heading .pro-badge {
     font-size: 0.6rem;
 }
 

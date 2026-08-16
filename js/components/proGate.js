@@ -159,6 +159,36 @@ export function proBadge() {
     return `<span class="pro-badge">PRO</span>`;
 }
 
+// The heading line every Pro card wears: the chip, the heading, and an "in build"
+// marker when the feature does not exist yet.
+//
+//   ${proCardHeading('payment-import', 'Stripe connected')}
+//
+// Why this exists rather than each card assembling its own:
+//
+// A Pro feature's card has two lives. Before you can use it, it is an advert
+// (proTeaser). Once you can, that advert deletes itself and something useful
+// takes its place — a panel with real buttons. The second one is written by hand
+// on whichever screen needs it, and twice now it has been written without the
+// badge: the card became useful and quietly stopped saying it was part of Pro.
+//
+// One function owning the chip, the heading and the build marker means a card
+// that graduates from advert to control keeps its identity through the change.
+// If you are building a new Pro panel, start its markup with this.
+export function proCardHeading(featureKey, heading) {
+    const buildNote = isFeatureLive(featureKey)
+        ? ''
+        : `<span class="plan-feature-soon">in build</span>`;
+    return `${proBadge()}${heading}${buildNote}`;
+}
+
+// The style that lays proCardHeading out: chip and text on one line, wrapping
+// together rather than the chip stranding itself. Inline because the codebase
+// styles inline throughout and a one-off class in components.css for this would
+// be the odd one out.
+export const PRO_CARD_HEADING_STYLE =
+    'margin: 0 0 0.5rem 0; font-weight: 600; color: var(--color-black); display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;';
+
 // A locked control, for a feature that belongs in a row of other controls rather
 // than in the flow of the page:
 //
@@ -196,18 +226,14 @@ export function proLock(featureKey, label) {
 export function proTeaser(featureKey, heading, hint, action) {
     if (isProUser() && isFeatureLive(featureKey)) return '';
 
-    const live = isFeatureLive(featureKey);
-
-    // The chip always reads PRO. Its job is to mark the card as a Pro feature,
-    // and that is true whether or not the feature has shipped yet.
+    // The heading, chip and build marker all come from proCardHeading, which is
+    // the one place that decides what a Pro card's heading looks like.
     //
-    // It used to read IN BUILD for anything unshipped, which meant the cards most
-    // in need of the label were the only ones not carrying it: a reader on the
-    // base plan saw IN BUILD and learned when it was coming, but never learned it
-    // was a Pro feature at all. Build status is still real information, so it
-    // keeps its own muted marker after the heading instead of taking the chip's
-    // place — the same treatment the plan list on the Account screen already uses.
-    const buildNote = live ? '' : `<span class="plan-feature-soon">in build</span>`;
+    // The chip always reads PRO. Its job is to mark the card as a Pro feature,
+    // and that is true whether or not the feature has shipped yet. It used to read
+    // IN BUILD for anything unshipped, which meant the cards most in need of the
+    // label were the only ones without it: a reader on the base plan learned when
+    // something was coming but never that it was a Pro feature at all.
 
     const link = action && action.href
         ? `<a class="pro-teaser-action" data-pro-action href="${action.href}">${action.label}</a>`
@@ -217,7 +243,7 @@ export function proTeaser(featureKey, heading, hint, action) {
         <div class="pro-teaser" data-pro-feature="${featureKey}" role="button" tabindex="0">
             <svg class="pro-teaser-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
             <span class="pro-teaser-body">
-                <span class="pro-teaser-heading"><span class="pro-badge pro-teaser-tag">PRO</span>${heading}${buildNote}</span>
+                <span class="pro-teaser-heading">${proCardHeading(featureKey, heading)}</span>
                 <span class="pro-teaser-hint">${hint}</span>
                 ${link}
             </span>

@@ -78,8 +78,10 @@ export const STRIPE_KEY_PAGE = 'https://dashboard.stripe.com/apikeys/create';
 // on top of the user's own data, so it must never break a screen by throwing.
 export async function fetchImportedSales() {
     try {
-        const { data: { session } } = await window.db.auth.getSession();
-        if (!session || !session.user) return [];
+        // Same reason as fetchStripeConnection: asked too early, this returns
+        // nothing, and "no sales imported" is indistinguishable from "not ready".
+        const session = await waitForSession();
+        if (!session) return [];
 
         const { data, error } = await window.db
             .from('imported_sales')
@@ -153,13 +155,45 @@ export async function refreshImportedSales() {
     return importedSalesCache;
 }
 
-// The current connection, or null. Also carries last_synced_at and the last
-// error, which is what the Account screen shows.
-export async function fetchStripeConnection() {
-    try {
-        const { data: { session } } = await window.db.auth.getSession();
-        if (!session || !session.user) return null;
+// On a fresh page load the Supabase client restores the session from storage,
+// and may have to refresh an expired token over the network first. Anything that
+// asks "who is signed in?" during that window gets nothing back. Waiting a beat
+// and asking again costs a few hundred milliseconds on the rare occasion it is
+// needed, and nothing at all the rest of the time.
+async function waitForSession(attempts = 4, delayMs = 250) {
+    for (let i = 0; i < attempts; i++) {
+        try {
+            const { data: { session } } = await window.db.auth.getSession();
+            if (session && session.user) return session;
+        } catch (err) {
+            // Fall through and retry
+        }
+        if (i < attempts - 1) await new Promise(r => setTimeout(r, delayMs));
+    }
+    return null;
+}
 
+// The current Stripe connection.
+//
+// Returns { state, conn } rather than a bare row, because the three outcomes have
+// to be told apart:
+//
+//   'connected' — here is the connection
+//   'none'      — asked properly, there genuinely isn't one
+//   'unknown'   — could not find out: no session yet, or the read failed
+//
+// This used to return null for all three, and every caller treated null as "not
+// connected" and rendered the paste-your-key form. So a page opened a moment
+// before the session was ready, or a dropped request, told the user her Stripe
+// account had disconnected and asked her to set it up again — when nothing had
+// been lost and the row was sitting in the database the whole time.
+//
+// 'unknown' must never render the connect form. Say you are checking, and retry.
+export async function fetchStripeConnection() {
+    const session = await waitForSession();
+    if (!session) return { state: 'unknown', conn: null };
+
+    try {
         const { data, error } = await window.db
             .from('stripe_connections')
             .select('stripe_account_id, livemode, connected_at, last_synced_at, last_sync_error')
@@ -168,12 +202,12 @@ export async function fetchStripeConnection() {
 
         if (error) {
             console.warn('Could not read Stripe connection:', error.message);
-            return null;
+            return { state: 'unknown', conn: null };
         }
-        return data || null;
+        return data ? { state: 'connected', conn: data } : { state: 'none', conn: null };
     } catch (err) {
         console.warn('Could not read Stripe connection:', err.message);
-        return null;
+        return { state: 'unknown', conn: null };
     }
 }
 

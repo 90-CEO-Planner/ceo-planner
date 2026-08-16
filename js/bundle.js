@@ -1269,8 +1269,10 @@ const STRIPE_KEY_PAGE = 'https://dashboard.stripe.com/apikeys/create';
 // on top of the user's own data, so it must never break a screen by throwing.
 async function fetchImportedSales() {
     try {
-        const { data: { session } } = await window.db.auth.getSession();
-        if (!session || !session.user) return [];
+        // Same reason as fetchStripeConnection: asked too early, this returns
+        // nothing, and "no sales imported" is indistinguishable from "not ready".
+        const session = await waitForSession();
+        if (!session) return [];
 
         const { data, error } = await window.db
             .from('imported_sales')
@@ -1344,13 +1346,45 @@ async function refreshImportedSales() {
     return importedSalesCache;
 }
 
-// The current connection, or null. Also carries last_synced_at and the last
-// error, which is what the Account screen shows.
-async function fetchStripeConnection() {
-    try {
-        const { data: { session } } = await window.db.auth.getSession();
-        if (!session || !session.user) return null;
+// On a fresh page load the Supabase client restores the session from storage,
+// and may have to refresh an expired token over the network first. Anything that
+// asks "who is signed in?" during that window gets nothing back. Waiting a beat
+// and asking again costs a few hundred milliseconds on the rare occasion it is
+// needed, and nothing at all the rest of the time.
+async function waitForSession(attempts = 4, delayMs = 250) {
+    for (let i = 0; i < attempts; i++) {
+        try {
+            const { data: { session } } = await window.db.auth.getSession();
+            if (session && session.user) return session;
+        } catch (err) {
+            // Fall through and retry
+        }
+        if (i < attempts - 1) await new Promise(r => setTimeout(r, delayMs));
+    }
+    return null;
+}
 
+// The current Stripe connection.
+//
+// Returns { state, conn } rather than a bare row, because the three outcomes have
+// to be told apart:
+//
+//   'connected' — here is the connection
+//   'none'      — asked properly, there genuinely isn't one
+//   'unknown'   — could not find out: no session yet, or the read failed
+//
+// This used to return null for all three, and every caller treated null as "not
+// connected" and rendered the paste-your-key form. So a page opened a moment
+// before the session was ready, or a dropped request, told the user her Stripe
+// account had disconnected and asked her to set it up again — when nothing had
+// been lost and the row was sitting in the database the whole time.
+//
+// 'unknown' must never render the connect form. Say you are checking, and retry.
+async function fetchStripeConnection() {
+    const session = await waitForSession();
+    if (!session) return { state: 'unknown', conn: null };
+
+    try {
         const { data, error } = await window.db
             .from('stripe_connections')
             .select('stripe_account_id, livemode, connected_at, last_synced_at, last_sync_error')
@@ -1359,12 +1393,12 @@ async function fetchStripeConnection() {
 
         if (error) {
             console.warn('Could not read Stripe connection:', error.message);
-            return null;
+            return { state: 'unknown', conn: null };
         }
-        return data || null;
+        return data ? { state: 'connected', conn: data } : { state: 'none', conn: null };
     } catch (err) {
         console.warn('Could not read Stripe connection:', err.message);
-        return null;
+        return { state: 'unknown', conn: null };
     }
 }
 
@@ -1913,6 +1947,36 @@ function proBadge() {
     return `<span class="pro-badge">PRO</span>`;
 }
 
+// The heading line every Pro card wears: the chip, the heading, and an "in build"
+// marker when the feature does not exist yet.
+//
+//   ${proCardHeading('payment-import', 'Stripe connected')}
+//
+// Why this exists rather than each card assembling its own:
+//
+// A Pro feature's card has two lives. Before you can use it, it is an advert
+// (proTeaser). Once you can, that advert deletes itself and something useful
+// takes its place — a panel with real buttons. The second one is written by hand
+// on whichever screen needs it, and twice now it has been written without the
+// badge: the card became useful and quietly stopped saying it was part of Pro.
+//
+// One function owning the chip, the heading and the build marker means a card
+// that graduates from advert to control keeps its identity through the change.
+// If you are building a new Pro panel, start its markup with this.
+function proCardHeading(featureKey, heading) {
+    const buildNote = isFeatureLive(featureKey)
+        ? ''
+        : `<span class="plan-feature-soon">in build</span>`;
+    return `${proBadge()}${heading}${buildNote}`;
+}
+
+// The style that lays proCardHeading out: chip and text on one line, wrapping
+// together rather than the chip stranding itself. Inline because the codebase
+// styles inline throughout and a one-off class in components.css for this would
+// be the odd one out.
+const PRO_CARD_HEADING_STYLE =
+    'margin: 0 0 0.5rem 0; font-weight: 600; color: var(--color-black); display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;';
+
 // A locked control, for a feature that belongs in a row of other controls rather
 // than in the flow of the page:
 //
@@ -1950,18 +2014,14 @@ function proLock(featureKey, label) {
 function proTeaser(featureKey, heading, hint, action) {
     if (isProUser() && isFeatureLive(featureKey)) return '';
 
-    const live = isFeatureLive(featureKey);
-
-    // The chip always reads PRO. Its job is to mark the card as a Pro feature,
-    // and that is true whether or not the feature has shipped yet.
+    // The heading, chip and build marker all come from proCardHeading, which is
+    // the one place that decides what a Pro card's heading looks like.
     //
-    // It used to read IN BUILD for anything unshipped, which meant the cards most
-    // in need of the label were the only ones not carrying it: a reader on the
-    // base plan saw IN BUILD and learned when it was coming, but never learned it
-    // was a Pro feature at all. Build status is still real information, so it
-    // keeps its own muted marker after the heading instead of taking the chip's
-    // place — the same treatment the plan list on the Account screen already uses.
-    const buildNote = live ? '' : `<span class="plan-feature-soon">in build</span>`;
+    // The chip always reads PRO. Its job is to mark the card as a Pro feature,
+    // and that is true whether or not the feature has shipped yet. It used to read
+    // IN BUILD for anything unshipped, which meant the cards most in need of the
+    // label were the only ones without it: a reader on the base plan learned when
+    // something was coming but never that it was a Pro feature at all.
 
     const link = action && action.href
         ? `<a class="pro-teaser-action" data-pro-action href="${action.href}">${action.label}</a>`
@@ -1971,7 +2031,7 @@ function proTeaser(featureKey, heading, hint, action) {
         <div class="pro-teaser" data-pro-feature="${featureKey}" role="button" tabindex="0">
             <svg class="pro-teaser-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
             <span class="pro-teaser-body">
-                <span class="pro-teaser-heading"><span class="pro-badge pro-teaser-tag">PRO</span>${heading}${buildNote}</span>
+                <span class="pro-teaser-heading">${proCardHeading(featureKey, heading)}</span>
                 <span class="pro-teaser-hint">${hint}</span>
                 ${link}
             </span>
@@ -5000,11 +5060,21 @@ function renderRevenue() {
     const salesCount = (insights.entries || []).filter(e => !e.imported).length;
     const metrics = store.metrics || [];
     
+    // Calls arrive from two places, so closes have to as well. Snapshots used to
+    // contribute calls but had nowhere to record how many of them closed, which
+    // meant a month logged as a snapshot pushed the close rate towards zero with
+    // no way to correct it. Both halves of the sum now come from both sources.
+    // Calls arrive from two places, so closes have to as well. Snapshots used to
+    // contribute calls but had nowhere to record how many of them closed, which
+    // meant a month logged as a snapshot pushed the close rate towards zero with
+    // no way to correct it. Both halves of the sum now come from both sources.
     const snapshotCalls = metrics.reduce((sum, m) => sum + (parseFloat(m.calls) || 0), 0);
+    const snapshotCloses = metrics.reduce((sum, m) => sum + (parseFloat(m.closes) || 0), 0);
     const leadCalls = leads.reduce((sum, l) => sum + (parseFloat(l.calls) || 0), 0);
     const leadCloses = leads.reduce((sum, l) => sum + (parseFloat(l.closes) || 0), 0);
     const totalCalls = snapshotCalls + leadCalls;
-    const effectiveCloses = Math.max(salesCount, leadCloses);
+    const totalCloses = snapshotCloses + leadCloses;
+    const effectiveCloses = Math.max(salesCount, totalCloses);
 
     // Has a close ever been recorded, on any lead, at any time?
     //
@@ -5018,7 +5088,9 @@ function renderRevenue() {
     // So: until at least one close exists anywhere, the close rate reports nothing
     // and asks for the missing input instead. After that, a 0% for a given period
     // is a real zero and is shown as one.
-    const anyClosesEverLogged = leads.some(l => (parseFloat(l.closes) || 0) > 0);
+    const anyClosesEverLogged =
+        leads.some(l => (parseFloat(l.closes) || 0) > 0) ||
+        metrics.some(m => (parseFloat(m.closes) || 0) > 0);
     
     // Conversion Rates
     //
@@ -5050,7 +5122,7 @@ function renderRevenue() {
     // recorded against them. See anyClosesEverLogged above for why the second one
     // is not reported as 0%.
     const callCloseRate = (totalCalls > 0 && anyClosesEverLogged)
-        ? ((Math.min(leadCloses, totalCalls) / totalCalls) * 100).toFixed(1)
+        ? ((Math.min(totalCloses, totalCalls) / totalCalls) * 100).toFixed(1)
         : null;
     // Which of the two "no answer" cases we are in, so the card can ask for the
     // thing that is actually missing instead of showing a bare dash.
@@ -5198,38 +5270,10 @@ function renderRevenue() {
                    <!-- Monthly Snapshots -->
                    <div class="card mt-6">
                         <div class="flex justify-between items-center mb-4">
-                            <h3 class="mb-0">Monthly Metric Snapshots</h3>
+                            <h3 class="mb-0">Monthly Funnel</h3>
+                            ${renderTooltip("Where your visitors drop out on the way to buying.", "Logged once a month on the Snapshot tab. The percentages are worked out for you, so you can see which stage is losing people rather than which number is biggest.", "bottom")}
                         </div>
-                        ${metrics.length === 0 ? '<p style="color: var(--color-text-muted); font-size: 0.9rem;">No monthly snapshots logged yet.</p>' : `
-                        <div style="display: flex; flex-direction: column; gap: 0.75rem;">
-                            ${(() => {
-                                const sortedMetrics = metrics.slice().sort((a,b) => new Date(a.date) - new Date(b.date));
-                                return sortedMetrics.slice().reverse().map((m, index) => {
-                                    const prev = sortedMetrics.slice().reverse()[index + 1];
-                                    const getDiffHtml = (current, previous) => {
-                                        if (previous === undefined || previous === null) return '';
-                                        const diff = current - previous;
-                                        if (diff > 0) return `<span style="color: var(--color-primary-dark); font-size: 0.7rem;">(↑ ${diff.toLocaleString()})</span>`;
-                                        if (diff < 0) return `<span style="color: var(--color-error); font-size: 0.7rem;">(↓ ${Math.abs(diff).toLocaleString()})</span>`;
-                                        return `<span style="color: var(--color-text-muted); font-size: 0.7rem;">(-)</span>`;
-                                    };
-                                    return `
-                                    <div style="display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 0.75rem; border-bottom: 1px solid var(--color-border);">
-                                        <div style="flex: 1;">
-                                            <span style="font-weight: 600; color: var(--color-black); display: block;">${new Date(m.date).toLocaleDateString(undefined, {month:'long', year:'numeric'})}</span>
-                                            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem; margin-top: 0.5rem;">
-                                                <span style="font-size: 0.8rem; color: var(--color-text-muted);"><strong>Traffic:</strong> ${m.traffic.toLocaleString()} ${getDiffHtml(m.traffic, prev?.traffic)}</span>
-                                                <span style="font-size: 0.8rem; color: var(--color-text-muted);"><strong>Calls:</strong> ${m.calls} ${getDiffHtml(m.calls, prev?.calls)}</span>
-                                                <span style="font-size: 0.8rem; color: var(--color-text-muted);"><strong>Social:</strong> ${m.social.toLocaleString()} ${getDiffHtml(m.social, prev?.social)}</span>
-                                            </div>
-                                        </div>
-                                        <button type="button" class="btn btn-ghost btn-sm btn-delete-metric" data-id="${m.id}" style="padding: 0.25rem 0.5rem; color: var(--color-text-muted);" title="Delete Entry">🗑️</button>
-                                    </div>
-                                    `;
-                                }).join('');
-                            })()}
-                        </div>
-                        `}
+                        ${renderSnapshotFunnel(metrics)}
                    </div>
 
                    <!-- Revenue Sources Breakdown -->
@@ -5358,6 +5402,13 @@ function renderRevenue() {
                            <div class="form-group">
                                <label>Sales Calls Booked</label>
                                <input type="number" id="metric-calls" min="0" step="1" class="form-control" required placeholder="e.g. 12">
+                           </div>
+                           <div class="form-group">
+                               <label>Of Those, How Many Closed</label>
+                               <input type="number" id="metric-closes" min="0" step="1" class="form-control" required placeholder="e.g. 3">
+                               <p style="font-size: 0.75rem; color: var(--color-text-muted); margin: 0.35rem 0 0;">
+                                   How many of those calls turned into a sale. This is what your call close rate is worked out from.
+                               </p>
                            </div>
                            <div class="form-group">
                                <label>Total Social Audience</label>
@@ -5528,6 +5579,116 @@ function renderPipelineEvents(entries, leads, currency) {
     `;
 }
 
+// The Monthly Metric Snapshots card.
+//
+// This used to be a list of three unrelated numbers per month with a small arrow
+// beside each. The numbers are actually a funnel — visitors, then the ones who
+// booked a call, then the ones who bought — and printing them side by side left
+// the reader to do the division in her head. It was also the only thing on a page
+// of charts that visualised nothing.
+//
+// So: the two conversion rates worked out, a trend so you can see which direction
+// they are going, and the funnel drawn to scale so a narrow step is obvious at a
+// glance. The point of logging traffic every month is to find out which stage is
+// leaking, and that is a question about rates, not counts.
+function renderSnapshotFunnel(metrics) {
+    if (!metrics || metrics.length === 0) {
+        return '<p style="color: var(--color-text-muted); font-size: 0.9rem;">No monthly snapshots logged yet. Log traffic, calls and closes once a month to see where your funnel is leaking.</p>';
+    }
+
+    // A rate needs something to divide by, and closes were only added to the
+    // snapshot form later — so both "no calls that month" and "closes never
+    // recorded" have to come back as null and print as a dash, never as 0%.
+    const rate = (num, den) => {
+        if (!(den > 0) || num === undefined || num === null) return null;
+        return (num / den) * 100;
+    };
+    const pct = (v) => v === null ? '&mdash;' : `${v.toFixed(v < 10 ? 1 : 0)}%`;
+
+    const sorted = metrics.slice().sort((a, b) => new Date(a.date) - new Date(b.date));
+    const rows = sorted.map(m => ({
+        date: m.date,
+        id: m.id,
+        traffic: parseFloat(m.traffic) || 0,
+        calls: parseFloat(m.calls) || 0,
+        closes: (m.closes === undefined || m.closes === null) ? null : (parseFloat(m.closes) || 0),
+        social: parseFloat(m.social) || 0,
+        month: new Date(m.date).toLocaleDateString(undefined, { month: 'short', year: '2-digit' })
+    })).map(r => ({
+        ...r,
+        visitorToCall: rate(r.calls, r.traffic),
+        callToClose: rate(r.closes, r.calls)
+    }));
+
+    // Trend: both series are percentages, so they share a 0-100 scale and can be
+    // compared honestly. Charting the raw counts instead would put traffic in the
+    // thousands next to closes in single figures and tell you nothing.
+    const trendMonths = rows.slice(-6);
+    const trendSeries = (label, key, colour) => `
+        <div style="margin-bottom: 0.75rem;">
+            <p style="font-size: 0.75rem; color: var(--color-text-muted); font-weight: 600; margin: 0 0 0.35rem;">${label}</p>
+            <div style="display: flex; gap: 0.35rem; align-items: flex-end; height: 46px;">
+                ${trendMonths.map(r => {
+                    const v = r[key];
+                    const h = v === null ? 0 : Math.max(2, Math.min(100, v));
+                    return `
+                    <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 0.2rem;" title="${r.month}: ${v === null ? 'not recorded' : v.toFixed(1) + '%'}">
+                        <div style="width: 100%; height: 34px; display: flex; align-items: flex-end;">
+                            <div style="width: 100%; height: ${h}%; background: ${v === null ? 'var(--color-border)' : colour}; border-radius: 3px 3px 0 0;"></div>
+                        </div>
+                        <span style="font-size: 0.6rem; color: var(--color-text-muted);">${r.month}</span>
+                    </div>`;
+                }).join('')}
+            </div>
+        </div>`;
+
+    const trend = trendMonths.length > 1 ? `
+        <div style="margin-bottom: 1.25rem;">
+            ${trendSeries('Visitors who booked a call', 'visitorToCall', 'var(--color-primary)')}
+            ${trendSeries('Calls that closed', 'callToClose', 'var(--color-secondary)')}
+        </div>` : '';
+
+    // Newest month first in the list below, which is the one being acted on.
+    const monthRows = rows.slice().reverse().map((r, i) => {
+        const prev = rows.slice().reverse()[i + 1];
+        const delta = (now, before) => {
+            if (now === null || before === null || before === undefined) return '';
+            const d = now - before;
+            if (Math.abs(d) < 0.05) return `<span style="font-size: 0.7rem; color: var(--color-text-muted);">same</span>`;
+            const up = d > 0;
+            return `<span style="font-size: 0.7rem; color: ${up ? 'var(--color-primary-dark)' : 'var(--color-error)'};">${up ? '↑' : '↓'} ${Math.abs(d).toFixed(1)} pts</span>`;
+        };
+
+        // Funnel widths are all relative to traffic, so the narrowing is to scale
+        // and the leaky step is the one that visibly collapses.
+        const w = (n) => r.traffic > 0 ? Math.max(1.5, (n / r.traffic) * 100) : 0;
+        const bar = (label, count, width, colour, note) => `
+            <div style="margin-bottom: 0.4rem;">
+                <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--color-text-muted); margin-bottom: 0.15rem;">
+                    <span><strong style="color: var(--color-black);">${label}</strong> ${count}</span>
+                    <span>${note}</span>
+                </div>
+                <div style="height: 8px; background: var(--color-bg-light); border-radius: 4px; overflow: hidden;">
+                    <div style="height: 100%; width: ${width}%; background: ${colour}; border-radius: 4px;"></div>
+                </div>
+            </div>`;
+
+        return `
+        <div style="padding-bottom: 1rem; border-bottom: 1px solid var(--color-border);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                <span style="font-weight: 600; color: var(--color-black);">${new Date(r.date).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}</span>
+                <button type="button" class="btn btn-ghost btn-sm btn-delete-metric" data-id="${r.id}" style="padding: 0.25rem 0.5rem; color: var(--color-text-muted);" title="Delete Entry">🗑️</button>
+            </div>
+            ${bar('Visitors', r.traffic.toLocaleString(), 100, 'var(--color-border)', '')}
+            ${bar('Booked a call', r.calls.toLocaleString(), w(r.calls), 'var(--color-primary)', `${pct(r.visitorToCall)} of visitors ${delta(r.visitorToCall, prev?.visitorToCall)}`)}
+            ${bar('Closed', r.closes === null ? 'not recorded' : r.closes.toLocaleString(), r.closes === null ? 0 : w(r.closes), 'var(--color-secondary)', r.closes === null ? '' : `${pct(r.callToClose)} of calls ${delta(r.callToClose, prev?.callToClose)}`)}
+            <p style="font-size: 0.75rem; color: var(--color-text-muted); margin: 0.5rem 0 0;">Social audience ${r.social.toLocaleString()}</p>
+        </div>`;
+    }).join('');
+
+    return `${trend}<div style="display: flex; flex-direction: column; gap: 1rem;">${monthRows}</div>`;
+}
+
 function renderPieChart(sources, currency) {
     const total = Object.values(sources).reduce((a, b) => a + b, 0);
 
@@ -5683,16 +5844,25 @@ async function paintRevenueStripePanel() {
     const host = document.getElementById('revenue-stripe-panel');
     if (!host) return;
 
-    const conn = await fetchStripeConnection();
+    const { state, conn } = await fetchStripeConnection();
 
-    // Both states carry the PRO badge. Replacing the teaser strip with a working
-    // panel quietly dropped the one marker that said what kind of feature this is:
-    // the card became useful and stopped announcing itself as part of Pro. It is
-    // the same badge the teasers use, so a card that turns from an advert into a
-    // control keeps its identity through the change.
-    if (!conn) {
+    // Couldn't find out. Say so quietly and leave it — this is a sidebar panel,
+    // not somewhere to start a troubleshooting flow, and offering "connect Stripe"
+    // to someone who already has would be actively wrong.
+    if (state === 'unknown') {
         host.innerHTML = `
-            <p style="margin: 0 0 0.75rem 0; font-weight: 600; color: var(--color-black); display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">${proBadge()}Stop logging sales by hand</p>
+            <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('payment-import', 'Stripe')}</p>
+            <p style="margin: 0; line-height: 1.5;">Couldn't check your connection just now. Nothing has been lost, it'll retry when you reload.</p>
+        `;
+        return;
+    }
+
+    // Both remaining states head with proCardHeading, the shared wrapper that owns
+    // the PRO chip. Building this heading by hand is how the badge went missing
+    // when this panel replaced the teaser strip.
+    if (state === 'none') {
+        host.innerHTML = `
+            <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('payment-import', 'Stop logging sales by hand')}</p>
             <p style="margin: 0 0 1rem 0; line-height: 1.5;">Importing your sales automatically is part of Pro. Connect Stripe once and they appear here on their own.</p>
             <a href="#/account" class="btn btn-outline btn-sm" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Connect Stripe →</a>
         `;
@@ -5705,7 +5875,7 @@ async function paintRevenueStripePanel() {
         : 'not yet';
 
     host.innerHTML = `
-        <p style="margin: 0 0 0.5rem 0; font-weight: 600; color: var(--color-black); display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">${proBadge()}Stripe connected</p>
+        <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('payment-import', 'Stripe connected')}</p>
         <p style="margin: 0 0 1rem 0; line-height: 1.5;">
             ${count} ${count === 1 ? 'sale' : 'sales'} imported automatically, part of your Pro plan. Last checked ${lastSynced}.
         </p>
@@ -5869,9 +6039,23 @@ function revenueAttachEvents() {
     if (logMetricForm) {
         logMetricForm.addEventListener('submit', (e) => {
             e.preventDefault();
+
+            const calls = parseFloat(document.getElementById('metric-calls').value) || 0;
+            const closes = parseFloat(document.getElementById('metric-closes').value) || 0;
+
+            // Caught here rather than quietly clamped later. More closes than calls
+            // is a typo every time, and silently changing someone's number to make
+            // the sum work is how a figure nobody trusts ends up on the dashboard.
+            if (closes > calls) {
+                showToast(`You can't close more calls than you booked. You entered ${closes} closed from ${calls} booked.`, 'error');
+                document.getElementById('metric-closes').focus();
+                return;
+            }
+
             addMetricSnapshot({
                 traffic: parseFloat(document.getElementById('metric-traffic').value),
-                calls: parseFloat(document.getElementById('metric-calls').value),
+                calls,
+                closes,
                 social: parseFloat(document.getElementById('metric-social').value),
                 date: parseDateInput(document.getElementById('metric-date').value).toISOString()
             });
@@ -6029,7 +6213,11 @@ function revenueAttachEvents() {
             metrics.forEach(m => {
                 csvContent += row([
                     'Snapshot', isoDate(m.date), '', '', '', '',
-                    m.calls || 0, '', m.traffic || 0, m.social || 0,
+                    // Closes stays blank for snapshots taken before the field
+                    // existed, rather than becoming a 0 that would read as a real
+                    // month of no closes once it is in a spreadsheet.
+                    m.calls || 0, (m.closes === undefined || m.closes === null) ? '' : m.closes,
+                    m.traffic || 0, m.social || 0,
                     inQuarter(m.date), ''
                 ]);
             });
@@ -7549,9 +7737,24 @@ async function paintStripeConnection() {
     const host = document.getElementById('stripe-connection-state');
     if (!host) return;
 
-    const conn = await fetchStripeConnection();
+    const { state, conn } = await fetchStripeConnection();
 
-    if (!conn) {
+    // Couldn't find out. Never show the connect form here: telling someone to
+    // paste a new key because a request failed is how a working connection gets
+    // replaced for no reason.
+    if (state === 'unknown') {
+        host.innerHTML = `
+            <p style="margin: 0 0 0.75rem 0;">Couldn't check your Stripe connection just now. Nothing has been lost.</p>
+            <button type="button" id="btn-stripe-recheck" class="btn btn-outline btn-sm" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Try again</button>
+        `;
+        document.getElementById('btn-stripe-recheck')?.addEventListener('click', () => {
+            host.innerHTML = 'Checking…';
+            paintStripeConnection();
+        });
+        return;
+    }
+
+    if (state === 'none') {
         host.innerHTML = connectFormHtml();
         revealPermissionsHelp();
 
