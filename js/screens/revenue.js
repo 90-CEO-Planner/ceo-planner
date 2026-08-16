@@ -3,7 +3,7 @@ import { renderNav } from '../components/nav.js';
 import { getStore, updateQuickOffers, addRevenueEntry, deleteRevenueEntry, getRevenueInsights, addLeadEntry, deleteLeadEntry, addMetricSnapshot, deleteMetricSnapshot, getLocalDateString, getWeekStart, parseDateInput, formatAmount } from '../store.js';
 import { renderTooltip } from '../components/tooltip.js';
 import { showToast, showConfirm, rerenderScreen } from '../components/toast.js';
-import { proTeaser, proLock } from '../components/proGate.js';
+import { proTeaser, proLock, proBadge } from '../components/proGate.js';
 import { canConnectStripe, refreshImportedSales, getImportedSalesCache, fetchStripeConnection, syncStripeSales } from '../stripeImport.js';
 
 // Pipeline list state. Module level so it survives a re-render — delete an entry
@@ -748,10 +748,15 @@ async function paintRevenueStripePanel() {
 
     const conn = await fetchStripeConnection();
 
+    // Both states carry the PRO badge. Replacing the teaser strip with a working
+    // panel quietly dropped the one marker that said what kind of feature this is:
+    // the card became useful and stopped announcing itself as part of Pro. It is
+    // the same badge the teasers use, so a card that turns from an advert into a
+    // control keeps its identity through the change.
     if (!conn) {
         host.innerHTML = `
-            <p style="margin: 0 0 0.75rem 0; font-weight: 600; color: var(--color-black);">Stop logging sales by hand</p>
-            <p style="margin: 0 0 1rem 0; line-height: 1.5;">Connect Stripe once and your sales appear here on their own.</p>
+            <p style="margin: 0 0 0.75rem 0; font-weight: 600; color: var(--color-black); display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">${proBadge()}Stop logging sales by hand</p>
+            <p style="margin: 0 0 1rem 0; line-height: 1.5;">Importing your sales automatically is part of Pro. Connect Stripe once and they appear here on their own.</p>
             <a href="#/account" class="btn btn-outline btn-sm" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Connect Stripe →</a>
         `;
         return;
@@ -763,9 +768,9 @@ async function paintRevenueStripePanel() {
         : 'not yet';
 
     host.innerHTML = `
-        <p style="margin: 0 0 0.5rem 0; font-weight: 600; color: var(--color-black);">Stripe connected</p>
+        <p style="margin: 0 0 0.5rem 0; font-weight: 600; color: var(--color-black); display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">${proBadge()}Stripe connected</p>
         <p style="margin: 0 0 1rem 0; line-height: 1.5;">
-            ${count} ${count === 1 ? 'sale' : 'sales'} imported. Last checked ${lastSynced}.
+            ${count} ${count === 1 ? 'sale' : 'sales'} imported automatically, part of your Pro plan. Last checked ${lastSynced}.
         </p>
         ${conn.last_sync_error ? `<p style="margin: 0 0 1rem 0; color: #B42318;">Last attempt failed: ${conn.last_sync_error}</p>` : ''}
         <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
