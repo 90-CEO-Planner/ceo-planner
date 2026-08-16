@@ -103,8 +103,11 @@ Deno.serve(async (req) => {
         if (code === 'invalid_request_error' && /api key/i.test(message)) {
           return json({ error: `Stripe did not accept that key: ${message}` }, 400)
         }
+        // "Charges and Refunds" is Stripe's own label for the resource, verified
+        // against the live dashboard. Naming it anything shorter sends someone
+        // hunting for a row that does not exist.
         return json({
-          error: `That key works, but it cannot read your payments. Edit it in Stripe, set Charges to Read, and try again. (${message})`,
+          error: `That key works, but it cannot read your payments. Edit it in Stripe, set "Charges and Refunds" to Read, and try again. (${message})`,
         }, 400)
       }
 

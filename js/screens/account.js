@@ -155,17 +155,30 @@ function renderConnectionsCard() {
 
 // The paste-a-key form.
 //
-// Five steps, written out rather than hidden behind a "how do I do this?" link:
+// Written out step by step rather than hidden behind a "how do I do this?" link:
 // creating a restricted key is the hardest thing this app ever asks anyone to
 // do, and it happens once, at the exact moment someone is deciding whether the
 // import is worth the bother. Stripe publishes no URL parameters for
-// pre-selecting the permissions, so the list has to be read and ticked by hand
+// pre-selecting the permissions, so the list has to be found and ticked by hand
 // — which makes naming the exact five resources the whole job.
 //
-// The five are the endpoints stripe-sync actually reads. Charges is the money.
-// The other four are only ever used to work out what a sale was FOR: the product
-// name lives on the invoice or checkout session line items, never on the charge
-// itself, so without them every imported sale reads "Subscription update".
+// The five are the endpoints stripe-sync actually reads. Charges and Refunds is
+// the money. The other four are only ever used to work out what a sale was FOR:
+// the product name lives on the invoice or checkout session line items, never on
+// the charge itself, so without them every imported sale reads "Subscription
+// update".
+//
+// Two things here came from watching Jen do it for real on 16 Aug 2026, and both
+// are the kind of detail that turns a five-minute job into an abandoned one:
+//
+//   1. Stripe interrupts with an identity check ("Verification required") before
+//      it will create a key. Unwarned, that reads like something has gone wrong
+//      with OUR app, at the exact moment we are asking for a credential.
+//   2. The resource is labelled "Charges and Refunds", not "Charges", and the
+//      permissions table has TWO columns — the second is Connect permissions,
+//      which is for platforms acting on other people's accounts and is not what
+//      we need. Telling people to use the filter box beats telling them to scroll
+//      a list of sixty resources, and it survives Stripe renaming things.
 function connectFormHtml() {
     return `
     <ol style="margin: 0 0 1.25rem 0; padding-left: 1.25rem; line-height: 1.7; color: var(--color-text-muted);">
@@ -173,14 +186,23 @@ function connectFormHtml() {
             Open <a href="${STRIPE_KEY_PAGE}" target="_blank" rel="noopener noreferrer" style="color: var(--color-primary-dark); font-weight: 600;">Stripe's create-a-key page</a>
             (you'll need to be signed in to Stripe).
         </li>
-        <li style="margin-bottom: 0.5rem;">Name it <strong style="color: var(--color-black);">CEO Planner</strong>, so you can recognise it later.</li>
         <li style="margin-bottom: 0.5rem;">
-            Set these five to <strong style="color: var(--color-black);">Read</strong>, and leave everything
-            else on None: <strong style="color: var(--color-black);">Charges</strong>,
+            Stripe will ask you to <strong style="color: var(--color-black);">verify it's really you</strong>,
+            with a security key or by email plus one more check. That's Stripe protecting
+            your account, not us. Get that out of the way first.
+        </li>
+        <li style="margin-bottom: 0.5rem;">Name the key <strong style="color: var(--color-black);">CEO Planner</strong>, so you can recognise it later.</li>
+        <li style="margin-bottom: 0.5rem;">
+            Use the <strong style="color: var(--color-black);">Filter resources</strong> box to find each of
+            these five, and set each one to <strong style="color: var(--color-black);">Read</strong> in the
+            first <strong style="color: var(--color-black);">Permissions</strong> column:
+            <strong style="color: var(--color-black);">Charges and Refunds</strong>,
             <strong style="color: var(--color-black);">PaymentIntents</strong>,
             <strong style="color: var(--color-black);">Invoices</strong>,
             <strong style="color: var(--color-black);">Products</strong> and
             <strong style="color: var(--color-black);">Checkout Sessions</strong>.
+            Leave everything else on None, and ignore the second
+            <em>Connect permissions</em> column completely.
         </li>
         <li style="margin-bottom: 0.5rem;">Create the key and copy it. It starts with <code>rk_</code>.</li>
         <li>Paste it below.</li>
