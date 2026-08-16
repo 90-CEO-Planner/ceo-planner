@@ -53,16 +53,50 @@
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
     <!-- Main App Logic -->
-    <script src="./js/bundle.js?v=52" defer></script>
+    <script src="./js/bundle.js?v=53" defer></script>
     
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
-          navigator.serviceWorker.register('sw.js')
-            .then(reg => console.log('Service Worker installed securely.', reg))
+          // updateViaCache: 'none' stops the browser serving sw.js itself from its
+          // http cache. Safari will otherwise hold a service worker script for up
+          // to 24 hours, which means a fix to the caching strategy cannot reach
+          // the very browsers that need it — the worker keeping someone on an old
+          // build is the same worker that would have to update to release them.
+          navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+            .then(reg => {
+              console.log('Service Worker installed securely.', reg);
+              // Ask for a fresh copy on every load rather than waiting for the
+              // browser's own schedule.
+              reg.update().catch(() => {});
+            })
             .catch(err => console.error('Service Worker installation failed: ', err));
         });
       }
+
+      // Last-resort recovery for a browser already pinned to an old build.
+      //
+      // Compares the bundle version this page is running against the one the
+      // server currently serves, fetched with cache disabled so the answer cannot
+      // itself be stale. On a mismatch it reloads once — guarded by sessionStorage
+      // so a genuinely broken deploy cannot put the tab in a reload loop.
+      window.addEventListener('load', () => {
+        var running = (document.querySelector('script[src*="bundle.js"]') || {}).src || '';
+        var runningVersion = (running.match(/[?&]v=(\d+)/) || [])[1];
+        if (!runningVersion) return;
+
+        fetch('index.html?cachecheck=' + Date.now(), { cache: 'no-store' })
+          .then(function (r) { return r.text(); })
+          .then(function (html) {
+            var latest = (html.match(/bundle\.js\?v=(\d+)/) || [])[1];
+            if (!latest || latest === runningVersion) return;
+            if (sessionStorage.getItem('ceo_stale_reload') === latest) return;
+            sessionStorage.setItem('ceo_stale_reload', latest);
+            console.warn('Running build v' + runningVersion + ', server has v' + latest + '. Reloading.');
+            location.reload();
+          })
+          .catch(function () { /* offline, or the check failed. Carry on. */ });
+      });
     </script>
 </body>
 
