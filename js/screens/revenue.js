@@ -68,6 +68,20 @@ export function renderRevenue() {
     const leadCloses = leads.reduce((sum, l) => sum + (parseFloat(l.closes) || 0), 0);
     const totalCalls = snapshotCalls + leadCalls;
     const effectiveCloses = Math.max(salesCount, leadCloses);
+
+    // Has a close ever been recorded, on any lead, at any time?
+    //
+    // An empty "closes" box is ambiguous: it can mean none of them closed, or it
+    // can mean nobody wrote it down. The app cannot tell the two apart, and
+    // printing 0% picks the more damaging reading and states it as fact. On a
+    // screen someone opens to judge how their business is going, a wrong 0% is
+    // worse than a wrong 150%: the broken number makes the app look untrustworthy,
+    // the discouraging one makes the person feel it about themselves.
+    //
+    // So: until at least one close exists anywhere, the close rate reports nothing
+    // and asks for the missing input instead. After that, a 0% for a given period
+    // is a real zero and is shown as one.
+    const anyClosesEverLogged = leads.some(l => (parseFloat(l.closes) || 0) > 0);
     
     // Conversion Rates
     //
@@ -94,12 +108,16 @@ export function renderRevenue() {
     // number easier to fill in and impossible to trust: a good month of Instagram
     // sales would push it up without a single extra call being closed.
     //
-    // The consequence, stated plainly so it doesn't look like a bug: log calls but
-    // leave "closes" blank and this reads 0%. That is the honest answer to a
-    // question you haven't answered, and the empty box is the thing to fix.
-    const callCloseRate = totalCalls > 0
+    // null means "no answer to give", and renders as an em dash rather than a
+    // number. Two ways to get there: no calls at all, or calls with no close ever
+    // recorded against them. See anyClosesEverLogged above for why the second one
+    // is not reported as 0%.
+    const callCloseRate = (totalCalls > 0 && anyClosesEverLogged)
         ? ((Math.min(leadCloses, totalCalls) / totalCalls) * 100).toFixed(1)
         : null;
+    // Which of the two "no answer" cases we are in, so the card can ask for the
+    // thing that is actually missing instead of showing a bare dash.
+    const closeRateNeedsCloses = totalCalls > 0 && !anyClosesEverLogged;
 
     return `
         ${renderNav()}
@@ -158,6 +176,11 @@ export function renderRevenue() {
                         Call Close Rate
                     </p>
                     <h3 style="font-size: 1.75rem; color: var(--color-black); margin: 0;">${callCloseRate === null ? '&mdash;' : callCloseRate + '%'}</h3>
+                    ${closeRateNeedsCloses ? `
+                    <p style="font-size: 0.7rem; color: var(--color-text-muted); margin: 0.5rem 0 0 0; line-height: 1.35;">
+                        You've logged calls but no closes yet. Add how many closed when you log a lead and this fills in.
+                    </p>
+                    ` : ''}
                 </div>
             </div>
 

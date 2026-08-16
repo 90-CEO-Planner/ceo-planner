@@ -1951,7 +1951,17 @@ function proTeaser(featureKey, heading, hint, action) {
     if (isProUser() && isFeatureLive(featureKey)) return '';
 
     const live = isFeatureLive(featureKey);
-    const tag = live ? 'PRO' : 'IN BUILD';
+
+    // The chip always reads PRO. Its job is to mark the card as a Pro feature,
+    // and that is true whether or not the feature has shipped yet.
+    //
+    // It used to read IN BUILD for anything unshipped, which meant the cards most
+    // in need of the label were the only ones not carrying it: a reader on the
+    // base plan saw IN BUILD and learned when it was coming, but never learned it
+    // was a Pro feature at all. Build status is still real information, so it
+    // keeps its own muted marker after the heading instead of taking the chip's
+    // place — the same treatment the plan list on the Account screen already uses.
+    const buildNote = live ? '' : `<span class="plan-feature-soon">in build</span>`;
 
     const link = action && action.href
         ? `<a class="pro-teaser-action" data-pro-action href="${action.href}">${action.label}</a>`
@@ -1961,7 +1971,7 @@ function proTeaser(featureKey, heading, hint, action) {
         <div class="pro-teaser" data-pro-feature="${featureKey}" role="button" tabindex="0">
             <svg class="pro-teaser-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
             <span class="pro-teaser-body">
-                <span class="pro-teaser-heading"><span class="pro-badge pro-teaser-tag">${tag}</span>${heading}</span>
+                <span class="pro-teaser-heading"><span class="pro-badge pro-teaser-tag">PRO</span>${heading}${buildNote}</span>
                 <span class="pro-teaser-hint">${hint}</span>
                 ${link}
             </span>
@@ -4995,6 +5005,20 @@ function renderRevenue() {
     const leadCloses = leads.reduce((sum, l) => sum + (parseFloat(l.closes) || 0), 0);
     const totalCalls = snapshotCalls + leadCalls;
     const effectiveCloses = Math.max(salesCount, leadCloses);
+
+    // Has a close ever been recorded, on any lead, at any time?
+    //
+    // An empty "closes" box is ambiguous: it can mean none of them closed, or it
+    // can mean nobody wrote it down. The app cannot tell the two apart, and
+    // printing 0% picks the more damaging reading and states it as fact. On a
+    // screen someone opens to judge how their business is going, a wrong 0% is
+    // worse than a wrong 150%: the broken number makes the app look untrustworthy,
+    // the discouraging one makes the person feel it about themselves.
+    //
+    // So: until at least one close exists anywhere, the close rate reports nothing
+    // and asks for the missing input instead. After that, a 0% for a given period
+    // is a real zero and is shown as one.
+    const anyClosesEverLogged = leads.some(l => (parseFloat(l.closes) || 0) > 0);
     
     // Conversion Rates
     //
@@ -5021,12 +5045,16 @@ function renderRevenue() {
     // number easier to fill in and impossible to trust: a good month of Instagram
     // sales would push it up without a single extra call being closed.
     //
-    // The consequence, stated plainly so it doesn't look like a bug: log calls but
-    // leave "closes" blank and this reads 0%. That is the honest answer to a
-    // question you haven't answered, and the empty box is the thing to fix.
-    const callCloseRate = totalCalls > 0
+    // null means "no answer to give", and renders as an em dash rather than a
+    // number. Two ways to get there: no calls at all, or calls with no close ever
+    // recorded against them. See anyClosesEverLogged above for why the second one
+    // is not reported as 0%.
+    const callCloseRate = (totalCalls > 0 && anyClosesEverLogged)
         ? ((Math.min(leadCloses, totalCalls) / totalCalls) * 100).toFixed(1)
         : null;
+    // Which of the two "no answer" cases we are in, so the card can ask for the
+    // thing that is actually missing instead of showing a bare dash.
+    const closeRateNeedsCloses = totalCalls > 0 && !anyClosesEverLogged;
 
     return `
         ${renderNav()}
@@ -5085,6 +5113,11 @@ function renderRevenue() {
                         Call Close Rate
                     </p>
                     <h3 style="font-size: 1.75rem; color: var(--color-black); margin: 0;">${callCloseRate === null ? '&mdash;' : callCloseRate + '%'}</h3>
+                    ${closeRateNeedsCloses ? `
+                    <p style="font-size: 0.7rem; color: var(--color-text-muted); margin: 0.5rem 0 0 0; line-height: 1.35;">
+                        You've logged calls but no closes yet. Add how many closed when you log a lead and this fills in.
+                    </p>
+                    ` : ''}
                 </div>
             </div>
 

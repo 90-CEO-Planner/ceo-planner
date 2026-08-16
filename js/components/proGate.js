@@ -197,7 +197,17 @@ export function proTeaser(featureKey, heading, hint, action) {
     if (isProUser() && isFeatureLive(featureKey)) return '';
 
     const live = isFeatureLive(featureKey);
-    const tag = live ? 'PRO' : 'IN BUILD';
+
+    // The chip always reads PRO. Its job is to mark the card as a Pro feature,
+    // and that is true whether or not the feature has shipped yet.
+    //
+    // It used to read IN BUILD for anything unshipped, which meant the cards most
+    // in need of the label were the only ones not carrying it: a reader on the
+    // base plan saw IN BUILD and learned when it was coming, but never learned it
+    // was a Pro feature at all. Build status is still real information, so it
+    // keeps its own muted marker after the heading instead of taking the chip's
+    // place — the same treatment the plan list on the Account screen already uses.
+    const buildNote = live ? '' : `<span class="plan-feature-soon">in build</span>`;
 
     const link = action && action.href
         ? `<a class="pro-teaser-action" data-pro-action href="${action.href}">${action.label}</a>`
@@ -207,7 +217,7 @@ export function proTeaser(featureKey, heading, hint, action) {
         <div class="pro-teaser" data-pro-feature="${featureKey}" role="button" tabindex="0">
             <svg class="pro-teaser-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
             <span class="pro-teaser-body">
-                <span class="pro-teaser-heading"><span class="pro-badge pro-teaser-tag">${tag}</span>${heading}</span>
+                <span class="pro-teaser-heading"><span class="pro-badge pro-teaser-tag">PRO</span>${heading}${buildNote}</span>
                 <span class="pro-teaser-hint">${hint}</span>
                 ${link}
             </span>
