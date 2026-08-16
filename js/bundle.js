@@ -1175,6 +1175,40 @@ function canConnectStripe() {
     return isFeatureLive('payment-import') || localStorage.getItem('ceo_stripe_preview') === '1';
 }
 
+// Turn the preview flag on from a link instead of the console:
+//
+//   https://app.…/?stripe_preview=1
+//   https://app.…/?stripe_preview=0   (turns it back off)
+//
+// The flag is localStorage, so it is per browser AND per profile. Setting it in
+// Chrome does nothing for Safari, and clearing site data wipes it — which cost
+// an hour on 16 Aug 2026, twice, because "the feature has vanished" and "I am on
+// an old build" look identical from the outside. A link works on a phone, in a
+// second browser, and for anyone who does not want to open a developer console.
+//
+// The parameter is read from the query string rather than the hash for the same
+// reason the Stripe checkout marker is: the router rewrites the hash when it
+// bounces an unauthenticated visitor to #/login, which would throw it away.
+// It is stripped immediately after being applied, so a reload doesn't re-apply
+// it and the URL doesn't get shared around with the flag baked in.
+//
+// Delete this whole function when `payment-import` ships.
+function applyStripePreviewParam() {
+    const match = /[?&]stripe_preview=([01])/.exec(window.location.search);
+    if (!match) return;
+
+    if (match[1] === '1') {
+        localStorage.setItem('ceo_stripe_preview', '1');
+    } else {
+        localStorage.removeItem('ceo_stripe_preview');
+    }
+
+    const cleaned = window.location.search
+        .replace(/[?&]stripe_preview=[01]/, '')
+        .replace(/^&/, '?');
+    window.history.replaceState({}, '', window.location.pathname + (cleaned === '?' ? '' : cleaned) + window.location.hash);
+}
+
 // Where the user creates the key they paste in. Exported so the Account screen
 // and any future onboarding step link to the same place.
 //
@@ -9596,6 +9630,9 @@ function bindGlobalNavEvents() {
 window.addEventListener('hashchange', router);
 window.addEventListener('load', () => {
     purgeLegacyKeys();
+    // ?stripe_preview=1 turns on the pre-launch Stripe import card for this
+    // browser. Must run before router(), so the first render already sees it.
+    applyStripePreviewParam();
     bindGlobalNavEvents();
     // One delegated handler for every locked Pro control, bound once. Screens
     // render `data-pro-feature="..."` and never wire anything up themselves.

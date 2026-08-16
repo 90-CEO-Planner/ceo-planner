@@ -2,6 +2,7 @@
 import { getStore, seedMockData, getLocalDateString, REMINDER_WEEKLY, REMINDER_DAILY, REMINDER_FRIDAY } from './store.js';
 import { signOutAndClear } from './components/nav.js';
 import { initProGate } from './components/proGate.js';
+import { applyStripePreviewParam } from './stripeImport.js';
 
 // Screens
 // We'll import these dynamically or define them later to handle page renders
@@ -306,6 +307,9 @@ function bindGlobalNavEvents() {
 window.addEventListener('hashchange', router);
 window.addEventListener('load', () => {
     purgeLegacyKeys();
+    // ?stripe_preview=1 turns on the pre-launch Stripe import card for this
+    // browser. Must run before router(), so the first render already sees it.
+    applyStripePreviewParam();
     bindGlobalNavEvents();
     // One delegated handler for every locked Pro control, bound once. Screens
     // render `data-pro-feature="..."` and never wire anything up themselves.
