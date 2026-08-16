@@ -2,7 +2,7 @@
 import { getStore, seedMockData, getLocalDateString, REMINDER_WEEKLY, REMINDER_DAILY, REMINDER_FRIDAY, REMINDER_SNAPSHOT } from './store.js';
 import { signOutAndClear } from './components/nav.js';
 import { initProGate } from './components/proGate.js';
-import { applyStripePreviewParam } from './stripeImport.js';
+import { applyStripePreviewParam, autoSyncStripeIfDue } from './stripeImport.js';
 
 // Screens
 // We'll import these dynamically or define them later to handle page renders
@@ -342,6 +342,12 @@ window.addEventListener('load', () => {
     // Confirm the trial is still valid against the database, not just localStorage
     lastRevalidatedAt = Date.now();
     revalidateAccess();
+
+    // Bring in any Stripe sales that landed since last time, quietly and at most
+    // once an hour. This is what makes "every sale appears here on its own" true:
+    // without it, sales only arrived when someone remembered to press a button.
+    // Fire and forget — it must never delay or interrupt the app starting.
+    autoSyncStripeIfDue();
     // And re-check hourly, so a long-open tab doesn't outlive the trial
     setInterval(revalidateAccess, 3600000);
     // ...plus whenever they come back to the tab, which is how the app notices a

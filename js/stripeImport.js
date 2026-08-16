@@ -155,22 +155,66 @@ export async function refreshImportedSales() {
     return importedSalesCache;
 }
 
-// On a fresh page load the Supabase client restores the session from storage,
-// and may have to refresh an expired token over the network first. Anything that
-// asks "who is signed in?" during that window gets nothing back. Waiting a beat
-// and asking again costs a few hundred milliseconds on the rare occasion it is
-// needed, and nothing at all the rest of the time.
-async function waitForSession(attempts = 4, delayMs = 250) {
-    for (let i = 0; i < attempts; i++) {
+// Wait for the signed-in session to be available.
+//
+// On a fresh page load the Supabase client restores the session from storage and
+// may have to refresh an expired token over the network first. Anything asking
+// "who is signed in?" during that window gets nothing back.
+//
+// The first version of this polled four times over 750ms, which was fine in
+// Chrome and not nearly long enough in Safari: its tracking protection makes the
+// token refresh a slower round trip, so the check gave up before the session
+// arrived and the Stripe card reported "couldn't check your connection" on a
+// perfectly good account. Same code, same data, different browser.
+//
+// So this no longer guesses a duration. It waits for Supabase to say the session
+// is ready via onAuthStateChange, with polling only as a backstop and a generous
+// ceiling. Waiting a few seconds in the rare slow case is invisible; telling
+// someone their Stripe connection is broken is not.
+async function waitForSession(timeoutMs = 8000) {
+    const immediate = await getSessionSafely();
+    if (immediate) return immediate;
+
+    return new Promise(resolve => {
+        let settled = false;
+        let subscription = null;
+        let poller = null;
+
+        const finish = (session) => {
+            if (settled) return;
+            settled = true;
+            if (poller) clearInterval(poller);
+            if (timer) clearTimeout(timer);
+            try { subscription?.unsubscribe(); } catch (err) { /* already gone */ }
+            resolve(session);
+        };
+
+        const timer = setTimeout(() => finish(null), timeoutMs);
+
         try {
-            const { data: { session } } = await window.db.auth.getSession();
-            if (session && session.user) return session;
+            const { data } = window.db.auth.onAuthStateChange((_event, session) => {
+                if (session && session.user) finish(session);
+            });
+            subscription = data?.subscription;
         } catch (err) {
-            // Fall through and retry
+            // No listener available; the poller below still covers us.
         }
-        if (i < attempts - 1) await new Promise(r => setTimeout(r, delayMs));
+
+        // Backstop, in case the event fired before the listener attached.
+        poller = setInterval(async () => {
+            const s = await getSessionSafely();
+            if (s) finish(s);
+        }, 400);
+    });
+}
+
+async function getSessionSafely() {
+    try {
+        const { data: { session } } = await window.db.auth.getSession();
+        return (session && session.user) ? session : null;
+    } catch (err) {
+        return null;
     }
-    return null;
 }
 
 // The current Stripe connection.
@@ -250,6 +294,48 @@ export async function disconnectStripe() {
     });
     if (error) return await window.readFunctionError(error);
     return null;
+}
+
+// Import quietly in the background, if it is due.
+//
+// The Pro description promises "connect Stripe once and every sale appears here
+// on its own". Until now it did not: sales only arrived when someone pressed
+// "Import sales now", which is a button, not "on its own". This closes that gap
+// without a webhook — sales are simply already there when the app is opened.
+//
+// Throttled to once an hour and stored per browser. Syncing on every screen
+// change would hammer Stripe's API for nothing, since a solo business does not
+// take a payment every thirty seconds.
+//
+// Deliberately silent: no toast, no spinner, no error. This runs unasked, so it
+// must never interrupt. A failure just means the figures are as fresh as the last
+// successful run, and the manual button is still there with its own feedback.
+const AUTO_SYNC_KEY = 'ceo_stripe_last_autosync';
+const AUTO_SYNC_INTERVAL_MS = 60 * 60 * 1000;
+
+export async function autoSyncStripeIfDue() {
+    try {
+        const last = parseInt(localStorage.getItem(AUTO_SYNC_KEY) || '0', 10);
+        if (Date.now() - last < AUTO_SYNC_INTERVAL_MS) return null;
+
+        // Only worth a request if this account has actually connected Stripe.
+        const { state } = await fetchStripeConnection();
+        if (state !== 'connected') return null;
+
+        // Written before the call, not after: a failing sync should wait its turn
+        // like a successful one, rather than retrying on every page load.
+        localStorage.setItem(AUTO_SYNC_KEY, String(Date.now()));
+
+        const result = await syncStripeSales();
+        if (result && !result.error && result.imported) {
+            await refreshImportedSales();
+            return result;
+        }
+        return null;
+    } catch (err) {
+        console.warn('Background Stripe sync skipped:', err.message);
+        return null;
+    }
 }
 
 // Pull new sales. Returns { imported, scanned, truncated } or an error string.
