@@ -297,7 +297,15 @@ function renderDangerCard() {
 // The screenshot of Stripe's permissions table, shown on request from step 3.
 // Lives at the site root beside logo.png and the icons, which is where every
 // other image in this app already sits.
-const PERMISSIONS_HELP_IMAGE = './stripe-key-permissions.png';
+//
+// The ?v= matters more than it looks. Anyone who opened this card in the window
+// between the code shipping and the image being uploaded has a **cached 404** for
+// this exact URL, and GitHub Pages sends max-age=600 on 404s just as it does on
+// hits — so their browser will keep serving that 404 from cache and the picture
+// stays broken long after the file is live. A new query string is a new cache
+// entry, which sidesteps every stale copy at once. **Bump it whenever the
+// screenshot is replaced.**
+const PERMISSIONS_HELP_IMAGE = './stripe-key-permissions.png?v=1';
 
 // Reveal the "See what this looks like" link only once the image genuinely
 // loads. The alternative — rendering the link unconditionally — means a broken
@@ -331,7 +339,8 @@ function showImageModal(src, alt, caption) {
     overlay.className = 'confirm-overlay';
     overlay.innerHTML = `
         <div class="confirm-card card" role="dialog" aria-modal="true" aria-label="${alt}" style="max-width: 720px; text-align: left;">
-            <img src="${src}" alt="${alt}" style="width: 100%; height: auto; border: 1px solid var(--color-border); border-radius: var(--radius-sm);">
+            <img src="${src}" alt="" style="width: 100%; height: auto; border: 1px solid var(--color-border); border-radius: var(--radius-sm);">
+            <p class="image-modal-fallback" style="display: none; margin: 0; color: var(--color-text-muted); font-size: 0.875rem; line-height: 1.6;"></p>
             <p class="confirm-message" style="margin-top: 1rem;"></p>
             <div class="confirm-actions">
                 <button type="button" class="btn btn-primary confirm-ok">Close</button>
@@ -339,6 +348,25 @@ function showImageModal(src, alt, caption) {
         </div>
     `;
     overlay.querySelector('.confirm-message').textContent = caption;
+
+    // Never show a broken image. The link is only revealed after the picture has
+    // loaded once, but "loaded once" and "loads again now" are not the same
+    // thing: a cached 404 from before the file was uploaded, a CDN edge that
+    // hasn't caught up, or a dropped connection will all put a broken-image icon
+    // on the screen whose entire job is to look trustworthy enough to be handed
+    // a credential. If it fails, the words do the work instead.
+    //
+    // Note the img carries alt="" rather than the description — a broken image
+    // with alt text renders the text beside a torn-page icon, which looks like
+    // the fault it is. The dialog keeps its aria-label, so screen readers are
+    // unaffected.
+    const img = overlay.querySelector('img');
+    const fallback = overlay.querySelector('.image-modal-fallback');
+    img.addEventListener('error', () => {
+        img.style.display = 'none';
+        fallback.textContent = alt + ". The picture could not be loaded just now, but the written steps behind this dialog are complete on their own.";
+        fallback.style.display = 'block';
+    });
 
     const previouslyFocused = document.activeElement;
 
