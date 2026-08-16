@@ -11,7 +11,7 @@
 import { renderNav, signOutAndClear } from '../components/nav.js';
 import { showToast, showConfirm } from '../components/toast.js';
 import { PRO_FEATURES, PRO_FEATURE_KEYS, getPlanTier, isProTrial, trialDaysLeft, isFeatureLive, proBadge } from '../components/proGate.js';
-import { fetchStripeConnection, connectStripeKey, disconnectStripe, syncStripeSales, canConnectStripe, STRIPE_KEY_PAGE } from '../stripeImport.js';
+import { fetchStripeConnection, connectStripeKey, disconnectStripe, syncStripeSales, canConnectStripe, STRIPE_KEY_PAGE, refreshImportedSales } from '../stripeImport.js';
 
 // Everything the base plan includes. Written out rather than derived, because
 // the point of this list is to make base feel like a complete product on its
@@ -216,7 +216,12 @@ function connectFormHtml() {
             email plus one more check. That's Stripe protecting your account, not us.
         </li>
         <li style="margin-bottom: 0.5rem;">Copy the key it gives you. It starts with <code>rk_</code>.</li>
-        <li>Paste it below.</li>
+        <li style="margin-bottom: 0.5rem;">Paste it below and press <strong style="color: var(--color-black);">Connect Stripe</strong>.</li>
+        <li>
+            Then press <strong style="color: var(--color-black);">Import sales now</strong>, which appears
+            once you're connected. Connecting on its own doesn't bring anything in — that button is
+            what fetches your history the first time.
+        </li>
     </ol>
 
     <div class="form-group mb-3">
@@ -445,6 +450,15 @@ async function paintStripeConnection() {
         ? new Date(conn.last_synced_at).toLocaleString()
         : 'not yet';
 
+    // How many sales are actually here. A toast saying "imported 8 sales" is gone
+    // in three and a half seconds, and if you happened to be looking elsewhere the
+    // screen afterwards looks identical to the screen before. This is the same
+    // information, written down and still there tomorrow.
+    const importedSales = await refreshImportedSales();
+    const importedSummary = importedSales.length
+        ? ` — <strong style="color: var(--color-black);">${importedSales.length} ${importedSales.length === 1 ? 'sale' : 'sales'}</strong> imported, showing on your Revenue screen`
+        : '';
+
     // 'unknown' is what stripe-connect stores when a key can read charges but not
     // the account object — a perfectly usable key, so it connects anyway and this
     // simply doesn't name the account.
@@ -455,9 +469,23 @@ async function paintStripeConnection() {
         ? ` <span style="color: #B54708;">(test mode key, so this will only ever import test payments)</span>`
         : '';
 
+    // Connecting imports nothing on its own, which is not obvious: the card says
+    // "connected", so the job looks finished. Until the first import has run this
+    // spells out the remaining step, rather than leaving it to a toast that has
+    // already disappeared by the time anyone goes looking for what changed.
+    const neverImported = !conn.last_synced_at;
+    const nextStep = neverImported
+        ? `<div style="background: var(--color-primary-light); border-left: 3px solid var(--color-primary); border-radius: 6px; padding: 0.75rem 0.875rem; margin: 0 0 1rem 0; color: var(--color-text-main); line-height: 1.5;">
+               <strong style="color: var(--color-black);">One more step.</strong>
+               Connecting doesn't bring your sales in by itself. Press
+               <strong style="color: var(--color-black);">Import sales now</strong> to fetch your history.
+           </div>`
+        : '';
+
     host.innerHTML = `
         <p style="margin: 0 0 0.5rem 0;"><strong style="color: var(--color-black);">Stripe connected</strong>${accountLine}${modeNote}</p>
-        <p style="margin: 0 0 1rem 0;">Last import: ${lastSynced}</p>
+        <p style="margin: 0 0 1rem 0;">Last import: ${lastSynced}${importedSummary}</p>
+        ${nextStep}
         ${conn.last_sync_error ? `<p style="margin: 0 0 1rem 0; color: #B42318;">Last attempt failed: ${conn.last_sync_error}</p>` : ''}
         <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
             <button type="button" id="btn-stripe-sync" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Import sales now</button>

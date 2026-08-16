@@ -4,7 +4,7 @@ import { getStore, updateQuickOffers, addRevenueEntry, deleteRevenueEntry, getRe
 import { renderTooltip } from '../components/tooltip.js';
 import { showToast, showConfirm, rerenderScreen } from '../components/toast.js';
 import { proTeaser, proLock } from '../components/proGate.js';
-import { canConnectStripe } from '../stripeImport.js';
+import { canConnectStripe, refreshImportedSales, getImportedSalesCache } from '../stripeImport.js';
 
 // Pipeline list state. Module level so it survives a re-render — delete an entry
 // on page 3 of the list and you stay on page 3 instead of being thrown back to
@@ -17,10 +17,16 @@ const PIPELINE_PAGE_SIZE = 15;
 // state above: saving re-renders the screen, and the tab should not move.
 let activeLogTab = 'tab-rev';
 
+// How many imported sales this render drew. attachEvents compares the freshly
+// fetched count against it and only re-renders when it has changed, which stops
+// the refresh-then-rerender pair from looping forever.
+let importedCountAtRender = 0;
+
 export function renderRevenue() {
     window.setScreenModule({ attachEvents: revenueAttachEvents });
     const store = getStore();
     const insights = getRevenueInsights();
+    importedCountAtRender = getImportedSalesCache().length;
     
     const currency = store.settings?.currency || '$';
 
@@ -49,7 +55,12 @@ export function renderRevenue() {
     const leadGoal = parseFloat(store.leads?.quarterlyGoal) || 0;
     const leadProgressPercent = leadGoal > 0 ? (totalLeads / leadGoal) * 100 : 0;
     
-    const salesCount = insights.entries ? insights.entries.length : 0;
+    // Sales logged through this app's own pipeline. Payments imported from Stripe
+    // are deliberately excluded from this particular count: it is used below as a
+    // stand-in for "how many calls closed", and a subscription renewal that
+    // arrived overnight was never a booked call. Counting them sent the close rate
+    // to 550% on an account with eight imported sales and two calls.
+    const salesCount = (insights.entries || []).filter(e => !e.imported).length;
     const metrics = store.metrics || [];
     
     const snapshotCalls = metrics.reduce((sum, m) => sum + (parseFloat(m.calls) || 0), 0);
@@ -59,11 +70,26 @@ export function renderRevenue() {
     const effectiveCloses = Math.max(salesCount, leadCloses);
     
     // Conversion Rates
-    const leadToSaleConversion = totalLeads > 0 ? ((effectiveCloses / totalLeads) * 100).toFixed(1) : 0;
-    const callBookingRate = totalLeads > 0 ? ((totalCalls / totalLeads) * 100).toFixed(1) : 0;
+    //
+    // Every one of these is a proportion of something, so none can exceed 100%.
+    // Using the sales count as a stand-in for closes is a kindness to people who
+    // log their sales but never fill in the "closes" box — but three sales against
+    // two calls then reported a 150% close rate, which is not a flattering number,
+    // it is an obviously broken one that makes the whole page look untrustworthy.
+    //
+    // Capping keeps the convenience without the impossible figure: you cannot
+    // close more calls than you booked, or convert more leads than you had.
+    const leadToSaleConversion = totalLeads > 0
+        ? ((Math.min(effectiveCloses, totalLeads) / totalLeads) * 100).toFixed(1)
+        : 0;
+    const callBookingRate = totalLeads > 0
+        ? ((Math.min(totalCalls, totalLeads) / totalLeads) * 100).toFixed(1)
+        : 0;
     // No calls logged means there is no close rate to report. This used to return
     // 100% off a single sale and zero calls, which read as a perfect record.
-    const callCloseRate = totalCalls > 0 ? ((effectiveCloses / totalCalls) * 100).toFixed(1) : null;
+    const callCloseRate = totalCalls > 0
+        ? ((Math.min(effectiveCloses, totalCalls) / totalCalls) * 100).toFixed(1)
+        : null;
 
     return `
         ${renderNav()}
@@ -475,13 +501,34 @@ function renderPipelineEvents(entries, leads, currency) {
 
     const rows = visible.map(e => {
         if (e.type === 'sale') {
+            // Imported sales are owned by Stripe, not by the store. The bin icon
+            // deletes by id from store.revenue.entries, and an imported id ("stripe:…")
+            // is not in there — the button would do nothing at all. Showing a
+            // control that silently fails is worse than not showing it, so
+            // imported rows get a quiet label instead.
+            const displayAmount = e.refunded && e.grossAmount != null ? e.grossAmount : e.amount;
+            const badge = e.imported
+                ? `<span style="font-size: 0.7rem; font-weight: 600; color: var(--color-primary-dark); background: var(--color-primary-light); padding: 0.1rem 0.4rem; border-radius: 4px; margin-left: 0.4rem; vertical-align: middle;">STRIPE</span>`
+                : '';
+            const refundNote = e.refunded
+                ? `<span style="font-size: 0.7rem; font-weight: 600; color: #B42318; background: #FEF3F2; padding: 0.1rem 0.4rem; border-radius: 4px; margin-left: 0.4rem; vertical-align: middle;">REFUNDED</span>`
+                : '';
+            const duplicateNote = e.possibleDuplicate
+                ? `<div style="font-size: 0.75rem; color: #B54708; margin-top: 0.25rem;">Possibly the same sale you logged by hand. Both are shown, and both are counted.</div>`
+                : '';
+
             return `
                 <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.75rem; border-bottom: 1px solid var(--color-border);">
                     <div>
-                        <span style="font-weight: 600; color: var(--color-black); display: block;">${currency}${formatAmount(e.amount)}</span>
+                        <span style="font-weight: 600; color: var(--color-black); display: block;">
+                            <span style="${e.refunded ? 'text-decoration: line-through; opacity: 0.6;' : ''}">${currency}${formatAmount(displayAmount)}</span>${badge}${refundNote}
+                        </span>
                         <span style="font-size: 0.8rem; color: var(--color-text-muted);">SALE • ${new Date(e.date).toLocaleDateString()}${e.source ? ' • ' + e.source : ''}${e.offer ? ' • ' + e.offer : ''}</span>
+                        ${duplicateNote}
                     </div>
-                    <button type="button" class="btn btn-ghost btn-sm btn-delete-revenue" data-id="${e.id}" style="padding: 0.25rem; color: var(--color-text-muted);">🗑️</button>
+                    ${e.imported
+                        ? `<span title="Imported from Stripe. Manage it in Stripe, or disconnect on the Account screen." style="font-size: 0.75rem; color: var(--color-text-muted); padding: 0.25rem; white-space: nowrap;">auto</span>`
+                        : `<button type="button" class="btn btn-ghost btn-sm btn-delete-revenue" data-id="${e.id}" style="padding: 0.25rem; color: var(--color-text-muted);">🗑️</button>`}
                 </div>
             `;
         }
@@ -658,6 +705,16 @@ window.closeAiModal = function() {
 function revenueAttachEvents() {
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
     document.getElementById('nav-revenue')?.classList.add('active');
+
+    // Pull imported Stripe sales into the in-memory cache, then re-render once so
+    // the figures include them. The first paint of this screen uses whatever was
+    // already cached, which is why the totals do not flicker on later visits.
+    //
+    // Only re-render when the count actually changes, otherwise this would loop:
+    // rerenderScreen fires hashchange, which runs attachEvents, which lands here.
+    refreshImportedSales().then(sales => {
+        if (sales.length !== importedCountAtRender) rerenderScreen();
+    }).catch(() => { /* decoration on top of the user's own data, never fatal */ });
 
     const closeTooltipBtn = document.getElementById('btn-close-revenue-tooltip');
     if (closeTooltipBtn) {

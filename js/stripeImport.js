@@ -99,6 +99,60 @@ export async function fetchImportedSales() {
     }
 }
 
+// --- The read-time merge -----------------------------------------------------
+//
+// getRevenueInsights() in store.js is synchronous and is called during render,
+// but imported sales live in Postgres behind an async fetch. Rather than make
+// the whole revenue pipeline async, or write server-owned rows into the store
+// (which the note at the top of this file explains we must not do), the sales
+// are held in memory here. The screens refresh the cache and re-render; the
+// maths reads it synchronously.
+//
+// An empty cache is always a safe answer: it just means "manual entries only",
+// which is exactly what the app did before this feature existed.
+let importedSalesCache = [];
+let importedSalesLoaded = false;
+
+export function getImportedSalesCache() {
+    return importedSalesCache;
+}
+
+export function hasLoadedImportedSales() {
+    return importedSalesLoaded;
+}
+
+// Reshape a row from imported_sales into the same shape as a manually logged
+// revenue entry, so the rest of the app does not need to know where it came from.
+//
+// A refunded charge is not revenue, so its amount is zeroed for the maths. The
+// row is still returned rather than dropped, because a sale that silently
+// vanishes from the feed after a refund looks like a bug, and the original
+// figure is kept on grossAmount so the feed can say what happened.
+function toEntryShape(row) {
+    const gross = parseFloat(row.amount) || 0;
+    const refunded = !!row.refunded;
+    return {
+        id: `stripe:${row.external_id}`,
+        date: String(row.occurred_at || '').slice(0, 10),
+        amount: refunded ? 0 : gross,
+        grossAmount: gross,
+        refunded,
+        source: 'Stripe',
+        offer: row.product_name || row.description || 'Stripe payment',
+        type: 'sale',
+        imported: true,
+        customerEmail: row.customer_email || ''
+    };
+}
+
+// Pull the latest imported sales into the cache. Returns the cache.
+export async function refreshImportedSales() {
+    const rows = await fetchImportedSales();
+    importedSalesCache = (rows || []).map(toEntryShape);
+    importedSalesLoaded = true;
+    return importedSalesCache;
+}
+
 // The current connection, or null. Also carries last_synced_at and the last
 // error, which is what the Account screen shows.
 export async function fetchStripeConnection() {

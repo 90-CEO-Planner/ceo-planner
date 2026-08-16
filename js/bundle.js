@@ -278,6 +278,11 @@ window.isLockedOut = function isLockedOut(status) {
 // --- js\store.js ---
 // store.js
 
+// Read-only: the in-memory cache of sales imported from Stripe, merged into the
+// revenue figures at read time. store.js does not write to it and does not fetch
+// it — the screens refresh it and this just reads whatever is there. An empty
+// cache means "manual entries only", which is the pre-import behaviour.
+
 const STORE_KEY = 'ceoPlanner_store';
 
 // The reminder values, in one place. Settings writes these into
@@ -606,6 +611,41 @@ function deleteMetricSnapshot(id) {
     return store.metrics.length < initialLen;
 }
 
+// Combine manually logged sales with ones imported from Stripe.
+//
+// Nothing is hidden and nothing is deleted: if the same sale exists in both
+// places it appears twice, with the imported copy marked. Quietly dropping one
+// would mean the app silently overriding something the user typed, and being
+// wrong about that is worse than showing a duplicate they can see and judge.
+//
+// "Likely the same sale" is the same amount on the same day, give or take a day,
+// which covers a payment logged the morning after it landed. Deliberately strict:
+// a false flag on two genuinely separate £47 sales in one week is more annoying
+// than a missed one.
+function mergeImportedSales(manualEntries, importedEntries) {
+    if (!importedEntries || importedEntries.length === 0) return manualEntries;
+
+    const DAY = 24 * 60 * 60 * 1000;
+    const manualStamps = manualEntries.map(e => ({
+        time: new Date(e.date).getTime(),
+        amount: parseFloat(e.amount) || 0
+    }));
+
+    const flagged = importedEntries.map(imported => {
+        const time = new Date(imported.date).getTime();
+        const amount = imported.grossAmount != null ? imported.grossAmount : imported.amount;
+        const looksLikeDuplicate = manualStamps.some(m =>
+            Math.abs(m.amount - amount) < 0.01 &&
+            Number.isFinite(m.time) &&
+            Number.isFinite(time) &&
+            Math.abs(m.time - time) <= DAY
+        );
+        return looksLikeDuplicate ? { ...imported, possibleDuplicate: true } : imported;
+    });
+
+    return manualEntries.concat(flagged);
+}
+
 function getRevenueInsights() {
     const store = getStore();
     const rev = store.revenue;
@@ -614,7 +654,13 @@ function getRevenueInsights() {
 
     // Every entry ever logged. The pipeline feed, the history chart and the CSV
     // export all need the full list, so this stays unfiltered.
-    const entries = rev.entries || [];
+    //
+    // Sales imported from Stripe are merged in here rather than being written
+    // into the store, so a sync can never overwrite something the user typed.
+    // Merging at this single point means the totals, the quarter progress, the
+    // conversion rates, the CSV export and the AI Coach's context all pick them
+    // up without each needing to know the feature exists.
+    const entries = mergeImportedSales(rev.entries || [], getImportedSalesCache());
 
     // The subset that belongs to the active quarter. Entries dated before the
     // quarter began — history someone typed in at onboarding, or an import — used
@@ -1242,6 +1288,60 @@ async function fetchImportedSales() {
         console.warn('Could not read imported sales:', err.message);
         return [];
     }
+}
+
+// --- The read-time merge -----------------------------------------------------
+//
+// getRevenueInsights() in store.js is synchronous and is called during render,
+// but imported sales live in Postgres behind an async fetch. Rather than make
+// the whole revenue pipeline async, or write server-owned rows into the store
+// (which the note at the top of this file explains we must not do), the sales
+// are held in memory here. The screens refresh the cache and re-render; the
+// maths reads it synchronously.
+//
+// An empty cache is always a safe answer: it just means "manual entries only",
+// which is exactly what the app did before this feature existed.
+let importedSalesCache = [];
+let importedSalesLoaded = false;
+
+function getImportedSalesCache() {
+    return importedSalesCache;
+}
+
+function hasLoadedImportedSales() {
+    return importedSalesLoaded;
+}
+
+// Reshape a row from imported_sales into the same shape as a manually logged
+// revenue entry, so the rest of the app does not need to know where it came from.
+//
+// A refunded charge is not revenue, so its amount is zeroed for the maths. The
+// row is still returned rather than dropped, because a sale that silently
+// vanishes from the feed after a refund looks like a bug, and the original
+// figure is kept on grossAmount so the feed can say what happened.
+function toEntryShape(row) {
+    const gross = parseFloat(row.amount) || 0;
+    const refunded = !!row.refunded;
+    return {
+        id: `stripe:${row.external_id}`,
+        date: String(row.occurred_at || '').slice(0, 10),
+        amount: refunded ? 0 : gross,
+        grossAmount: gross,
+        refunded,
+        source: 'Stripe',
+        offer: row.product_name || row.description || 'Stripe payment',
+        type: 'sale',
+        imported: true,
+        customerEmail: row.customer_email || ''
+    };
+}
+
+// Pull the latest imported sales into the cache. Returns the cache.
+async function refreshImportedSales() {
+    const rows = await fetchImportedSales();
+    importedSalesCache = (rows || []).map(toEntryShape);
+    importedSalesLoaded = true;
+    return importedSalesCache;
 }
 
 // The current connection, or null. Also carries last_synced_at and the last
@@ -4834,10 +4934,16 @@ const PIPELINE_PAGE_SIZE = 15;
 // state above: saving re-renders the screen, and the tab should not move.
 let activeLogTab = 'tab-rev';
 
+// How many imported sales this render drew. attachEvents compares the freshly
+// fetched count against it and only re-renders when it has changed, which stops
+// the refresh-then-rerender pair from looping forever.
+let importedCountAtRender = 0;
+
 function renderRevenue() {
     window.setScreenModule({ attachEvents: revenueAttachEvents });
     const store = getStore();
     const insights = getRevenueInsights();
+    importedCountAtRender = getImportedSalesCache().length;
     
     const currency = store.settings?.currency || '$';
 
@@ -4866,7 +4972,12 @@ function renderRevenue() {
     const leadGoal = parseFloat(store.leads?.quarterlyGoal) || 0;
     const leadProgressPercent = leadGoal > 0 ? (totalLeads / leadGoal) * 100 : 0;
     
-    const salesCount = insights.entries ? insights.entries.length : 0;
+    // Sales logged through this app's own pipeline. Payments imported from Stripe
+    // are deliberately excluded from this particular count: it is used below as a
+    // stand-in for "how many calls closed", and a subscription renewal that
+    // arrived overnight was never a booked call. Counting them sent the close rate
+    // to 550% on an account with eight imported sales and two calls.
+    const salesCount = (insights.entries || []).filter(e => !e.imported).length;
     const metrics = store.metrics || [];
     
     const snapshotCalls = metrics.reduce((sum, m) => sum + (parseFloat(m.calls) || 0), 0);
@@ -4876,11 +4987,26 @@ function renderRevenue() {
     const effectiveCloses = Math.max(salesCount, leadCloses);
     
     // Conversion Rates
-    const leadToSaleConversion = totalLeads > 0 ? ((effectiveCloses / totalLeads) * 100).toFixed(1) : 0;
-    const callBookingRate = totalLeads > 0 ? ((totalCalls / totalLeads) * 100).toFixed(1) : 0;
+    //
+    // Every one of these is a proportion of something, so none can exceed 100%.
+    // Using the sales count as a stand-in for closes is a kindness to people who
+    // log their sales but never fill in the "closes" box — but three sales against
+    // two calls then reported a 150% close rate, which is not a flattering number,
+    // it is an obviously broken one that makes the whole page look untrustworthy.
+    //
+    // Capping keeps the convenience without the impossible figure: you cannot
+    // close more calls than you booked, or convert more leads than you had.
+    const leadToSaleConversion = totalLeads > 0
+        ? ((Math.min(effectiveCloses, totalLeads) / totalLeads) * 100).toFixed(1)
+        : 0;
+    const callBookingRate = totalLeads > 0
+        ? ((Math.min(totalCalls, totalLeads) / totalLeads) * 100).toFixed(1)
+        : 0;
     // No calls logged means there is no close rate to report. This used to return
     // 100% off a single sale and zero calls, which read as a perfect record.
-    const callCloseRate = totalCalls > 0 ? ((effectiveCloses / totalCalls) * 100).toFixed(1) : null;
+    const callCloseRate = totalCalls > 0
+        ? ((Math.min(effectiveCloses, totalCalls) / totalCalls) * 100).toFixed(1)
+        : null;
 
     return `
         ${renderNav()}
@@ -5292,13 +5418,34 @@ function renderPipelineEvents(entries, leads, currency) {
 
     const rows = visible.map(e => {
         if (e.type === 'sale') {
+            // Imported sales are owned by Stripe, not by the store. The bin icon
+            // deletes by id from store.revenue.entries, and an imported id ("stripe:…")
+            // is not in there — the button would do nothing at all. Showing a
+            // control that silently fails is worse than not showing it, so
+            // imported rows get a quiet label instead.
+            const displayAmount = e.refunded && e.grossAmount != null ? e.grossAmount : e.amount;
+            const badge = e.imported
+                ? `<span style="font-size: 0.7rem; font-weight: 600; color: var(--color-primary-dark); background: var(--color-primary-light); padding: 0.1rem 0.4rem; border-radius: 4px; margin-left: 0.4rem; vertical-align: middle;">STRIPE</span>`
+                : '';
+            const refundNote = e.refunded
+                ? `<span style="font-size: 0.7rem; font-weight: 600; color: #B42318; background: #FEF3F2; padding: 0.1rem 0.4rem; border-radius: 4px; margin-left: 0.4rem; vertical-align: middle;">REFUNDED</span>`
+                : '';
+            const duplicateNote = e.possibleDuplicate
+                ? `<div style="font-size: 0.75rem; color: #B54708; margin-top: 0.25rem;">Possibly the same sale you logged by hand. Both are shown, and both are counted.</div>`
+                : '';
+
             return `
                 <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.75rem; border-bottom: 1px solid var(--color-border);">
                     <div>
-                        <span style="font-weight: 600; color: var(--color-black); display: block;">${currency}${formatAmount(e.amount)}</span>
+                        <span style="font-weight: 600; color: var(--color-black); display: block;">
+                            <span style="${e.refunded ? 'text-decoration: line-through; opacity: 0.6;' : ''}">${currency}${formatAmount(displayAmount)}</span>${badge}${refundNote}
+                        </span>
                         <span style="font-size: 0.8rem; color: var(--color-text-muted);">SALE • ${new Date(e.date).toLocaleDateString()}${e.source ? ' • ' + e.source : ''}${e.offer ? ' • ' + e.offer : ''}</span>
+                        ${duplicateNote}
                     </div>
-                    <button type="button" class="btn btn-ghost btn-sm btn-delete-revenue" data-id="${e.id}" style="padding: 0.25rem; color: var(--color-text-muted);">🗑️</button>
+                    ${e.imported
+                        ? `<span title="Imported from Stripe. Manage it in Stripe, or disconnect on the Account screen." style="font-size: 0.75rem; color: var(--color-text-muted); padding: 0.25rem; white-space: nowrap;">auto</span>`
+                        : `<button type="button" class="btn btn-ghost btn-sm btn-delete-revenue" data-id="${e.id}" style="padding: 0.25rem; color: var(--color-text-muted);">🗑️</button>`}
                 </div>
             `;
         }
@@ -5475,6 +5622,16 @@ window.closeAiModal = function() {
 function revenueAttachEvents() {
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
     document.getElementById('nav-revenue')?.classList.add('active');
+
+    // Pull imported Stripe sales into the in-memory cache, then re-render once so
+    // the figures include them. The first paint of this screen uses whatever was
+    // already cached, which is why the totals do not flicker on later visits.
+    //
+    // Only re-render when the count actually changes, otherwise this would loop:
+    // rerenderScreen fires hashchange, which runs attachEvents, which lands here.
+    refreshImportedSales().then(sales => {
+        if (sales.length !== importedCountAtRender) rerenderScreen();
+    }).catch(() => { /* decoration on top of the user's own data, never fatal */ });
 
     const closeTooltipBtn = document.getElementById('btn-close-revenue-tooltip');
     if (closeTooltipBtn) {
@@ -7084,7 +7241,12 @@ function connectFormHtml() {
             email plus one more check. That's Stripe protecting your account, not us.
         </li>
         <li style="margin-bottom: 0.5rem;">Copy the key it gives you. It starts with <code>rk_</code>.</li>
-        <li>Paste it below.</li>
+        <li style="margin-bottom: 0.5rem;">Paste it below and press <strong style="color: var(--color-black);">Connect Stripe</strong>.</li>
+        <li>
+            Then press <strong style="color: var(--color-black);">Import sales now</strong>, which appears
+            once you're connected. Connecting on its own doesn't bring anything in — that button is
+            what fetches your history the first time.
+        </li>
     </ol>
 
     <div class="form-group mb-3">
@@ -7313,6 +7475,15 @@ async function paintStripeConnection() {
         ? new Date(conn.last_synced_at).toLocaleString()
         : 'not yet';
 
+    // How many sales are actually here. A toast saying "imported 8 sales" is gone
+    // in three and a half seconds, and if you happened to be looking elsewhere the
+    // screen afterwards looks identical to the screen before. This is the same
+    // information, written down and still there tomorrow.
+    const importedSales = await refreshImportedSales();
+    const importedSummary = importedSales.length
+        ? ` — <strong style="color: var(--color-black);">${importedSales.length} ${importedSales.length === 1 ? 'sale' : 'sales'}</strong> imported, showing on your Revenue screen`
+        : '';
+
     // 'unknown' is what stripe-connect stores when a key can read charges but not
     // the account object — a perfectly usable key, so it connects anyway and this
     // simply doesn't name the account.
@@ -7323,9 +7494,23 @@ async function paintStripeConnection() {
         ? ` <span style="color: #B54708;">(test mode key, so this will only ever import test payments)</span>`
         : '';
 
+    // Connecting imports nothing on its own, which is not obvious: the card says
+    // "connected", so the job looks finished. Until the first import has run this
+    // spells out the remaining step, rather than leaving it to a toast that has
+    // already disappeared by the time anyone goes looking for what changed.
+    const neverImported = !conn.last_synced_at;
+    const nextStep = neverImported
+        ? `<div style="background: var(--color-primary-light); border-left: 3px solid var(--color-primary); border-radius: 6px; padding: 0.75rem 0.875rem; margin: 0 0 1rem 0; color: var(--color-text-main); line-height: 1.5;">
+               <strong style="color: var(--color-black);">One more step.</strong>
+               Connecting doesn't bring your sales in by itself. Press
+               <strong style="color: var(--color-black);">Import sales now</strong> to fetch your history.
+           </div>`
+        : '';
+
     host.innerHTML = `
         <p style="margin: 0 0 0.5rem 0;"><strong style="color: var(--color-black);">Stripe connected</strong>${accountLine}${modeNote}</p>
-        <p style="margin: 0 0 1rem 0;">Last import: ${lastSynced}</p>
+        <p style="margin: 0 0 1rem 0;">Last import: ${lastSynced}${importedSummary}</p>
+        ${nextStep}
         ${conn.last_sync_error ? `<p style="margin: 0 0 1rem 0; color: #B42318;">Last attempt failed: ${conn.last_sync_error}</p>` : ''}
         <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
             <button type="button" id="btn-stripe-sync" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Import sales now</button>

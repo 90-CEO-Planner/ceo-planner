@@ -1,5 +1,11 @@
 // store.js
 
+// Read-only: the in-memory cache of sales imported from Stripe, merged into the
+// revenue figures at read time. store.js does not write to it and does not fetch
+// it — the screens refresh it and this just reads whatever is there. An empty
+// cache means "manual entries only", which is the pre-import behaviour.
+import { getImportedSalesCache } from './stripeImport.js';
+
 const STORE_KEY = 'ceoPlanner_store';
 
 // The reminder values, in one place. Settings writes these into
@@ -328,6 +334,41 @@ export function deleteMetricSnapshot(id) {
     return store.metrics.length < initialLen;
 }
 
+// Combine manually logged sales with ones imported from Stripe.
+//
+// Nothing is hidden and nothing is deleted: if the same sale exists in both
+// places it appears twice, with the imported copy marked. Quietly dropping one
+// would mean the app silently overriding something the user typed, and being
+// wrong about that is worse than showing a duplicate they can see and judge.
+//
+// "Likely the same sale" is the same amount on the same day, give or take a day,
+// which covers a payment logged the morning after it landed. Deliberately strict:
+// a false flag on two genuinely separate £47 sales in one week is more annoying
+// than a missed one.
+function mergeImportedSales(manualEntries, importedEntries) {
+    if (!importedEntries || importedEntries.length === 0) return manualEntries;
+
+    const DAY = 24 * 60 * 60 * 1000;
+    const manualStamps = manualEntries.map(e => ({
+        time: new Date(e.date).getTime(),
+        amount: parseFloat(e.amount) || 0
+    }));
+
+    const flagged = importedEntries.map(imported => {
+        const time = new Date(imported.date).getTime();
+        const amount = imported.grossAmount != null ? imported.grossAmount : imported.amount;
+        const looksLikeDuplicate = manualStamps.some(m =>
+            Math.abs(m.amount - amount) < 0.01 &&
+            Number.isFinite(m.time) &&
+            Number.isFinite(time) &&
+            Math.abs(m.time - time) <= DAY
+        );
+        return looksLikeDuplicate ? { ...imported, possibleDuplicate: true } : imported;
+    });
+
+    return manualEntries.concat(flagged);
+}
+
 export function getRevenueInsights() {
     const store = getStore();
     const rev = store.revenue;
@@ -336,7 +377,13 @@ export function getRevenueInsights() {
 
     // Every entry ever logged. The pipeline feed, the history chart and the CSV
     // export all need the full list, so this stays unfiltered.
-    const entries = rev.entries || [];
+    //
+    // Sales imported from Stripe are merged in here rather than being written
+    // into the store, so a sync can never overwrite something the user typed.
+    // Merging at this single point means the totals, the quarter progress, the
+    // conversion rates, the CSV export and the AI Coach's context all pick them
+    // up without each needing to know the feature exists.
+    const entries = mergeImportedSales(rev.entries || [], getImportedSalesCache());
 
     // The subset that belongs to the active quarter. Entries dated before the
     // quarter began — history someone typed in at onboarding, or an import — used
