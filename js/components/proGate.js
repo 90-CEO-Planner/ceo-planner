@@ -25,7 +25,11 @@
 // the plan list, the modal copy and the nav pill all correct themselves.
 export const PRO_FEATURES = {
     'payment-import': {
-        shipped: false,
+        // Shipped 16 Aug 2026, once the revenue merge landed and eight real sales
+        // were confirmed importing and displaying on the live site. Until then the
+        // import worked but nothing read the results back, so the feature existed
+        // everywhere except the screen it was for.
+        shipped: true,
         title: 'Sales that log themselves',
         // Stripe and PayPal used to be named as though both existed. Only Stripe
         // is being built, so PayPal sits in brackets as a promise about later
@@ -203,7 +207,7 @@ export function proTeaser(featureKey, heading, hint, action) {
         <div class="pro-teaser" data-pro-feature="${featureKey}" role="button" tabindex="0">
             <svg class="pro-teaser-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
             <span class="pro-teaser-body">
-                <span class="pro-teaser-heading">${heading}<span class="pro-badge pro-teaser-tag">${tag}</span></span>
+                <span class="pro-teaser-heading"><span class="pro-badge pro-teaser-tag">${tag}</span>${heading}</span>
                 <span class="pro-teaser-hint">${hint}</span>
                 ${link}
             </span>
@@ -231,13 +235,19 @@ export function showProModal(featureKey) {
         </div>
     `;
 
+    const live = isFeatureLive(featureKey);
+
+    // No chip is added before the title here on purpose. The modal already carries
+    // a PRO badge of its own directly above the heading (.pro-modal-badge), and a
+    // second one on the title line reads as a mistake rather than as emphasis.
+    // The teaser strips are the place the badge earns its keep, because there it
+    // is the only thing marking the row as Pro.
     overlay.querySelector('.confirm-title').textContent = feature.title;
     overlay.querySelector('.pro-modal-blurb').textContent = feature.blurb;
 
     // The footer says one of three true things, never a sales line the app can't
     // honour. Which one depends on whether the feature exists yet and whether
     // this account already has Pro.
-    const live = isFeatureLive(featureKey);
     const note = overlay.querySelector('.pro-modal-note');
     if (!live) {
         note.textContent = "This one is still being built. Nothing changes on your plan today, and it'll appear here the moment it lands.";

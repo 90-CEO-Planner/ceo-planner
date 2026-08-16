@@ -1779,7 +1779,11 @@ CRITICAL: Return ONLY the JSON object above. No explanation, no preamble, no cod
 // the plan list, the modal copy and the nav pill all correct themselves.
 const PRO_FEATURES = {
     'payment-import': {
-        shipped: false,
+        // Shipped 16 Aug 2026, once the revenue merge landed and eight real sales
+        // were confirmed importing and displaying on the live site. Until then the
+        // import worked but nothing read the results back, so the feature existed
+        // everywhere except the screen it was for.
+        shipped: true,
         title: 'Sales that log themselves',
         // Stripe and PayPal used to be named as though both existed. Only Stripe
         // is being built, so PayPal sits in brackets as a promise about later
@@ -1957,7 +1961,7 @@ function proTeaser(featureKey, heading, hint, action) {
         <div class="pro-teaser" data-pro-feature="${featureKey}" role="button" tabindex="0">
             <svg class="pro-teaser-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
             <span class="pro-teaser-body">
-                <span class="pro-teaser-heading">${heading}<span class="pro-badge pro-teaser-tag">${tag}</span></span>
+                <span class="pro-teaser-heading"><span class="pro-badge pro-teaser-tag">${tag}</span>${heading}</span>
                 <span class="pro-teaser-hint">${hint}</span>
                 ${link}
             </span>
@@ -1985,13 +1989,19 @@ function showProModal(featureKey) {
         </div>
     `;
 
+    const live = isFeatureLive(featureKey);
+
+    // No chip is added before the title here on purpose. The modal already carries
+    // a PRO badge of its own directly above the heading (.pro-modal-badge), and a
+    // second one on the title line reads as a mistake rather than as emphasis.
+    // The teaser strips are the place the badge earns its keep, because there it
+    // is the only thing marking the row as Pro.
     overlay.querySelector('.confirm-title').textContent = feature.title;
     overlay.querySelector('.pro-modal-blurb').textContent = feature.blurb;
 
     // The footer says one of three true things, never a sales line the app can't
     // honour. Which one depends on whether the feature exists yet and whether
     // this account already has Pro.
-    const live = isFeatureLive(featureKey);
     const note = overlay.querySelector('.pro-modal-note');
     if (!live) {
         note.textContent = "This one is still being built. Nothing changes on your plan today, and it'll appear here the moment it lands.";
@@ -5004,8 +5014,18 @@ function renderRevenue() {
         : 0;
     // No calls logged means there is no close rate to report. This used to return
     // 100% off a single sale and zero calls, which read as a perfect record.
+    //
+    // This one counts closes ONLY, never falling back to the sales count. It is
+    // the answer to "of the calls I had, how many turned into a sale", and a sale
+    // that never involved a call has no business in it. The fallback made the
+    // number easier to fill in and impossible to trust: a good month of Instagram
+    // sales would push it up without a single extra call being closed.
+    //
+    // The consequence, stated plainly so it doesn't look like a bug: log calls but
+    // leave "closes" blank and this reads 0%. That is the honest answer to a
+    // question you haven't answered, and the empty box is the thing to fix.
     const callCloseRate = totalCalls > 0
-        ? ((Math.min(effectiveCloses, totalCalls) / totalCalls) * 100).toFixed(1)
+        ? ((Math.min(leadCloses, totalCalls) / totalCalls) * 100).toFixed(1)
         : null;
 
     return `
@@ -5190,19 +5210,20 @@ function renderRevenue() {
 
                 <!-- Sidebar Right -->
                 <div>
-                   ${proTeaser(
-                       'payment-import',
-                       'Never log a sale by hand again',
-                       'Connect Stripe once. Every sale appears here the moment it happens. (PayPal coming soon)',
-                       // The way in, for accounts that can actually connect one
-                       // today. Everyone else gets the strip without a link and
-                       // it opens the explanatory modal as before — a link to a
-                       // card that isn't rendered would be a dead end, so this
-                       // asks canConnectStripe() rather than assuming.
-                       canConnectStripe()
-                           ? { href: '#/account', label: 'Connect your Stripe account →' }
-                           : null
-                   )}
+                   ${canConnectStripe()
+                       // Accounts that actually have the feature get a working
+                       // panel here rather than nothing. proTeaser deletes itself
+                       // once a feature is live for you, which is right for an
+                       // advert but left a hole on the screen where the most
+                       // useful control should be. Painted in attachEvents,
+                       // because the connection state is an async read.
+                       ? `<div id="revenue-stripe-panel" class="card mb-6" style="padding: 1.25rem; font-size: 0.875rem; color: var(--color-text-muted);">Checking Stripe…</div>`
+                       : proTeaser(
+                           'payment-import',
+                           'Never log a sale by hand again',
+                           'Connect Stripe once. Every sale appears here the moment it happens. (PayPal coming soon)',
+                           null
+                       )}
 
                    <!-- Multi-Form Tabs -->
                    <div class="card" style="border-top: 4px solid var(--color-accent); padding: 1.5rem;">
@@ -5619,6 +5640,67 @@ window.closeAiModal = function() {
 
 // Document click listener removed
 
+// The Stripe panel in the Revenue sidebar, for accounts that have the import.
+//
+// This replaces the teaser strip, which deletes itself once a feature is live for
+// you. That is correct for an advert and wrong for the slot: the moment Stripe
+// starts working is the moment you want a button to pull new sales in, not an
+// empty gap where the explanation used to be.
+async function paintRevenueStripePanel() {
+    const host = document.getElementById('revenue-stripe-panel');
+    if (!host) return;
+
+    const conn = await fetchStripeConnection();
+
+    if (!conn) {
+        host.innerHTML = `
+            <p style="margin: 0 0 0.75rem 0; font-weight: 600; color: var(--color-black);">Stop logging sales by hand</p>
+            <p style="margin: 0 0 1rem 0; line-height: 1.5;">Connect Stripe once and your sales appear here on their own.</p>
+            <a href="#/account" class="btn btn-outline btn-sm" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Connect Stripe →</a>
+        `;
+        return;
+    }
+
+    const count = getImportedSalesCache().length;
+    const lastSynced = conn.last_synced_at
+        ? new Date(conn.last_synced_at).toLocaleDateString()
+        : 'not yet';
+
+    host.innerHTML = `
+        <p style="margin: 0 0 0.5rem 0; font-weight: 600; color: var(--color-black);">Stripe connected</p>
+        <p style="margin: 0 0 1rem 0; line-height: 1.5;">
+            ${count} ${count === 1 ? 'sale' : 'sales'} imported. Last checked ${lastSynced}.
+        </p>
+        ${conn.last_sync_error ? `<p style="margin: 0 0 1rem 0; color: #B42318;">Last attempt failed: ${conn.last_sync_error}</p>` : ''}
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+            <button type="button" id="btn-revenue-stripe-sync" class="btn btn-outline btn-sm" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Import sales now</button>
+            <a href="#/account" style="font-size: 0.8rem; color: var(--color-text-muted); text-decoration: underline;">Manage</a>
+        </div>
+    `;
+
+    document.getElementById('btn-revenue-stripe-sync')?.addEventListener('click', async (e) => {
+        e.target.disabled = true;
+        e.target.textContent = 'Importing…';
+        const result = await syncStripeSales();
+        if (result.error) {
+            showToast(result.error, 'error');
+            paintRevenueStripePanel();
+            return;
+        }
+        if (!result.imported) {
+            showToast('Up to date, nothing new to import.', 'success');
+            paintRevenueStripePanel();
+            return;
+        }
+        const sales = `${result.imported} ${result.imported === 1 ? 'sale' : 'sales'}`;
+        showToast(`Imported ${sales} from Stripe.`, 'success');
+        // New sales change every figure on this screen, so re-read them and
+        // repaint the whole thing rather than only this corner of it.
+        await refreshImportedSales();
+        rerenderScreen();
+    });
+}
+
 function revenueAttachEvents() {
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
     document.getElementById('nav-revenue')?.classList.add('active');
@@ -5631,6 +5713,7 @@ function revenueAttachEvents() {
     // rerenderScreen fires hashchange, which runs attachEvents, which lands here.
     refreshImportedSales().then(sales => {
         if (sales.length !== importedCountAtRender) rerenderScreen();
+        else paintRevenueStripePanel();
     }).catch(() => { /* decoration on top of the user's own data, never fatal */ });
 
     const closeTooltipBtn = document.getElementById('btn-close-revenue-tooltip');
