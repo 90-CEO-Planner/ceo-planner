@@ -8,6 +8,11 @@
 // index on (user_id, source, external_id) makes every run idempotent, which is
 // the single most important property here — a double-counted sync would corrupt
 // every revenue figure in the app and there would be no way to tell.
+//
+// Two phases per run:
+//   1. Import charges into imported_sales (the money).
+//   2. Backfill product_name / product_id for any rows lacking them (the labels),
+//      bounded per run and self-healing across runs.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
@@ -32,6 +37,14 @@ const OVERLAP_MINUTES = 60
 const PAGE_SIZE = 100
 const MAX_PAGES = 10
 
+// Product-name resolution costs up to three extra Stripe calls per sale (payment
+// intent, invoice, product), so it is bounded per run and self-heals: anything
+// left unnamed is picked up by the next sync. The product lookup is cached, so
+// the third call amortises to roughly nothing across repeat sales of one offer.
+// See resolveProduct() for why the name is not read off the charge.
+const NAME_LOOKUP_BUDGET = 150
+const NAME_LOOKUP_CONCURRENCY = 6
+
 // Stripe reports minor units for most currencies, but not for all of them. These
 // have no minor unit at all, so 1000 means 1000 yen, not 10.00.
 const ZERO_DECIMAL = new Set([
@@ -41,6 +54,138 @@ const ZERO_DECIMAL = new Set([
 
 function toMajorUnits(amount: number, currency: string): number {
   return ZERO_DECIMAL.has(currency.toLowerCase()) ? amount : amount / 100
+}
+
+// A read against the user's own Stripe account, using the user's own restricted
+// key. There is no Stripe-Account header any more: with Connect OAuth we borrowed
+// the platform key and named the account, but the key IS the account now.
+//
+// Returns null rather than throwing: a product name is a nice-to-have, and one
+// unreadable invoice must not fail a sync that is otherwise importing money
+// correctly.
+async function stripeGet(path: string, apiKey: string): Promise<Record<string, any> | null> {
+  try {
+    const res = await fetch(`https://api.stripe.com/v1/${path}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    })
+    if (!res.ok) return null
+    return await res.json()
+  } catch (_err) {
+    return null
+  }
+}
+
+// The product id on a line item. Verified against Jen's live account: on the
+// current API version an invoice line has NO `price` object, it has
+// `pricing.price_details.product`. The older `price.product` shape is still
+// accepted because checkout session line items use it and older accounts may too.
+// Getting this wrong is silent - the field is simply undefined and every sale
+// falls through to its description.
+function lineProductId(line: any): string | null {
+  const modern = line?.pricing?.price_details?.product
+  if (typeof modern === 'string') return modern
+
+  const legacy = line?.price?.product
+  if (typeof legacy === 'string') return legacy
+  if (legacy && typeof legacy === 'object' && typeof legacy.id === 'string') return legacy.id
+
+  return null
+}
+
+// Product names are fetched rather than expanded, because the expand path
+// (`lines.data.price.product`) does not resolve on the current API version and
+// fails silently. Cached per run: a user with three offers and ninety sales
+// costs three lookups, not ninety.
+async function productName(
+  productId: string,
+  cache: Map<string, string | null>,
+  apiKey: string
+): Promise<string | null> {
+  if (cache.has(productId)) return cache.get(productId) ?? null
+  const product = await stripeGet(`products/${productId}`, apiKey)
+  const name = typeof product?.name === 'string' ? product.name : null
+  cache.set(productId, name)
+  return name
+}
+
+// Finding the invoice is its own problem. On Jen's account `charge.invoice` does
+// not exist at all, and neither does `payment_intent.invoice` - the link is at
+// `payment_intent.payment_details.order_reference`. Both older shapes are still
+// checked first so this keeps working on accounts pinned to older versions.
+async function resolveInvoiceId(
+  row: { invoice_id: string | null; payment_intent_id: string | null },
+  apiKey: string
+): Promise<string | null> {
+  if (row.invoice_id) return row.invoice_id
+  if (!row.payment_intent_id) return null
+
+  const intent = await stripeGet(`payment_intents/${row.payment_intent_id}`, apiKey)
+  if (!intent) return null
+
+  if (typeof intent.invoice === 'string') return intent.invoice
+  if (intent.invoice?.id) return intent.invoice.id
+
+  const reference = intent.payment_details?.order_reference
+  return typeof reference === 'string' && reference.startsWith('in_') ? reference : null
+}
+
+// Why this exists: NO charge on a real account names the product. Every
+// subscription payment reads "Subscription update" and one-off payments read
+// "Payment to <business>". Mapping revenue by charge.description would produce a
+// by-offer chart reading "Subscription update - 68%", which is worse than no
+// chart because it looks like data.
+//
+// The real name lives on the invoice line items (subscriptions) or the checkout
+// session line items (payment links), which is what invoice_id and
+// payment_intent_id were captured for.
+//
+// Always returns a name. Leaving a row null would mean re-attempting the same
+// unresolvable sale on every future sync, burning the budget forever.
+async function resolveProduct(
+  row: { description: string | null; invoice_id: string | null; payment_intent_id: string | null },
+  cache: Map<string, string | null>,
+  apiKey: string
+): Promise<{ product_id: string | null; product_name: string }> {
+  // Subscriptions and anything else Stripe invoiced.
+  const invoiceId = await resolveInvoiceId(row, apiKey)
+  if (invoiceId) {
+    const invoice = await stripeGet(`invoices/${invoiceId}`, apiKey)
+    const line = invoice?.lines?.data?.[0]
+    if (line) {
+      const productId = lineProductId(line)
+      const name = productId ? await productName(productId, cache, apiKey) : null
+      // line.description reads "1 × CEOPlanner (at $17.00 / month)" - worse than
+      // the bare product name, but far better than "Subscription update".
+      const label = name ?? (typeof line.description === 'string' ? line.description : null)
+      if (label) return { product_id: productId, product_name: label }
+    }
+  }
+
+  // One-off payments through a Stripe checkout session or payment link.
+  if (row.payment_intent_id) {
+    // Sessions are not retrievable by payment intent directly, so list first.
+    const sessions = await stripeGet(
+      `checkout/sessions?payment_intent=${encodeURIComponent(row.payment_intent_id)}&limit=1`,
+      apiKey
+    )
+    const sessionId = sessions?.data?.[0]?.id
+    if (sessionId) {
+      // Line items are a sub-resource here, not an expandable field on the list.
+      const items = await stripeGet(`checkout/sessions/${sessionId}/line_items?limit=1`, apiKey)
+      const item = items?.data?.[0]
+      if (item) {
+        const productId = lineProductId(item)
+        const name = productId ? await productName(productId, cache, apiKey) : null
+        const label = name ?? (typeof item.description === 'string' ? item.description : null)
+        if (label) return { product_id: productId, product_name: label }
+      }
+    }
+  }
+
+  // Charges created by a third-party platform (Jen has several from an app
+  // called "Your store") have neither an invoice nor a session we can read.
+  // Their description is all there is.
+  return { product_id: null, product_name: row.description || 'Stripe sale' }
 }
 
 Deno.serve(async (req) => {
@@ -85,8 +230,17 @@ Deno.serve(async (req) => {
 
     if (!conn) return json({ error: 'No Stripe account is connected.' }, 400)
 
-    const secretKey = Deno.env.get('STRIPE_SECRET_KEY') ?? ''
-    if (!secretKey) return json({ error: 'Stripe is not configured.' }, 503)
+    // The user's own restricted key, read from the service-role-only table. It is
+    // never sent to the browser and never leaves this function. Note this is NOT
+    // STRIPE_SECRET_KEY: our platform key has no business reading a user's account.
+    const { data: credentials } = await supabaseAdmin
+      .from('stripe_credentials')
+      .select('api_key')
+      .eq('user_id', user.id)
+      .maybeSingle()
+
+    const apiKey = (credentials?.api_key ?? '').trim()
+    if (!apiKey) return json({ error: 'No Stripe account is connected.' }, 400)
 
     const since = conn.last_synced_at
       ? Math.floor(new Date(conn.last_synced_at).getTime() / 1000) - OVERLAP_MINUTES * 60
@@ -105,14 +259,13 @@ Deno.serve(async (req) => {
       params.set('created[gte]', String(since))
       if (startingAfter) params.set('starting_after', startingAfter)
 
+      // The key belongs to the user, so it reads their account and only theirs.
+      // Under the old Connect design this used our platform key plus a
+      // Stripe-Account header, and forgetting that header would have imported
+      // Jen's sales into every user's planner. That whole class of mistake is
+      // gone: there is no platform key here to reach the wrong account with.
       const res = await fetch(`https://api.stripe.com/v1/charges?${params.toString()}`, {
-        headers: {
-          Authorization: `Bearer ${secretKey}`,
-          // This header is what makes the call read the CONNECTED account rather
-          // than our own. Without it we would silently import Jen's sales into
-          // every user's planner.
-          'Stripe-Account': conn.stripe_account_id,
-        },
+        headers: { Authorization: `Bearer ${apiKey}` },
       })
 
       const page = await res.json()
@@ -153,11 +306,14 @@ Deno.serve(async (req) => {
           // every sale imported before the switch.
           client_reference_id: c.client_reference_id ?? null,
           metadata: c.metadata && Object.keys(c.metadata).length ? c.metadata : null,
-          // Kept for the next step: the real product name lives on the invoice
-          // line items, not on the charge (charge.description reads "Subscription
-          // update" for every subscription payment).
+          // These two are what the backfill pass resolves product names from.
           invoice_id: typeof c.invoice === 'string' ? c.invoice : (c.invoice?.id ?? null),
           payment_intent_id: typeof c.payment_intent === 'string' ? c.payment_intent : (c.payment_intent?.id ?? null),
+          // DO NOT add product_name / product_id here. This upsert re-writes
+          // every column it names, and the 60-minute overlap window deliberately
+          // re-reads charges we already have - so including them would wipe a
+          // resolved name back to null on every single sync. They are set only
+          // by the backfill pass below.
         }))
 
       if (rows.length) {
@@ -179,6 +335,64 @@ Deno.serve(async (req) => {
       startingAfter = charges[charges.length - 1].id
     }
 
+    // ------------------------------------------------- product name backfill --
+    // Runs after the import rather than inside it, so the money lands even if
+    // Stripe is slow or rate limiting the extra lookups. Rows inserted moments
+    // ago are picked up by this same pass, so a first sync still ends with names.
+    // Bounded per run; whatever is left over is resolved by the next sync.
+    let named = 0
+
+    const { data: unnamed } = await supabaseAdmin
+      .from('imported_sales')
+      .select('id, description, invoice_id, payment_intent_id')
+      .eq('user_id', user.id)
+      .eq('source', 'stripe')
+      .is('product_name', null)
+      .order('occurred_at', { ascending: false })
+      .limit(NAME_LOOKUP_BUDGET)
+
+    if (unnamed?.length) {
+      const resolved: { id: number; product_id: string | null; product_name: string }[] = []
+      // Shared across the whole pass, so repeat sales of the same offer cost one
+      // product lookup between them rather than one each.
+      const nameCache = new Map<string, string | null>()
+
+      // Modest concurrency. Sequential would be minutes on a first sync; wide
+      // open would risk Stripe rate limiting an account we do not control.
+      for (let i = 0; i < unnamed.length; i += NAME_LOOKUP_CONCURRENCY) {
+        const slice = unnamed.slice(i, i + NAME_LOOKUP_CONCURRENCY)
+        const names = await Promise.all(
+          slice.map((row) => resolveProduct(row, nameCache, apiKey))
+        )
+        slice.forEach((row, n) => resolved.push({ id: row.id, ...names[n] }))
+      }
+
+      // Group by resolved product so a user with four offers costs four updates
+      // rather than one per sale.
+      const groups = new Map<string, { product_id: string | null; product_name: string; ids: number[] }>()
+      for (const r of resolved) {
+        const key = `${r.product_id ?? ''}|${r.product_name}`
+        const group = groups.get(key)
+        if (group) group.ids.push(r.id)
+        else groups.set(key, { product_id: r.product_id, product_name: r.product_name, ids: [r.id] })
+      }
+
+      for (const group of groups.values()) {
+        const { error: nameError } = await supabaseAdmin
+          .from('imported_sales')
+          .update({ product_id: group.product_id, product_name: group.product_name })
+          .in('id', group.ids)
+
+        if (nameError) {
+          // Not fatal. The sales are already imported and correct; only the
+          // labels are missing, and the next sync retries them.
+          console.error('Could not save product names:', nameError.message)
+        } else {
+          named += group.ids.length
+        }
+      }
+    }
+
     await supabaseAdmin
       .from('stripe_connections')
       .update({ last_synced_at: new Date().toISOString(), last_sync_error: null })
@@ -188,9 +402,12 @@ Deno.serve(async (req) => {
       ok: true,
       imported,
       scanned,
+      named,
       // True when we stopped because of the page ceiling rather than because
       // Stripe ran out. The next run picks up from the new watermark.
       truncated: pages >= MAX_PAGES,
+      // True when sales are still waiting for a product name. Not an error.
+      namesPending: (unnamed?.length ?? 0) >= NAME_LOOKUP_BUDGET,
     })
   } catch (err) {
     console.error('stripe-sync failed:', err.message)

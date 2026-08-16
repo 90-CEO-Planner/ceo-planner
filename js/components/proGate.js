@@ -27,7 +27,10 @@ export const PRO_FEATURES = {
     'payment-import': {
         shipped: false,
         title: 'Sales that log themselves',
-        blurb: 'Connect Stripe or PayPal once and every sale appears here on its own, at the moment it happens. No manual entry, no forgotten Tuesday, and every rate on this page becomes something you can actually trust.'
+        // Stripe and PayPal used to be named as though both existed. Only Stripe
+        // is being built, so PayPal sits in brackets as a promise about later
+        // rather than a claim about today. Delete the bracket when it ships.
+        blurb: 'Connect Stripe once and every sale appears here on its own, at the moment it happens. No manual entry, no forgotten Tuesday, and every rate on this page becomes something you can actually trust. (PayPal coming soon)'
     },
     'lead-pipeline': {
         shipped: false,
@@ -74,7 +77,7 @@ export const PRO_FEATURES = {
         title: 'What Pro adds',
         blurb: 'Pro is being built now. Here is what is coming:',
         list: [
-            'Sales imported automatically from Stripe or PayPal',
+            'Sales imported automatically from Stripe (PayPal coming soon)',
             'A named lead pipeline with follow-up dates',
             'Quarter-over-quarter history and a year view',
             'AI planning written from your real numbers',
@@ -180,11 +183,21 @@ export function proLock(featureKey, label) {
 //
 // Returns an empty string for accounts that already have the feature working,
 // so it disappears the moment the real thing ships to that user.
-export function proTeaser(featureKey, heading, hint) {
+//
+// `action` is optional: `{ href, label }` adds a real link inside the strip, for
+// the case where part of the feature IS reachable and the teaser should be a way
+// in rather than only an explanation. The link carries `data-pro-action`, which
+// is how the delegated handler below knows to let the navigation happen instead
+// of swallowing the click and opening the modal.
+export function proTeaser(featureKey, heading, hint, action) {
     if (isProUser() && isFeatureLive(featureKey)) return '';
 
     const live = isFeatureLive(featureKey);
     const tag = live ? 'PRO' : 'IN BUILD';
+
+    const link = action && action.href
+        ? `<a class="pro-teaser-action" data-pro-action href="${action.href}">${action.label}</a>`
+        : '';
 
     return `
         <div class="pro-teaser" data-pro-feature="${featureKey}" role="button" tabindex="0">
@@ -192,6 +205,7 @@ export function proTeaser(featureKey, heading, hint) {
             <span class="pro-teaser-body">
                 <span class="pro-teaser-heading">${heading}<span class="pro-badge pro-teaser-tag">${tag}</span></span>
                 <span class="pro-teaser-hint">${hint}</span>
+                ${link}
             </span>
         </div>
     `;
@@ -277,6 +291,10 @@ export function initProGate() {
     document.addEventListener('click', (e) => {
         const trigger = e.target.closest('[data-pro-feature]');
         if (!trigger) return;
+        // A real link inside a teaser wins over the modal. Without this the
+        // preventDefault below would swallow it, and the one part of the feature
+        // that does work would be unreachable from the place that describes it.
+        if (e.target.closest('[data-pro-action]')) return;
         e.preventDefault();
         showProModal(trigger.getAttribute('data-pro-feature'));
     });
@@ -288,6 +306,9 @@ export function initProGate() {
         if (e.key !== 'Enter' && e.key !== ' ') return;
         const trigger = e.target.closest && e.target.closest('[data-pro-feature]');
         if (!trigger || trigger.tagName === 'BUTTON') return;
+        // Same rule as the click handler: a focused link inside the strip is
+        // navigation, not a request to read about the plan.
+        if (e.target.closest('[data-pro-action]')) return;
         e.preventDefault();
         showProModal(trigger.getAttribute('data-pro-feature'));
     });

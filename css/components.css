@@ -614,6 +614,23 @@
     line-height: 1.5;
 }
 
+/* The optional way-in link inside a teaser. Only appears when part of the
+   feature is genuinely reachable, so it is styled as a real action rather than
+   as more explanatory text. */
+.pro-teaser-action {
+    display: inline-block;
+    margin-top: 0.5rem;
+    color: var(--color-primary-dark);
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-decoration: none;
+}
+
+.pro-teaser-action:hover,
+.pro-teaser-action:focus-visible {
+    text-decoration: underline;
+}
+
 /* One-line variant, for narrow places like the chat panel where a full strip
    would eat the space the conversation needs. */
 .pro-teaser-compact {

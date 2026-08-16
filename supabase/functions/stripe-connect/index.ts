@@ -1,22 +1,25 @@
 // stripe-connect
 //
-// The OAuth handshake that links a user's OWN Stripe account to their planner,
-// read-only, so their sales can be imported. Not to be confused with
-// stripe-webhook, which is about people paying US.
+// Links a user's OWN Stripe account to their planner, read-only, so their sales
+// can be imported. Not to be confused with stripe-webhook, which is about people
+// paying US.
 //
-// Two actions on one function:
+// This used to be a Connect OAuth handshake. It is not any more. Stripe has
+// retired the Standard/OAuth path for new platforms - there is no client_id to be
+// had on a platform created today, and the Connect settings pages simply do not
+// offer one. Instead the user creates a RESTRICTED, READ-ONLY key in their own
+// Stripe dashboard and pastes it in. No platform status, no client_id, no
+// redirect, and nothing for Stripe to deprecate underneath us.
 //
-//   POST ?action=start      (user JWT)  -> { url } to send the browser to
-//   GET  ?action=callback   (from Stripe) -> 302 back into the app
+//   POST ?action=connect     (user JWT, body { apiKey })  -> { ok, accountId }
+//   POST ?action=disconnect  (user JWT)                   -> { ok }
 //
-// The redirect_uri registered with Stripe points at THIS function, not at the
-// app, so the authorization code is exchanged server side and never lands in a
-// browser URL where an extension or the history could pick it up.
+// verify_jwt can be TRUE here, unlike the OAuth version: every request now comes
+// from our own browser code carrying a real session, never from a Stripe redirect.
 //
-// Required environment variables:
-//   STRIPE_SECRET_KEY          already set for stripe-webhook
-//   STRIPE_CONNECT_CLIENT_ID   ca_... from Dashboard > Connect > Settings
-//   APP_URL                    e.g. https://app.thewomensentrepreneurialnetwork.com
+// Required environment variables: none beyond the Supabase defaults. STRIPE_SECRET_KEY
+// and STRIPE_CONNECT_CLIENT_ID are deliberately NOT used - this function never
+// touches our platform credentials, only the user's own key.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
@@ -31,16 +34,12 @@ const json = (body: unknown, status = 200) =>
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   })
 
-function appUrl(): string {
-  return (Deno.env.get('APP_URL') ?? '').replace(/\/+$/, '')
-}
-
-// Send the browser back into the app with a short outcome code. The app turns
-// these into human sentences; keeping them as codes means no user-facing copy
-// lives in the edge function, where nobody would think to look for it.
-function backToApp(outcome: string) {
-  const target = `${appUrl()}/?stripe=${encodeURIComponent(outcome)}#/account`
-  return new Response(null, { status: 302, headers: { Location: target } })
+// Read against the USER's Stripe account using the USER's key.
+async function stripeGet(path: string, apiKey: string) {
+  const res = await fetch(`https://api.stripe.com/v1/${path}`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  })
+  return { ok: res.ok, body: await res.json() }
 }
 
 Deno.serve(async (req) => {
@@ -51,160 +50,116 @@ Deno.serve(async (req) => {
   const url = new URL(req.url)
   const action = url.searchParams.get('action')
 
-  const clientId = Deno.env.get('STRIPE_CONNECT_CLIENT_ID') ?? ''
-  const secretKey = Deno.env.get('STRIPE_SECRET_KEY') ?? ''
-
   const supabaseAdmin = createClient(
     Deno.env.get('SUPABASE_URL') ?? '',
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
   )
 
   try {
-    // ---------------------------------------------------------------- start --
-    if (action === 'start') {
-      if (!clientId) {
-        // Deliberately explicit: this is the one setup step that cannot be done
-        // from the repo, and a vague error here would waste an hour.
-        return json({ error: 'Stripe Connect is not configured yet. Set STRIPE_CONNECT_CLIENT_ID on this function.' }, 503)
+    const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim()
+    if (!token) return json({ error: 'Please sign in first.' }, 401)
+
+    const { data: userData, error: userError } = await supabaseAdmin.auth.getUser(token)
+    const user = userData?.user
+    if (userError || !user) return json({ error: 'Please sign in first.' }, 401)
+
+    // -------------------------------------------------------------- connect --
+    if (action === 'connect') {
+      const payload = await req.json().catch(() => ({}))
+      // trim(), always. A key pasted out of the Stripe dashboard routinely picks
+      // up a trailing newline, and an APP_URL with exactly that problem cost an
+      // afternoon earlier in this build.
+      const apiKey = String(payload?.apiKey ?? '').trim()
+
+      if (!apiKey) return json({ error: 'Please paste your Stripe key.' }, 400)
+
+      // Refuse a full secret key outright. sk_ can move money, issue refunds and
+      // change the account; we only ever need to read. Someone pasting sk_ has
+      // misunderstood the instructions, and quietly accepting it would mean
+      // holding a credential far more dangerous than the feature requires.
+      if (apiKey.startsWith('sk_')) {
+        return json({
+          error: 'That is a full secret key, which can move money. Please create a RESTRICTED key with read-only access instead. It starts with rk_.',
+        }, 400)
       }
 
-      const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim()
-      if (!token) return json({ error: 'Please sign in first.' }, 401)
-
-      const { data: userData, error: userError } = await supabaseAdmin.auth.getUser(token)
-      const user = userData?.user
-      if (userError || !user) return json({ error: 'Please sign in first.' }, 401)
-
-      // CSRF token. Stripe hands this back to the callback, and it is the only
-      // thing tying the returning browser to a user. Random, single use, and
-      // checked for age on the way back.
-      const state = crypto.randomUUID() + crypto.randomUUID().replace(/-/g, '')
-
-      const { error: stateError } = await supabaseAdmin
-        .from('stripe_oauth_states')
-        .insert({ state, user_id: user.id })
-
-      if (stateError) {
-        console.error('Could not store OAuth state:', stateError.message)
-        return json({ error: 'Could not start the connection. Please try again.' }, 503)
+      if (!apiKey.startsWith('rk_')) {
+        return json({
+          error: 'That does not look like a Stripe restricted key. It should start with rk_.',
+        }, 400)
       }
 
-      const authorize = new URL('https://connect.stripe.com/oauth/authorize')
-      authorize.searchParams.set('response_type', 'code')
-      authorize.searchParams.set('client_id', clientId)
-      // read_only is the whole point. This integration can never move money,
-      // issue a refund, or change anything in the user's Stripe account.
-      authorize.searchParams.set('scope', 'read_only')
-      authorize.searchParams.set('state', state)
-
-      return json({ url: authorize.toString() })
-    }
-
-    // ------------------------------------------------------------- callback --
-    if (action === 'callback') {
-      // The user declined on Stripe's screen, or Stripe reported a problem.
-      const oauthError = url.searchParams.get('error')
-      if (oauthError) return backToApp('cancelled')
-
-      const code = url.searchParams.get('code')
-      const state = url.searchParams.get('state')
-      if (!code || !state) return backToApp('failed')
-
-      const { data: stateRow } = await supabaseAdmin
-        .from('stripe_oauth_states')
-        .select('user_id, created_at')
-        .eq('state', state)
-        .maybeSingle()
-
-      // Unknown state means this callback was not started by us.
-      if (!stateRow) return backToApp('failed')
-
-      // Single use, whatever happens next.
-      await supabaseAdmin.from('stripe_oauth_states').delete().eq('state', state)
-
-      // Ten minutes is generous for a redirect the user is sitting through.
-      const ageMs = Date.now() - new Date(stateRow.created_at).getTime()
-      if (ageMs > 10 * 60 * 1000) return backToApp('expired')
-
-      const body = new URLSearchParams({
-        grant_type: 'authorization_code',
-        code,
-      })
-
-      const tokenRes = await fetch('https://connect.stripe.com/oauth/token', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${secretKey}`,
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body,
-      })
-
-      const tokenJson = await tokenRes.json()
-
-      if (!tokenRes.ok || !tokenJson.stripe_user_id) {
-        console.error('Stripe OAuth exchange failed:', JSON.stringify(tokenJson))
-        return backToApp('failed')
+      // Charges first, because this is the one permission the import cannot work
+      // without, and because it doubles as "is this key real at all". A restricted
+      // key can be perfectly valid but scoped to something else entirely, and
+      // finding that out here beats an empty import the user cannot explain.
+      const charges = await stripeGet('charges?limit=1', apiKey)
+      if (!charges.ok) {
+        const message = charges.body?.error?.message ?? 'it cannot read payments.'
+        // A wrong or revoked key fails here too, so distinguish the two: telling
+        // someone to add a permission when they actually mistyped the key sends
+        // them back to Stripe to fix something that was never wrong.
+        const code = charges.body?.error?.type
+        if (code === 'invalid_request_error' && /api key/i.test(message)) {
+          return json({ error: `Stripe did not accept that key: ${message}` }, 400)
+        }
+        return json({
+          error: `That key works, but it cannot read your payments. Edit it in Stripe, set Charges to Read, and try again. (${message})`,
+        }, 400)
       }
 
-      // Store the account id, never the access token. Requests are made with the
-      // platform key plus a Stripe-Account header, so this row holds nothing that
-      // could be used as a credential if it ever leaked.
-      const { error: saveError } = await supabaseAdmin
+      // Whose account is it? Best effort only. Reading the account object needs
+      // its own permission, and a key scoped to exactly the five resources we ask
+      // for can read every sale correctly while failing here. Refusing it over a
+      // display detail would be a dead end for someone who followed the
+      // instructions to the letter - so we record 'unknown' and move on. The
+      // Account screen omits the account line when it sees that.
+      const account = await stripeGet('account', apiKey)
+      const accountId = account.ok && typeof account.body?.id === 'string' ? account.body.id : 'unknown'
+
+      const { error: keyError } = await supabaseAdmin
+        .from('stripe_credentials')
+        .upsert({
+          user_id: user.id,
+          api_key: apiKey,
+          key_last4: apiKey.slice(-4),
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'user_id' })
+
+      if (keyError) {
+        console.error('Could not save Stripe credentials:', keyError.message)
+        return json({ error: 'Could not save the connection. Please try again.' }, 503)
+      }
+
+      // The browser-readable half. Deliberately holds no credential.
+      const { error: connError } = await supabaseAdmin
         .from('stripe_connections')
         .upsert({
-          user_id: stateRow.user_id,
-          stripe_account_id: tokenJson.stripe_user_id,
-          scope: tokenJson.scope ?? 'read_only',
-          livemode: tokenJson.livemode ?? true,
+          user_id: user.id,
+          stripe_account_id: accountId,
+          scope: 'read_only',
+          livemode: apiKey.startsWith('rk_live_'),
           connected_at: new Date().toISOString(),
           last_sync_error: null,
         }, { onConflict: 'user_id' })
 
-      if (saveError) {
-        console.error('Could not save Stripe connection:', saveError.message)
-        return backToApp('failed')
+      if (connError) {
+        console.error('Could not save Stripe connection:', connError.message)
+        return json({ error: 'Could not save the connection. Please try again.' }, 503)
       }
 
-      return backToApp('connected')
+      // Never echo the key back, not even partially beyond the last four.
+      return json({
+        ok: true,
+        accountId,
+        accountName: account.body?.business_profile?.name ?? account.body?.settings?.dashboard?.display_name ?? null,
+        livemode: apiKey.startsWith('rk_live_'),
+      })
     }
 
     // ----------------------------------------------------------- disconnect --
     if (action === 'disconnect') {
-      const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim()
-      if (!token) return json({ error: 'Please sign in first.' }, 401)
-
-      const { data: userData, error: userError } = await supabaseAdmin.auth.getUser(token)
-      const user = userData?.user
-      if (userError || !user) return json({ error: 'Please sign in first.' }, 401)
-
-      const { data: conn } = await supabaseAdmin
-        .from('stripe_connections')
-        .select('stripe_account_id')
-        .eq('user_id', user.id)
-        .maybeSingle()
-
-      // Tell Stripe as well as forgetting locally, so the connection disappears
-      // from the user's own Stripe dashboard too. If this fails we still drop our
-      // side: leaving a row we have told the user is gone would be worse.
-      if (conn?.stripe_account_id && clientId) {
-        try {
-          await fetch('https://connect.stripe.com/oauth/deauthorize', {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${secretKey}`,
-              'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: new URLSearchParams({
-              client_id: clientId,
-              stripe_user_id: conn.stripe_account_id,
-            }),
-          })
-        } catch (err) {
-          console.warn('Stripe deauthorize failed, dropping local connection anyway:', err.message)
-        }
-      }
-
+      await supabaseAdmin.from('stripe_credentials').delete().eq('user_id', user.id)
       await supabaseAdmin.from('stripe_connections').delete().eq('user_id', user.id)
       // Imported sales are deliberately KEPT. They are part of the user's revenue
       // history, and silently deleting months of figures because someone
@@ -215,9 +170,6 @@ Deno.serve(async (req) => {
     return json({ error: 'Unknown action.' }, 400)
   } catch (err) {
     console.error('stripe-connect failed:', err.message)
-    // A thrown error during the callback must still land the user somewhere sane
-    // rather than showing them raw JSON on a Supabase domain.
-    if (action === 'callback') return backToApp('failed')
     return json({ error: 'Something went wrong. Please try again.' }, 500)
   }
 })

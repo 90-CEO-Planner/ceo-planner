@@ -4,6 +4,7 @@ import { getStore, updateQuickOffers, addRevenueEntry, deleteRevenueEntry, getRe
 import { renderTooltip } from '../components/tooltip.js';
 import { showToast, showConfirm, rerenderScreen } from '../components/toast.js';
 import { proTeaser, proLock } from '../components/proGate.js';
+import { canConnectStripe } from '../stripeImport.js';
 
 // Pipeline list state. Module level so it survives a re-render — delete an entry
 // on page 3 of the list and you stay on page 3 instead of being thrown back to
@@ -249,7 +250,15 @@ export function renderRevenue() {
                    ${proTeaser(
                        'payment-import',
                        'Never log a sale by hand again',
-                       'Connect Stripe or PayPal once. Every sale appears here the moment it happens.'
+                       'Connect Stripe once. Every sale appears here the moment it happens. (PayPal coming soon)',
+                       // The way in, for accounts that can actually connect one
+                       // today. Everyone else gets the strip without a link and
+                       // it opens the explanatory modal as before — a link to a
+                       // card that isn't rendered would be a dead end, so this
+                       // asks canConnectStripe() rather than assuming.
+                       canConnectStripe()
+                           ? { href: '#/account', label: 'Connect your Stripe account →' }
+                           : null
                    )}
 
                    <!-- Multi-Form Tabs -->

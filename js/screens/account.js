@@ -10,8 +10,8 @@
 // strategy mode and reminders, all of which feed the AI rather than the account.
 import { renderNav, signOutAndClear } from '../components/nav.js';
 import { showToast, showConfirm } from '../components/toast.js';
-import { PRO_FEATURES, PRO_FEATURE_KEYS, getPlanTier, isProTrial, trialDaysLeft, isFeatureLive, isProUser, proBadge } from '../components/proGate.js';
-import { fetchStripeConnection, startStripeConnect, disconnectStripe, syncStripeSales, readStripeOutcome } from '../stripeImport.js';
+import { PRO_FEATURES, PRO_FEATURE_KEYS, getPlanTier, isProTrial, trialDaysLeft, isFeatureLive, proBadge } from '../components/proGate.js';
+import { fetchStripeConnection, connectStripeKey, disconnectStripe, syncStripeSales, canConnectStripe, STRIPE_KEY_PAGE } from '../stripeImport.js';
 
 // Everything the base plan includes. Written out rather than derived, because
 // the point of this list is to make base feel like a complete product on its
@@ -128,12 +128,13 @@ function renderPlanCard() {
 
 // Connected payment processors, for Pro item 1.
 //
-// Gated on `isFeatureLive('payment-import')` as well as on the tier, so the card
-// stays invisible until the import is genuinely finished. The backend is live
-// before the client half is, and a Connect button that leads to a half-built
-// feature is worse than no button.
+// Gated on the feature being live as well as on the tier, so the card stays
+// invisible until the import is genuinely finished. The backend is live before
+// the client half is, and a Connect button that leads to a half-built feature is
+// worse than no button. `canConnectStripe()` in stripeImport.js owns that rule —
+// the Revenue teaser links here and has to agree with it.
 function renderConnectionsCard() {
-    if (!isFeatureLive('payment-import') || !isProUser()) return '';
+    if (!canConnectStripe()) return '';
 
     return `
     <div class="card mb-6">
@@ -142,13 +143,60 @@ function renderConnectionsCard() {
             Connected accounts
         </h3>
         <p style="color: var(--color-text-muted); font-size: 0.875rem; line-height: 1.6; margin-bottom: 1.25rem;">
-            Connect Stripe and your sales are imported here automatically. The connection
-            is <strong>read only</strong>, so this can see payments but can never move money,
-            issue a refund, or change anything in your Stripe account. You can disconnect
-            at any time and your imported sales stay with you.
+            Connect Stripe and your sales are imported here automatically. You give this a
+            <strong>read-only key</strong> that you create yourself, so it can see payments
+            but can never move money, issue a refund, or change anything in your Stripe
+            account. You can disconnect at any time and your imported sales stay with you.
         </p>
         <div id="stripe-connection-state" style="color: var(--color-text-muted); font-size: 0.875rem;">Checking…</div>
     </div>
+    `;
+}
+
+// The paste-a-key form.
+//
+// Five steps, written out rather than hidden behind a "how do I do this?" link:
+// creating a restricted key is the hardest thing this app ever asks anyone to
+// do, and it happens once, at the exact moment someone is deciding whether the
+// import is worth the bother. Stripe publishes no URL parameters for
+// pre-selecting the permissions, so the list has to be read and ticked by hand
+// — which makes naming the exact five resources the whole job.
+//
+// The five are the endpoints stripe-sync actually reads. Charges is the money.
+// The other four are only ever used to work out what a sale was FOR: the product
+// name lives on the invoice or checkout session line items, never on the charge
+// itself, so without them every imported sale reads "Subscription update".
+function connectFormHtml() {
+    return `
+    <ol style="margin: 0 0 1.25rem 0; padding-left: 1.25rem; line-height: 1.7; color: var(--color-text-muted);">
+        <li style="margin-bottom: 0.5rem;">
+            Open <a href="${STRIPE_KEY_PAGE}" target="_blank" rel="noopener noreferrer" style="color: var(--color-primary-dark); font-weight: 600;">Stripe's create-a-key page</a>
+            (you'll need to be signed in to Stripe).
+        </li>
+        <li style="margin-bottom: 0.5rem;">Name it <strong style="color: var(--color-black);">CEO Planner</strong>, so you can recognise it later.</li>
+        <li style="margin-bottom: 0.5rem;">
+            Set these five to <strong style="color: var(--color-black);">Read</strong>, and leave everything
+            else on None: <strong style="color: var(--color-black);">Charges</strong>,
+            <strong style="color: var(--color-black);">PaymentIntents</strong>,
+            <strong style="color: var(--color-black);">Invoices</strong>,
+            <strong style="color: var(--color-black);">Products</strong> and
+            <strong style="color: var(--color-black);">Checkout Sessions</strong>.
+        </li>
+        <li style="margin-bottom: 0.5rem;">Create the key and copy it. It starts with <code>rk_</code>.</li>
+        <li>Paste it below.</li>
+    </ol>
+
+    <div class="form-group mb-3">
+        <label class="form-label" for="stripe-key-input" style="font-weight: 600;">Your restricted key</label>
+        <input type="password" id="stripe-key-input" class="form-input" placeholder="rk_live_…"
+               autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        <p style="font-size: 0.8rem; margin-top: 0.5rem; line-height: 1.5;">
+            Only the restricted key, please. If yours starts with <code>sk_</code> that is your
+            full secret key, which can move money — this won't accept it.
+        </p>
+    </div>
+
+    <button type="button" id="btn-stripe-connect" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Connect Stripe</button>
     `;
 }
 
@@ -222,15 +270,40 @@ async function paintStripeConnection() {
     const conn = await fetchStripeConnection();
 
     if (!conn) {
-        host.innerHTML = `<button type="button" id="btn-stripe-connect" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Connect Stripe</button>`;
-        document.getElementById('btn-stripe-connect').addEventListener('click', async (e) => {
-            e.target.disabled = true;
-            e.target.textContent = 'Opening Stripe…';
-            const err = await startStripeConnect();
+        host.innerHTML = connectFormHtml();
+
+        const input = document.getElementById('stripe-key-input');
+        const button = document.getElementById('btn-stripe-connect');
+
+        const submit = async () => {
+            button.disabled = true;
+            button.textContent = 'Checking with Stripe…';
+
+            const err = await connectStripeKey(input.value);
+
             if (err) {
-                e.target.disabled = false;
-                e.target.textContent = 'Connect Stripe';
+                button.disabled = false;
+                button.textContent = 'Connect Stripe';
                 showToast(err, 'error');
+                input.focus();
+                return;
+            }
+
+            // Clear the field before anything else. The key is not stored in the
+            // browser at all, and leaving it sitting in a DOM node after it has
+            // been accepted serves no purpose.
+            input.value = '';
+            showToast('Stripe connected. Import your sales whenever you are ready.', 'success');
+            paintStripeConnection();
+        };
+
+        button.addEventListener('click', submit);
+        // Enter submits. This is one field and one button; making someone reach
+        // for the mouse after pasting would be gratuitous.
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                submit();
             }
         });
         return;
@@ -240,8 +313,18 @@ async function paintStripeConnection() {
         ? new Date(conn.last_synced_at).toLocaleString()
         : 'not yet';
 
+    // 'unknown' is what stripe-connect stores when a key can read charges but not
+    // the account object — a perfectly usable key, so it connects anyway and this
+    // simply doesn't name the account.
+    const accountLine = conn.stripe_account_id && conn.stripe_account_id !== 'unknown'
+        ? ` — account ${conn.stripe_account_id}`
+        : '';
+    const modeNote = conn.livemode === false
+        ? ` <span style="color: #B54708;">(test mode key, so this will only ever import test payments)</span>`
+        : '';
+
     host.innerHTML = `
-        <p style="margin: 0 0 0.5rem 0;"><strong style="color: var(--color-black);">Stripe connected</strong> — account ${conn.stripe_account_id}</p>
+        <p style="margin: 0 0 0.5rem 0;"><strong style="color: var(--color-black);">Stripe connected</strong>${accountLine}${modeNote}</p>
         <p style="margin: 0 0 1rem 0;">Last import: ${lastSynced}</p>
         ${conn.last_sync_error ? `<p style="margin: 0 0 1rem 0; color: #B42318;">Last attempt failed: ${conn.last_sync_error}</p>` : ''}
         <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
@@ -256,11 +339,17 @@ async function paintStripeConnection() {
         const result = await syncStripeSales();
         if (result.error) {
             showToast(result.error, 'error');
+        } else if (!result.imported) {
+            showToast('Up to date, nothing new to import.', 'success');
         } else {
+            const sales = `${result.imported} ${result.imported === 1 ? 'sale' : 'sales'}`;
+            // `truncated` means we stopped at the page ceiling, not that Stripe
+            // ran out. Saying so beats leaving someone to wonder why a long
+            // history arrived in pieces.
             showToast(
-                result.imported
-                    ? `Imported ${result.imported} ${result.imported === 1 ? 'sale' : 'sales'} from Stripe.`
-                    : 'Up to date, nothing new to import.',
+                result.truncated
+                    ? `Imported ${sales} so far. There are more to come — run it again to carry on.`
+                    : `Imported ${sales} from Stripe.`,
                 'success'
             );
         }
@@ -282,10 +371,6 @@ async function paintStripeConnection() {
 }
 
 function accountAttachEvents() {
-    // Report the outcome of an OAuth round trip, if we've just come back from one.
-    const outcome = readStripeOutcome();
-    if (outcome) showToast(outcome.text, outcome.type);
-
     paintStripeConnection();
 
     // Fill in the email from the live session rather than from the store, so it
