@@ -318,12 +318,30 @@
     background-color: var(--color-primary-light);
 }
 
-/* 1120px, not 768px and no longer 1080px: the logo plus the nav links need
-   1100px to fit, and below that the bar overflows and pushes "Log Out" off the
-   screen — iPad landscape, small laptops, and any half-width desktop window.
-   The number went 1080 → 1120 when the Account link was added. **Re-measure it
-   if you add or rename a nav link**: the fit is tight and the failure is silent
-   until someone notices they can't log out. */
+/* Pro accounts carry a twelfth nav link, Pipeline, which took the width the bar
+   needs from 1100px to 1289px — measured, not estimated. Raising the breakpoint
+   to match would put every 1280px laptop into a hamburger for the sake of one
+   extra word, so the gaps and the link padding tighten through the band where
+   the links only just don't fit. That brings the requirement back under 1120px
+   and leaves the breakpoint where it was.
+
+   Same idea as the plan-pill band below, and the same warning applies: these
+   numbers are measured against the real rendered bar. **Re-measure if you add
+   or rename a nav link**, on a Pro account, which is the widest case. */
+@media (min-width: 1121px) and (max-width: 1320px) {
+    .nav-links {
+        gap: 0.4rem;
+    }
+    .nav-link {
+        padding: 0.5rem 0.3rem;
+    }
+}
+
+/* 1120px, not 768px and no longer 1080px: below this the bar overflows and
+   pushes "Log Out" off the screen — iPad landscape, small laptops, and any
+   half-width desktop window. The number went 1080 → 1120 when the Account link
+   was added, and stayed at 1120 when Pipeline was added because of the band
+   above. The failure is silent until someone notices they can't log out. */
 @media (max-width: 1120px) {
     .app-header {
         flex-wrap: wrap;
@@ -725,12 +743,18 @@
 }
 
 /* The trial countdown costs about 158px on the nav row, which is more than the
-   gap between "the links fit" (1100px) and "the links plus the pill fit"
-   (1258px). Rather than push every laptop under 1258px into a hamburger for the
-   sake of a countdown, drop the pill through that band. Below 1120px the nav is
-   a vertical dropdown, where the pill costs no width and comes back. Account is
-   one click away in all three cases. */
-@media (min-width: 1121px) and (max-width: 1280px) {
+   gap between "the links fit" and "the links plus the pill fit". Rather than
+   push every laptop below that into a hamburger for the sake of a countdown,
+   drop the pill through the band. Below 1120px the nav is a vertical dropdown,
+   where the pill costs no width and comes back. Account is one click away in
+   all three cases.
+
+   The upper bound went 1280 → 1390 when the Pipeline link was added: measured
+   on a trial account, links plus pill put "Log Out" at 1330px on a 1321px
+   window, which is the same silently-can't-log-out failure as batches 7 and 8.
+   It fits with room to spare at 1400. **A trial account is the widest nav the
+   app has — measure this one, not the paid Pro one.** */
+@media (min-width: 1121px) and (max-width: 1390px) {
     .nav-plan-pill {
         display: none;
     }
@@ -789,4 +813,354 @@
 
 .plan-feature-row.is-locked .plan-feature-mark {
     color: var(--color-secondary-dark);
+}
+
+/* ---------------------------------------------------------------------------
+   Lead pipeline board (Pro item 2, #/pipeline)
+
+   A horizontal strip of stage columns rather than a CSS grid. Five columns will
+   not fit a phone at any sensible width, and collapsing them into a stack loses
+   the one thing the board is for — seeing the shape of the pipeline at a glance.
+   Scrolling sideways keeps that shape on every screen, and the scroll lives on
+   THIS element so the page body never scrolls horizontally (the hidden-tooltip
+   bug in batch 7 is what that rule exists for).
+   --------------------------------------------------------------------------- */
+.pipeline-board {
+    display: flex;
+    gap: 1rem;
+    overflow-x: auto;
+    padding-bottom: 0.75rem;
+    align-items: flex-start;
+}
+
+/* 208px is chosen, not arbitrary: five of them plus four 1rem gaps come to
+   1104px, which fits inside the 1168px that .dashboard-layout leaves at a
+   1280px window. Any wider and a full desktop still has to scroll a board,
+   which is the one thing a board is meant to save you from. They grow to fill
+   anything wider and start scrolling below roughly 1150px. */
+.pipeline-column {
+    flex: 1 1 208px;
+    min-width: 208px;
+    background: var(--color-bg-main);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 0.875rem;
+}
+
+.pipeline-column-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.pipeline-column-title {
+    font-weight: 700;
+    font-size: 0.9rem;
+}
+
+.pipeline-column-count {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    background: var(--color-white);
+    border-radius: var(--radius-full);
+    padding: 0.1rem 0.5rem;
+}
+
+.pipeline-column-hint {
+    font-size: 0.72rem;
+    color: var(--color-text-muted);
+    margin: 0.25rem 0 0 0;
+    line-height: 1.35;
+}
+
+.pipeline-column-value {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--color-primary-dark);
+    margin: 0.35rem 0 0 0;
+}
+
+.pipeline-column-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+    margin-top: 0.75rem;
+}
+
+.pipeline-column-empty {
+    font-size: 0.8rem;
+    color: var(--color-text-muted);
+    margin: 0;
+    padding: 0.5rem 0;
+}
+
+.pipeline-card {
+    background: var(--color-white);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: 0.75rem;
+    box-shadow: var(--shadow-sm);
+}
+
+.pipeline-card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.5rem;
+}
+
+.pipeline-card-name {
+    font-weight: 600;
+    color: var(--color-black);
+    font-size: 0.9rem;
+    /* Long names wrap rather than widening the column and pushing the board out. */
+    overflow-wrap: anywhere;
+}
+
+.pipeline-card-value {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--color-primary-dark);
+    white-space: nowrap;
+}
+
+.pipeline-card-meta {
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+    margin: 0.25rem 0 0 0;
+    overflow-wrap: anywhere;
+}
+
+.pipeline-card-flag {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    margin: 0.4rem 0 0 0;
+}
+
+.pipeline-card-flag-due {
+    color: var(--color-accent-dark);
+}
+
+.pipeline-card-flag-cold {
+    color: #B54708;
+}
+
+.pipeline-card-stage {
+    margin-top: 0.6rem;
+    font-size: 0.78rem;
+    padding: 0.3rem 0.4rem;
+    height: auto;
+}
+
+.pipeline-card-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.25rem;
+    margin-top: 0.4rem;
+}
+
+.pipeline-card-actions .btn {
+    padding: 0.2rem 0.5rem;
+    font-size: 0.75rem;
+}
+
+.pipeline-card-editing {
+    border-color: var(--color-primary);
+}
+
+.pipeline-edit-label {
+    display: block;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--color-text-muted);
+    margin: 0.5rem 0 0.2rem 0;
+}
+
+.pipeline-edit-form .form-control {
+    font-size: 0.8rem;
+    padding: 0.3rem 0.45rem;
+    height: auto;
+}
+
+.pipeline-card-prob {
+    display: inline-block;
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    border-radius: var(--radius-full);
+    padding: 0.1rem 0.45rem;
+    margin-top: 0.4rem;
+}
+
+/* Green / amber / grey rather than green / amber / red. A low-confidence deal
+   is an early one, not a failing one, and painting it red would push people to
+   mark everything High to make the board look calm. */
+.pipeline-card-prob-high {
+    background: var(--color-secondary-light);
+    color: var(--color-secondary-dark);
+}
+
+.pipeline-card-prob-medium {
+    background: #FEF0C7;
+    color: #B54708;
+}
+
+.pipeline-card-prob-low {
+    background: var(--color-bg-main);
+    color: var(--color-text-muted);
+}
+
+.pipeline-card-next {
+    font-size: 0.75rem;
+    color: var(--color-text-main);
+    margin: 0.4rem 0 0 0;
+    padding-top: 0.4rem;
+    border-top: 1px dashed var(--color-border);
+    overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------------------------
+   The "Add a contact" form
+
+   A fixed 3-column grid rather than `repeat(auto-fit, minmax(…))`. Auto-fit
+   decides the column count from the available width, so the nine fields
+   reflowed 5+4 at one width and 4+4+1 at another, and the last row was always a
+   different shape from the ones above it. Three columns give 3/3/3 at every
+   desktop width, which is the tidy version.
+
+   `align-items: start` matters: the Offer field grows a second control when
+   "Other…" is chosen, and without this every other field in that row would
+   stretch to match it.
+   --------------------------------------------------------------------------- */
+.pipeline-form-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem 1.5rem;
+    align-items: start;
+}
+
+@media (max-width: 900px) {
+    .pipeline-form-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (max-width: 560px) {
+    .pipeline-form-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.pipeline-field {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+/* Its own line, always. A fixed height rather than a natural one so that a
+   label which wraps to two lines cannot push its input below its neighbours',
+   which is the raggedness this whole block exists to fix. */
+.pipeline-field-label {
+    display: flex;
+    align-items: center;
+    min-height: 1.5rem;
+    margin-bottom: 0.4rem;
+}
+
+.pipeline-field-label label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--color-text-main);
+    line-height: 1.2;
+}
+
+/* `.form-control` is used all over this codebase and defined nowhere, so its
+   inputs have been browser-default throughout. Styling it globally would change
+   every screen at once, so this is scoped to the pipeline form until someone
+   decides to do it properly everywhere. */
+.pipeline-field .form-control,
+.pipeline-edit-form .form-control {
+    width: 100%;
+    box-sizing: border-box;
+    font-family: var(--font-body);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-white);
+    color: var(--color-text-main);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.pipeline-field .form-control {
+    padding: 0.5rem 0.625rem;
+    font-size: 0.875rem;
+    /* Selects and date inputs size themselves differently from text inputs, so
+       every control is pinned to one height or the row looks uneven again. */
+    height: 2.375rem;
+}
+
+.pipeline-field textarea.form-control {
+    height: auto;
+}
+
+.pipeline-field .form-control:focus,
+.pipeline-edit-form .form-control:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px var(--color-primary-light);
+}
+
+/* The second Offer control, revealed by "Other…". Sits directly under the
+   select rather than in a field of its own. */
+.pipeline-field .form-control[data-offer-other] {
+    margin-top: 0.4rem;
+}
+
+/* Tooltips inside the add-contact form anchor to the FIELD, not to their icon.
+
+   The shared tooltip centres itself on its icon with translateX(-50%). That is
+   right in the middle of a page and wrong at an edge: in the left column of this
+   grid the icon sits close to the card edge, so 21–51px of the 280px panel
+   landed off the left of the viewport and the first words were unreadable.
+   Capping the width does not help, because the panel is centred, not anchored.
+
+   Making .pipeline-field the positioned ancestor and .tooltip-container static
+   means `left: 0` resolves to the field's own left edge. The panel can then
+   never exceed a field that itself never exceeds the card, at any breakpoint,
+   in any column. It opens below the control rather than beside the label, which
+   is also easier to read while tabbing through the form.
+
+   The arrow is hidden here: pointing at the icon is what earns it, and once the
+   panel is field-anchored it no longer lines up with anything. */
+.pipeline-field {
+    position: relative;
+}
+
+.pipeline-field .tooltip-container {
+    position: static;
+}
+
+.pipeline-field .tooltip-container .tooltip-content,
+.pipeline-field .tooltip-container.tooltip-bottom .tooltip-content {
+    left: 0;
+    right: auto;
+    top: calc(100% + 8px);
+    bottom: auto;
+    transform: translateY(6px);
+    max-width: 100%;
+}
+
+.pipeline-field .tooltip-container:hover .tooltip-content,
+.pipeline-field .tooltip-container:focus .tooltip-content,
+.pipeline-field .tooltip-container.tooltip-bottom:hover .tooltip-content,
+.pipeline-field .tooltip-container.tooltip-bottom:focus .tooltip-content {
+    transform: translateY(0);
+}
+
+.pipeline-field .tooltip-content::after {
+    display: none;
 }

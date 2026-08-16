@@ -142,20 +142,7 @@ export async function generateAIResponse(messageHistory) {
     ];
 
     try {
-        const { data, error } = await window.db.functions.invoke('chat', {
-            body: { messages: messages },
-        });
-
-        if (error) {
-            console.error("Edge Function Invocation Error:", error);
-            throw new Error(await window.readFunctionError(error));
-        }
-
-        if (data.error) {
-            console.error("OpenAI API Error:", data.error);
-            throw new Error(data.error.message || data.error);
-        }
-
+        const data = await window.invokeChat(messages);
         return data.choices[0].message.content;
     } catch (error) {
         console.error("Generative AI Service Failed:", error);
@@ -191,12 +178,7 @@ You MUST return ONLY a raw JSON strictly following this schema with no markdown 
 }`;
 
     try {
-        const { data, error } = await window.db.functions.invoke('chat', {
-            body: { messages: [{ role: 'user', content: prompt }] },
-        });
-
-        if (error) throw new Error(await window.readFunctionError(error));
-        if (data.error) throw new Error(data.error.message || data.error);
+        const data = await window.invokeChat([{ role: 'user', content: prompt }]);
 
         let content = data.choices[0].message.content;
         content = content.replace(/^```json/g, '').replace(/```$/g, '').trim();
@@ -305,17 +287,10 @@ OUTPUT FORMAT (return exactly this JSON shape):
 CRITICAL: Return ONLY the JSON object above. No explanation, no preamble, no code fences.`;
 
     try {
-        const { data, error } = await window.db.functions.invoke('chat', {
-            body: { 
-                messages: [
-                    { role: 'system', content: systemPrompt }, 
-                    { role: 'user', content: 'Generate my 90-day action plan now. Return only the JSON object, no prose, no markdown fences.' }
-                ] 
-            },
-        });
-
-        if (error) throw new Error(await window.readFunctionError(error));
-        if (data.error) throw new Error(data.error.message || data.error);
+        const data = await window.invokeChat([
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: 'Generate my 90-day action plan now. Return only the JSON object, no prose, no markdown fences.' }
+        ]);
 
         let content = data.choices[0].message.content;
         content = content.replace(/^```json/gi, '').replace(/```$/g, '').trim();

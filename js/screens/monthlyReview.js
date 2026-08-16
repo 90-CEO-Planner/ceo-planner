@@ -218,12 +218,7 @@ Analyze what actually worked for me based on my real data. Give me a clear direc
 Analyze what drained me. Be ruthless. Tell me exactly what I need to stop doing, automate, or delegate to protect my CEO focus.`;
 
             try {
-                const { data, error } = await window.db.functions.invoke('chat', {
-                    body: { messages: [{ role: 'user', content: promptText }] }
-                });
-
-                if (error) throw new Error(await window.readFunctionError(error));
-                if (data.error) throw new Error(data.error.message || data.error);
+                const data = await window.invokeChat([{ role: 'user', content: promptText }]);
 
                 // For simple markdown bolding and line breaks since we aren't using a markdown parser library
                 let aiOutput = data.choices[0].message.content

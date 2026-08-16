@@ -1,4 +1,4 @@
-import { getStore, getRevenueInsights, addRevenueEntry, updateDailyLog, addLeadEntry, applyGeneratedPlan, updateProfile, getLocalDateString, parseDateInput, getWeekStart, getWeeksElapsed } from '../store.js';
+import { getStore, getRevenueInsights, addRevenueEntry, updateDailyLog, addLeadEntry, applyGeneratedPlan, updateProfile, getLocalDateString, parseDateInput, getWeekStart, getWeeksElapsed, planSourceKey } from '../store.js';
 import { renderNav } from '../components/nav.js';
 import { renderTooltip } from '../components/tooltip.js';
 import { generate90DayActionPlan } from '../aiService.js';
@@ -290,11 +290,15 @@ export function renderDashboard() {
         const tasks = [];
         const usedTasks = new Set();
         
+        // `slot` picks the generic phrasing deterministically instead of
+        // re-rolling at random, which is what produced the "(Part 2)" suffixes:
+        // two priorities landing on the same random sentence.
         const addTask = (text, fallback) => {
-            let t = breakdownTask(text, fallback);
+            const slot = tasks.length;
+            let t = breakdownTask(text, fallback, slot);
             let attempts = 0;
             while (usedTasks.has(t) && attempts < 10) {
-                t = breakdownTask(text, fallback);
+                t = breakdownTask(text, fallback, slot + attempts + 1);
                 attempts++;
             }
             if (usedTasks.has(t)) {
@@ -324,7 +328,28 @@ export function renderDashboard() {
         return tasks;
     };
 
-    function breakdownTask(taskText, fallback) {
+    // Deterministic stand-in for Math.random() when choosing a phrasing.
+    //
+    // The Daily 3 is built during render and only written to the store later, in
+    // attachEvents. Anything that stops that write landing — a full localStorage
+    // quota, which saveStore swallows into a console error, or a render whose
+    // attachEvents never runs — used to mean a fresh roll of the dice on the next
+    // load, so the day's tasks changed under the user on every refresh.
+    //
+    // Seeding the choice from the date, the slot and the task text means a given
+    // day always produces the same three tasks. Persistence is now an
+    // optimisation and a place to keep the tick state, not the thing the wording
+    // depends on.
+    function pickOption(options, seedText, slot) {
+        const seed = `${getLocalDateString()}|${slot}|${seedText}`;
+        let hash = 0;
+        for (let i = 0; i < seed.length; i++) {
+            hash = ((hash << 5) - hash + seed.charCodeAt(i)) | 0;
+        }
+        return options[Math.abs(hash) % options.length];
+    }
+
+    function breakdownTask(taskText, fallback, slot = 0) {
         if (!taskText || taskText.trim() === '') return fallback;
         const lower = taskText.toLowerCase();
 
@@ -337,87 +362,94 @@ export function renderDashboard() {
         if (isPhysicalOrEcom) {
             if (lower.match(/launch|new|collection/)) {
                 const options = ['Draft email sequence announcing your new product collection', 'Take teaser product photos of the new items', 'Set up the new product pages or listings on your store website', 'Outline the launch day promotion timeline'];
-                return options[Math.floor(Math.random() * options.length)];
+                return pickOption(options, taskText, slot);
             }
             if (lower.match(/email|newsletter/)) {
                 const options = ['Draft the weekly newsletter highlighting one best-selling product', 'Set up an automated cart-abandonment email sequence', 'Write a welcome email for new shop signups offering a discount'];
-                return options[Math.floor(Math.random() * options.length)];
+                return pickOption(options, taskText, slot);
             }
             if (lower.match(/post|reel|tiktok|content|video/)) {
                 const options = ['Record a behind-the-scenes video showing how your products are made/poured', 'Create a photo post styling your products beautifully in a home environment', 'Engage with 15 ideal customers or decor/niche creators on Instagram'];
-                return options[Math.floor(Math.random() * options.length)];
+                return pickOption(options, taskText, slot);
             }
             if (lower.match(/lead|magnet|freebie|opt-in/)) {
                 const options = ['Design a popup signup incentive offering free shipping or 10% off', 'Create a short product guide or quiz to help buyers choose the right scent/style', 'Set up a newsletter subscription form at your checkout page'];
-                return options[Math.floor(Math.random() * options.length)];
+                return pickOption(options, taskText, slot);
             }
             if (lower.match(/sales|sell|close|revenue|income|offer/)) {
                 const options = ['Create a limited-time product bundle or special discount code', 'Pitch your product line to a local boutique or physical retail shop for wholesale', 'Optimize your checkout page by adding a simple bump or add-on product'];
-                return options[Math.floor(Math.random() * options.length)];
+                return pickOption(options, taskText, slot);
             }
             if (lower.match(/website|landing page|store/)) {
                 const options = ['Review your online store landing page on mobile and optimize the load time', 'Add customer photo reviews to your best-selling product pages', 'Test your checkout flow end-to-end to ensure zero friction for buyers'];
-                return options[Math.floor(Math.random() * options.length)];
+                return pickOption(options, taskText, slot);
             }
             if (lower.match(/market|fair|booth|local/)) {
                 const options = ['Research local craft fairs, seasonal markets, or pop-up events and submit applications', 'Design or refine your physical booth table layout and signage', 'Print a QR code display to collect email signups at your checkout counter'];
-                return options[Math.floor(Math.random() * options.length)];
+                return pickOption(options, taskText, slot);
             }
         }
 
         // Context-Aware Keyword Matching for Daily Actions (Service-based Fallback)
         if (lower.match(/launch|beta/)) {
             const options = ['Draft the launch email sequence', 'Create a list of VIPs to invite to the beta', 'Outline the core offer for the launch', 'Set up the checkout or registration page'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
         if (lower.match(/podcast|collab|pitch/)) {
             const options = ['Research 3-5 potential podcasts/creators and draft a custom pitch', 'Follow up with past podcast hosts for a second appearance', 'Outline 3 new podcast topics to pitch'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
         if (lower.match(/course|program|module/)) {
             const options = ['Outline the curriculum or record the first module for the course', 'Review student feedback to improve the next module', 'Draft the sales page copy for your program'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
         if (lower.match(/email|newsletter|sequence/)) {
             const options = ['Draft the outline and first draft of the email sequence', 'Write 2 engaging emails for your newsletter', 'Review email metrics and optimize the subject lines'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
         if (lower.match(/post|reel|tiktok|content|video/)) {
             const options = ['Script or outline 3 pieces of content and batch record/write them', 'Repurpose your top-performing post into a short video script', 'Engage with 10 ideal clients before posting your content'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
         if (lower.match(/lead|magnet|freebie|opt-in/)) {
             const options = ['Design the core asset for the lead magnet (PDF, video outline, checklist)', 'Draft the opt-in page copy for your new freebie', 'Plan the 3-part welcome sequence for new subscribers'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
         if (lower.match(/sales|sell|close|revenue|income/)) {
             const options = ['Identify 5 warm leads from recent interactions and send a personalized DM/email', 'Follow up with 3 prospects who ghosted or said "not right now"', 'Review your sales process to identify and fix one bottleneck'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
         if (lower.match(/webinar|masterclass|live/)) {
             const options = ['Draft the slide deck outline focusing on the core problem and solution', 'Promote your upcoming live session on your main social channel', 'Write the follow-up email sequence for webinar attendees'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
         if (lower.match(/website|landing page|sales page/)) {
             const options = ['Draft the copy for the top three sections of the page (Headline, Problem, Solution)', 'Review your landing page on mobile and optimize the call-to-action', 'Source 3 fresh testimonials to add to your sales page'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
         if (lower.match(/hire|va|delegate/)) {
             const options = ['Document the step-by-step SOP for the task you want to delegate', 'Draft the job description and post it on your preferred platform', 'Review applications or conduct a 15-minute interview'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
         if (lower.match(/brand|niche|messaging/)) {
             const options = ['Write down 3 core beliefs your brand stands for to use in upcoming messaging', 'Review your social media bios and update them for clarity', 'Identify 3 common objections from your audience and draft responses'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
 
-        // Generic fallbacks for unrecognized text
+        // Nothing matched, so the priority is described in words this engine does
+        // not recognise. These keep the user's own wording intact and lead with a
+        // verb she can act on today.
+        //
+        // The previous version cut her text off at 30 characters and prefixed it
+        // with "Outline the first three actionable steps for:" — which read as
+        // filler, and turned a priority of "a" into a whole sentence of nothing.
+        const subject = taskText.trim();
         const genericOptions = [
-            `Outline the first three actionable steps for: ${taskText.substring(0, 30)}${taskText.length > 30 ? '...' : ''}`,
-            `Block out 60 minutes of uninterrupted time to start: ${taskText.substring(0, 30)}${taskText.length > 30 ? '...' : ''}`,
-            `Gather all resources, links, and documents needed to execute: ${taskText.substring(0, 30)}${taskText.length > 30 ? '...' : ''}`
+            `Decide the very next step for "${subject}" and take it today`,
+            `Spend 60 focused minutes moving "${subject}" forward`,
+            `Clear the one thing currently blocking "${subject}"`
         ];
-        return genericOptions[Math.floor(Math.random() * genericOptions.length)];
+        return genericOptions[slot % genericOptions.length];
     }
 
     // Use the explicit Daily 3 from the actual day if available, otherwise fallback to AI generated tasks based on priorities & weekly plan.
@@ -431,12 +463,64 @@ export function renderDashboard() {
                 <a href="#/wizard" class="btn btn-primary btn-sm" style="display: inline-block;">Start Setup</a>
             </div>
         `;
+    } else if (!activePlan) {
+        // No plan for this week, so there is nothing honest to put here.
+        //
+        // This used to invent three tasks out of the 90-Day priorities. They were
+        // not things the user had decided to do, they counted towards the CEO
+        // Weekly Score as though they were, and with thin priorities they read as
+        // filler. An empty Daily 3 sends the score into its existing "No Plan"
+        // state, which is the truth.
+        todaysLog = null;
+        dailyTasksHtml = `
+            <div style="padding: 1.5rem; background: var(--color-bg-light); border-radius: var(--radius-sm); border: 1px dashed var(--color-border); text-align: center;">
+                <p style="font-size: 0.9rem; color: var(--color-text-main); margin: 0 0 0.35rem 0; font-weight: 600;">No plan for this week yet</p>
+                <p style="font-size: 0.85rem; color: var(--color-text-muted); margin: 0 0 1rem 0; line-height: 1.5;">Your Daily 3 comes from the actions you set on Monday, so it stays yours rather than something the app made up.</p>
+                <a href="#/monday-plan" class="btn btn-primary btn-sm" style="display: inline-block;">Plan This Week</a>
+            </div>
+        `;
     } else {
-        if (!todaysLog) {
-            const currentPriorities = activePlan && activePlan.topActions ? activePlan.topActions : g.priorities;
-            let generatedTasks = generateDaily3([0, 1, 2].map(i => currentPriorities[i] || ''), activePlan);
-            todaysLog = generatedTasks.map(t => ({ text: t, done: false }));
-            window._tempGeneratedTodaysLog = todaysLog; // to be saved on attachEvents
+        // The week's plan already carries three real actions: the ones typed into
+        // the Monday Plan, or the ones the 90-day AI plan wrote for this week,
+        // which applyGeneratedPlan stores as `daily3`. They are written against
+        // the actual business.
+        //
+        // This used to walk straight past them and run the keyword templates over
+        // the weekly *priorities* instead, so a plan whose Monday action read
+        // "Send 3 personal sales invitations" surfaced on the dashboard as
+        // "Outline the first three actionable steps for: a". mondayPlan.js already
+        // fixed this for its own suggestions; the dashboard kept the bug — it
+        // generated the real tasks, saved them, and ignored them.
+        const planKey = planSourceKey(activePlan);
+
+        // Rewriting the week's plan on a Monday morning used to leave that day's
+        // tasks untouched, because a log already existed for the date. Comparing
+        // the plan the tasks were built from against the current one picks that up.
+        const builtFrom = store.dailyLogSources ? store.dailyLogSources[todayStrDash] : undefined;
+        const isStale = Boolean(todaysLog) && builtFrom !== planKey;
+
+        if (!todaysLog || isStale) {
+            const plannedDaily3 = Array.isArray(activePlan.daily3)
+                ? activePlan.daily3.map(t => (t || '').trim()).filter(Boolean)
+                : [];
+
+            let generatedTasks;
+            if (plannedDaily3.length > 0) {
+                generatedTasks = plannedDaily3.slice(0, 3);
+            } else {
+                const currentPriorities = activePlan.topActions || g.priorities;
+                generatedTasks = generateDaily3([0, 1, 2].map(i => currentPriorities[i] || ''), activePlan);
+            }
+
+            // Anything already ticked that survived the rewrite keeps its tick.
+            // Losing a morning's completed work because the plan was edited at
+            // lunchtime would be its own bug.
+            const doneByText = {};
+            (todaysLog || []).forEach(t => { if (t && t.done) doneByText[t.text] = true; });
+
+            todaysLog = generatedTasks.map(t => ({ text: t, done: Boolean(doneByText[t]) }));
+            // Saved in attachEvents, along with the plan it was built from.
+            window._tempGeneratedTodaysLog = { tasks: todaysLog, source: planKey };
         }
 
         todaysLog.forEach((taskObj, i) => {
@@ -825,7 +909,8 @@ function dashboardAttachEvents() {
     // Daily 3 state persistence using the store logic
     const todayStr = getLocalDateString();
     if (window._tempGeneratedTodaysLog) {
-        updateDailyLog(todayStr, window._tempGeneratedTodaysLog);
+        const pending = window._tempGeneratedTodaysLog;
+        updateDailyLog(todayStr, pending.tasks, pending.source);
         delete window._tempGeneratedTodaysLog;
     }
 
@@ -943,8 +1028,12 @@ function dashboardAttachEvents() {
                 let log = updatedStore.dailyLogs[todayStr] || [];
                 if (log[i]) {
                     log[i].done = e.target.checked;
-                    updateDailyLog(todayStr, log);
-                    
+                    // Carry the existing stamp through. Dropping it would make the
+                    // tasks look like they came from a different plan on the next
+                    // render, which would rebuild them and throw away the tick
+                    // that was just made.
+                    updateDailyLog(todayStr, log, (updatedStore.dailyLogSources || {})[todayStr]);
+
                     // Check if all 3 are completed and firstDaily3Completed is not set
                     const allDone = log.length === 3 && log.every(t => t.done);
                     if (allDone && !updatedStore.profile?.firstDaily3Completed) {

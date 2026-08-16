@@ -1,9 +1,9 @@
 // revenue.js
 import { renderNav } from '../components/nav.js';
-import { getStore, updateQuickOffers, addRevenueEntry, deleteRevenueEntry, getRevenueInsights, getFunnelInsights, getChannelFunnel, NOT_ATTRIBUTED, addLeadEntry, deleteLeadEntry, addMetricSnapshot, deleteMetricSnapshot, getLocalDateString, getWeekStart, parseDateInput, formatAmount } from '../store.js';
+import { getStore, updateQuickOffers, addRevenueEntry, deleteRevenueEntry, getRevenueInsights, getFunnelInsights, getPipelineInsights, PIPELINE_STAGES, PIPELINE_PROBABILITIES, CONTACT_SOURCES, getChannelFunnel, NOT_ATTRIBUTED, addLeadEntry, deleteLeadEntry, addMetricSnapshot, deleteMetricSnapshot, getLocalDateString, getWeekStart, parseDateInput, formatAmount } from '../store.js';
 import { renderTooltip } from '../components/tooltip.js';
 import { showToast, showConfirm, rerenderScreen } from '../components/toast.js';
-import { proTeaser, proLock, proCardHeading, PRO_CARD_HEADING_STYLE } from '../components/proGate.js';
+import { proTeaser, proLock, proCardHeading, PRO_CARD_HEADING_STYLE, canUseLeadPipeline } from '../components/proGate.js';
 import { canConnectStripe, refreshImportedSales, getImportedSalesCache, fetchStripeConnection, syncStripeSales } from '../stripeImport.js';
 
 // Pipeline list state. Module level so it survives a re-render — delete an entry
@@ -48,13 +48,95 @@ export function renderRevenue() {
             </div>
         `;
     }
-    
+
+    // How many sales the revenue goal actually asks for, at the three horizons a
+    // founder plans against. Every figure comes from getRevenueInsights so this
+    // card can never disagree with the goal and progress shown above it.
+    //
+    // The whole thing hangs on an average offer price. Without one the numbers
+    // are all zero, so the card explains what is missing and where to set it
+    // rather than announcing that she needs to make no sales at all.
+    let salesTargetCardHtml = '';
+    if (insights.goal > 0) {
+        salesTargetCardHtml = insights.hasOfferPrice
+            ? `
+            <div class="card mb-6" style="padding: 1.5rem 2rem;">
+                <div class="flex justify-between items-center mb-4" style="flex-wrap: wrap; gap: 0.5rem;">
+                    <h3 style="margin: 0; display: flex; align-items: center;">
+                        Sales You Need
+                        ${renderTooltip(
+                            `How many sales it takes to reach your ${currency}${insights.goal.toLocaleString()} quarter goal, at your average offer price of ${currency}${insights.averageOfferPrice.toLocaleString()}.`,
+                            'A revenue goal is hard to act on. A number of sales is not. Each figure is rounded up, so hitting it always clears the target rather than landing just under.'
+                        )}
+                    </h3>
+                    <p style="margin: 0; font-size: 0.8rem; color: var(--color-text-muted);">
+                        Based on ${currency}${insights.averageOfferPrice.toLocaleString()} per sale
+                    </p>
+                </div>
+
+                <!-- Deliberately not .grid-cols-3: that collapses to a single
+                     column on mobile, which turns three short numbers into three
+                     tall stacked blocks. They are small enough to stay side by
+                     side at every width. -->
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem;">
+                    <div style="text-align: center; padding: 1rem; background: var(--color-bg-light); border-radius: 10px;">
+                        <p style="font-size: 0.75rem; color: var(--color-text-muted); font-weight: 600; margin: 0 0 0.35rem 0; text-transform: uppercase;">Per Week</p>
+                        <h3 style="font-size: 2rem; color: var(--color-primary-dark); margin: 0;">${insights.salesRequiredPerWeek}</h3>
+                    </div>
+                    <div style="text-align: center; padding: 1rem; background: var(--color-bg-light); border-radius: 10px;">
+                        <p style="font-size: 0.75rem; color: var(--color-text-muted); font-weight: 600; margin: 0 0 0.35rem 0; text-transform: uppercase;">Per Month</p>
+                        <h3 style="font-size: 2rem; color: var(--color-primary-dark); margin: 0;">${insights.salesRequiredPerMonth}</h3>
+                    </div>
+                    <div style="text-align: center; padding: 1rem; background: var(--color-bg-light); border-radius: 10px;">
+                        <p style="font-size: 0.75rem; color: var(--color-text-muted); font-weight: 600; margin: 0 0 0.35rem 0; text-transform: uppercase;">This Quarter</p>
+                        <h3 style="font-size: 2rem; color: var(--color-primary-dark); margin: 0;">${insights.salesRequired}</h3>
+                    </div>
+                </div>
+
+                <p style="margin: 1rem 0 0 0; font-size: 0.9rem; color: var(--color-text-main); text-align: center; line-height: 1.5;">
+                    ${insights.salesRemaining === 0
+                        ? `You've covered all ${insights.salesRequired} sales for this quarter. Everything from here is ahead of target.`
+                        : `${insights.salesMade} of ${insights.salesRequired} covered so far, <strong>${insights.salesRemaining} to go</strong> with ${insights.weeksRemaining} ${insights.weeksRemaining === 1 ? 'week' : 'weeks'} left.`}
+                </p>
+            </div>
+            `
+            : `
+            <div class="card mb-6" style="padding: 1.5rem 2rem; border-left: 4px solid var(--color-accent);">
+                <h3 style="margin: 0 0 0.5rem 0;">Sales You Need</h3>
+                <p style="margin: 0; font-size: 0.9rem; color: var(--color-text-main); line-height: 1.5;">
+                    Set your average offer price in <a href="#/settings" style="color: var(--color-primary-dark); font-weight: 600;">Settings</a>
+                    and this will show how many sales a week, a month and a quarter it takes to reach your
+                    ${currency}${insights.goal.toLocaleString()} goal.
+                </p>
+            </div>
+            `;
+    }
+
+    // Calls and closes both arrive from three places now: leads logged in bulk,
+    // monthly snapshots, and the named pipeline. That sum lives in
+    // getFunnelInsights rather than here, so this screen, the pipeline screen,
+    // the AI Coach and the executive report cannot drift apart — which they had:
+    // the Coach was still dividing total sales by total calls and quoting
+    // impossible close rates long after this screen had been corrected.
+    //
+    // ⚠️ Read totals from `funnel`. Do not re-sum store.leads.entries here — that
+    // is what this line used to do, and it is why the lead count on this page
+    // would have ignored the pipeline entirely.
+    const funnel = getFunnelInsights();
+    const { totalCalls, totalCloses, anyClosesEverLogged, totalLeads } = funnel;
+
     // Core calculations
     const leads = store.leads?.entries || [];
-    const totalLeads = leads.reduce((sum, l) => sum + (parseFloat(l.amount) || 0), 0);
     const leadGoal = parseFloat(store.leads?.quarterlyGoal) || 0;
     const leadProgressPercent = leadGoal > 0 ? (totalLeads / leadGoal) * 100 : 0;
-    
+
+    // Shown wherever the lead count is, but only once both sources are in play.
+    // "62 leads" is confusing when you remember typing 50; "50 logged in bulk,
+    // 12 named contacts" is not.
+    const leadSplitNote = (funnel.contactLeads > 0 && funnel.bulkLeads > 0)
+        ? `${funnel.bulkLeads.toLocaleString()} logged in bulk, ${funnel.contactLeads.toLocaleString()} named ${funnel.contactLeads === 1 ? 'contact' : 'contacts'}`
+        : '';
+
     // Sales logged through this app's own pipeline. Payments imported from Stripe
     // are deliberately excluded from this particular count: it is used below as a
     // stand-in for "how many calls closed", and a subscription renewal that
@@ -63,13 +145,6 @@ export function renderRevenue() {
     const salesCount = (insights.entries || []).filter(e => !e.imported).length;
     const metrics = store.metrics || [];
     
-    // Calls and closes both arrive from two places, leads and monthly snapshots.
-    // That sum now lives in getFunnelInsights rather than here, so this screen,
-    // the AI Coach and the executive report cannot drift apart — which they had:
-    // the Coach was still dividing total sales by total calls and quoting
-    // impossible close rates long after this screen had been corrected.
-    const funnel = getFunnelInsights();
-    const { totalCalls, totalCloses, anyClosesEverLogged } = funnel;
     const effectiveCloses = Math.max(salesCount, totalCloses);
 
     // Conversion Rates
@@ -153,6 +228,8 @@ export function renderRevenue() {
                         Quarter Lead Goal
                     </p>
                     <h3 style="font-size: 1.75rem; color: var(--color-primary-dark); margin: 0;">${totalLeads.toLocaleString()} / ${leadGoal.toLocaleString()}</h3>
+                    ${leadSplitNote ? `
+                    <p style="font-size: 0.7rem; color: var(--color-text-muted); margin: 0.5rem 0 0 0; line-height: 1.35;">${leadSplitNote}</p>` : ''}
                 </div>
                 <div class="card" style="padding: 1.5rem; text-align: center; border: 2px solid var(--color-accent-light);">
                     <p style="display: flex; align-items: center; justify-content: center; font-size: 0.8rem; color: var(--color-accent-dark); font-weight: 600; margin-bottom: 0.5rem; text-transform: uppercase;">
@@ -173,8 +250,10 @@ export function renderRevenue() {
                 </div>
             </div>
 
+            ${salesTargetCardHtml}
+
             <div class="grid-sidebar mb-6">
-                
+
                 <!-- Main Content Left -->
                 <div>
                    <!-- Multi-Level Progress Board -->
@@ -228,8 +307,9 @@ export function renderRevenue() {
                            <div class="progress-container" style="height: 12px; background: var(--color-bg-light); border-radius: var(--radius-full); overflow: hidden; margin-bottom: 0.5rem;">
                                <div class="progress-bar" style="height: 100%; width: ${leadProgressPercent}%; background: var(--color-secondary); transition: width 0.5s ease-out;"></div>
                            </div>
-                           <div class="flex justify-between" style="font-size: 0.8rem; color: var(--color-text-muted);">
+                           <div class="flex justify-between" style="font-size: 0.8rem; color: var(--color-text-muted); gap: 1rem; flex-wrap: wrap;">
                                <span>${totalLeads.toLocaleString()} / ${leadGoal.toLocaleString()} leads</span>
+                               ${leadSplitNote ? `<span>${leadSplitNote}</span>` : ''}
                            </div>
                        </div>
                    </div>
@@ -348,18 +428,14 @@ export function renderRevenue() {
                            </div>
                            <div class="form-group">
                                <label>Source</label>
+                               <!-- Built from CONTACT_SOURCES in store.js, which the
+                                    pipeline screen also renders. The list used to be
+                                    hardcoded here while the pipeline took free text,
+                                    so the same channel could arrive under two
+                                    spellings and split into two rows in "Which
+                                    Channel Earns". -->
                                <select id="log-source" class="form-control" required>
-                                   <option value="Instagram">Instagram</option>
-                                   <option value="Facebook">Facebook</option>
-                                   <option value="X">X</option>
-                                   <option value="Email">Email</option>
-                                   <option value="Live Session">Live Session</option>
-                                   <option value="DM Conversation">DM Conversation</option>
-                                   <option value="Referral">Referral</option>
-                                   <option value="Website">Website</option>
-                                   <option value="TikTok">TikTok</option>
-                                   <option value="YouTube">YouTube</option>
-                                   <option value="Other">Other</option>
+                                   ${CONTACT_SOURCES.map(s => `<option value="${s}">${s}</option>`).join('')}
                                </select>
                            </div>
                            <div class="form-group">
@@ -462,11 +538,18 @@ export function renderRevenue() {
                            </div>
                        </div>
                        ${renderPipelineEvents(insights.entries, leads, currency)}
-                       ${proTeaser(
-                           'lead-pipeline',
-                           'Know exactly who to follow up today',
-                           'Track leads by name through booked, proposal and won, and see who has gone quiet.'
-                       )}
+                       ${canUseLeadPipeline()
+                           // Same shape as the Stripe panel above: once the
+                           // account has the feature, proTeaser deletes itself,
+                           // and leaving the hole would take away the one useful
+                           // control on the card. A live summary and a way in
+                           // takes its place.
+                           ? renderPipelineSummary(currency)
+                           : proTeaser(
+                               'lead-pipeline',
+                               'Know exactly who to follow up today',
+                               'Track leads by name through booked, proposal and won, and see who has gone quiet.'
+                           )}
                    </div>
 
                 </div>
@@ -501,6 +584,55 @@ export function renderRevenue() {
                 opacity: 1 !important;
             }
         </style>
+    `;
+}
+
+// The human label for a stage in the CSV export. The stored keys are slugs
+// ('call-booked'), and an export is read by a person, not by this app.
+function stageLabelForCsv(key) {
+    const stage = PIPELINE_STAGES.find(s => s.key === key);
+    return stage ? stage.label : (key || '');
+}
+
+// Blank, not "Unknown", when no confidence was set. An export is data, and an
+// empty cell filters and pivots correctly where an invented word does not.
+function probabilityLabelForCsv(key) {
+    const p = PIPELINE_PROBABILITIES.find(x => x.key === key);
+    return p ? p.label : '';
+}
+
+// The named-pipeline summary that replaces the teaser once the account has the
+// feature. Deliberately small: it answers "is anyone waiting on me" and gets out
+// of the way. The board itself lives at #/pipeline, because five stage columns
+// need more width than this sidebar has.
+//
+// Every number here comes from getPipelineInsights, which is the same source the
+// pipeline screen reads. No counting is done in this file.
+function renderPipelineSummary(currency) {
+    const pipeline = getPipelineInsights();
+    // ⚠️ Read the assembled list, never re-add the categories. This line used to
+    // be `followUpsDue.length + goneQuiet.length`, and the moment a third
+    // category (an overdue close date) was added it silently undercounted — this
+    // card said 2 while the pipeline screen said 3, from the same data.
+    const needsYou = pipeline.needsYou.length;
+
+    const body = pipeline.total === 0
+        ? `<p style="font-size: 0.85rem; color: var(--color-text-muted); margin: 0 0 0.75rem 0;">
+               Nothing in your pipeline yet. Add the person you spoke to most recently.
+           </p>`
+        : `<p style="font-size: 0.85rem; color: var(--color-text-main); margin: 0 0 0.75rem 0; line-height: 1.5;">
+               ${pipeline.openCount} open ${pipeline.openCount === 1 ? 'deal' : 'deals'}${pipeline.openValue > 0 ? ` worth ${currency}${formatAmount(pipeline.openValue)}` : ''}.
+               ${needsYou > 0
+                   ? `<strong style="color: var(--color-accent-dark);">${needsYou} ${needsYou === 1 ? 'needs' : 'need'} you today.</strong>`
+                   : 'Nobody is waiting on you.'}
+           </p>`;
+
+    return `
+        <div class="card mt-4" style="padding: 1.25rem; border-left: 3px solid var(--color-primary);">
+            <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('lead-pipeline', 'Your lead pipeline')}</p>
+            ${body}
+            <a href="#/pipeline" class="btn btn-outline btn-sm" style="width: 100%; text-align: center;">Open pipeline</a>
+        </div>
     `;
 }
 
@@ -916,12 +1048,7 @@ window.generateAiReport = async function() {
         ${insights.entries.slice(-5).map(e => `Source: ${e.source}, Amount: ${e.amount}`).join('\n')}
         `;
 
-        const { data, error } = await window.db.functions.invoke('chat', {
-            body: { messages: [{ role: 'user', content: prompt }] },
-        });
-
-        if (error) throw new Error(await window.readFunctionError(error));
-        if (data.error) throw new Error(data.error.message || data.error);
+        const data = await window.invokeChat([{ role: 'user', content: prompt }]);
 
         const reportText = data.choices[0].message.content;
         aiContent.innerHTML = window.marked.parse(reportText);
@@ -1310,10 +1437,21 @@ function revenueAttachEvents() {
                 ? (new Date(d).getTime() >= quarterStart.getTime() ? 'Yes' : 'No')
                 : '';
 
+            // The three pipeline columns are APPENDED, never inserted. Anyone
+            // with a saved spreadsheet, a pivot table or a formula built on last
+            // month's export keeps working; inserting a column mid-table would
+            // silently move every one after it.
+            //
+            // Pipeline Value has its own column rather than going in Amount on
+            // purpose: Amount holds money that arrived, and a deal that might
+            // close is not that. Summing the Amount column has to stay a true
+            // answer to "what did I make".
             let csvContent = row([
                 'Type', 'Date', 'Amount', 'Currency', 'Source', 'Offer',
                 'Calls', 'Closes', 'Traffic', 'Social Audience',
-                'Counts Toward This Quarter', 'Notes'
+                'Counts Toward This Quarter', 'Notes',
+                'Contact Name', 'Stage', 'Pipeline Value',
+                'Likelihood', 'Expected Close Date', 'Next Step'
             ]);
 
             entries.forEach(e => {
@@ -1341,6 +1479,24 @@ function revenueAttachEvents() {
                     m.calls || 0, (m.closes === undefined || m.closes === null) ? '' : m.closes,
                     m.traffic || 0, m.social || 0,
                     inQuarter(m.date), ''
+                ]);
+            });
+
+            // The named pipeline. Dated by when the contact was created, so the
+            // quarter column means the same thing it does on every other row.
+            // Calls and Closes carry the same 1-or-0 the funnel counts, so a
+            // spreadsheet totalling those columns reaches the same figure the
+            // app shows rather than a different one.
+            (store.contacts || []).forEach(c => {
+                csvContent += row([
+                    'Contact', isoDate(c.createdAt), '', '',
+                    c.source || '', c.offer || '',
+                    (c.reached && c.reached['call-booked']) ? 1 : 0,
+                    c.stage === 'won' ? 1 : 0,
+                    '', '',
+                    inQuarter(c.createdAt), c.notes || '',
+                    c.name || '', stageLabelForCsv(c.stage), parseFloat(c.value) || 0,
+                    probabilityLabelForCsv(c.probability), c.closeDate || '', c.nextSteps || ''
                 ]);
             });
 

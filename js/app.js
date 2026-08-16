@@ -11,6 +11,7 @@ import { renderWizard } from './screens/wizard.js';
 import { renderDashboard } from './screens/dashboard.js';
 import { renderPlanner } from './screens/weeklyPlanner.js';
 import { renderRevenue } from './screens/revenue.js';
+import { renderPipeline } from './screens/pipeline.js';
 import { renderReview } from './screens/fridayReview.js';
 import { renderProgress } from './screens/progress.js';
 import { renderSettings } from './screens/settings.js';
@@ -118,6 +119,9 @@ function router() {
             break;
         case '#/revenue':
             appContainer.innerHTML = renderRevenue();
+            break;
+        case '#/pipeline':
+            appContainer.innerHTML = renderPipeline();
             break;
         case '#/review':
             appContainer.innerHTML = renderReview();
@@ -341,7 +345,12 @@ window.addEventListener('load', () => {
 
     // Confirm the trial is still valid against the database, not just localStorage
     lastRevalidatedAt = Date.now();
-    revalidateAccess();
+    // Check the session is real before checking what it is entitled to. Without
+    // this the app happily runs on a `ceo_auth` flag with no Supabase session
+    // behind it, and only admits something is wrong when the AI coach fails.
+    window.reconcileAuthState().then(signedIn => {
+        if (signedIn) revalidateAccess();
+    });
 
     // Bring in any Stripe sales that landed since last time, quietly and at most
     // once an hour. This is what makes "every sale appears here on its own" true:

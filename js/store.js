@@ -119,6 +119,15 @@ const defaultState = {
         quarterlyGoal: 0,
         entries: [] // Array of { id, date, amount, source }
     },
+    // The named lead pipeline. A different kind of thing from leads.entries
+    // above, which are bulk counters ("50 leads from the webinar"). One row here
+    // is one real person with a name, a stage and a follow-up date.
+    //
+    // They are ADDITIVE to leads.entries, not a replacement — the funnel already
+    // sums two sources (bulk entries and monthly snapshots) and this is a third.
+    // See getFunnelInsights for the split it hands back so the screens can show
+    // where each number came from.
+    contacts: [], // Array of { id, name, source, offer, value, stage, reached, followUpDate, notes }
     metrics: [], // Array of { id, date, traffic, calls, social }
     settings: {
         currency: '$'
@@ -132,6 +141,11 @@ const defaultState = {
     reviews: [], // Array of review objects
     monthlyReviews: [], // Array of monthly review objects
     dailyLogs: {}, // Dict of { "2023-11-20": [{text: "Task 1", done: false}, ...] }
+    // Which weekly plan each day's tasks were built from, as { "2023-11-20": "planId" }.
+    // Without it there is no way to tell a day's tasks are stale: rewriting the
+    // week's plan on a Monday left that morning's Daily 3 sitting there, still
+    // showing the actions from the plan the user had just replaced.
+    dailyLogSources: {},
     streak: 0, // Friday Review Streak
     planningStreak: 0, // Monday Plan Streak
     draftMondayPlan: null, // AI generated plan waiting for Monday
@@ -153,6 +167,7 @@ export function getStore() {
                 goals: { ...defaultState.goals, ...(parsed.goals || {}) },
                 revenue: { ...defaultState.revenue, ...(parsed.revenue || {}), quickOffers: parsed.revenue?.quickOffers || [] },
                 leads: { ...defaultState.leads, ...(parsed.leads || {}) },
+                contacts: parsed.contacts || [],
                 settings: { ...defaultState.settings, ...(parsed.settings || {}) },
                 metrics: parsed.metrics || [],
                 quarterStartDate: parsed.quarterStartDate || '',
@@ -161,6 +176,7 @@ export function getStore() {
                 reviews: parsed.reviews || [],
                 monthlyReviews: parsed.monthlyReviews || [],
                 dailyLogs: parsed.dailyLogs || {},
+                dailyLogSources: parsed.dailyLogSources || {},
                 draftMondayPlan: parsed.draftMondayPlan || null,
                 notes: parsed.notes || [],
                 setupChecklist: parsed.setupChecklist || [],
@@ -374,6 +390,316 @@ function mergeImportedSales(manualEntries, importedEntries) {
     return manualEntries.concat(flagged);
 }
 
+// ---------------------------------------------------------------------------
+// The named lead pipeline (Pro item 2)
+// ---------------------------------------------------------------------------
+//
+// Stages, in the order a deal actually travels. `lost` is at the end of the
+// list because that is where it belongs on screen, but it is an EXIT, not a
+// further step — see stageRank below, which deliberately gives it no rank.
+export const PIPELINE_STAGES = [
+    { key: 'lead', label: 'Lead', hint: 'In touch, nothing booked yet' },
+    { key: 'call-booked', label: 'Call booked', hint: 'A conversation is in the diary' },
+    { key: 'proposal', label: 'Proposal sent', hint: 'They have your offer and a price' },
+    { key: 'won', label: 'Won', hint: 'They said yes' },
+    { key: 'lost', label: 'Lost', hint: 'Not this time' }
+];
+
+// The stages where a deal is still live, so still worth a follow-up.
+export const PIPELINE_OPEN_STAGES = ['lead', 'call-booked', 'proposal'];
+
+// Where a lead or a sale came from, in ONE place. The Revenue sale form and the
+// pipeline both render this list, because they both feed getChannelFunnel(),
+// which groups channels by matching the text. Two lists meant "IG Story" typed
+// in one place and "Instagram" picked in the other became two rows in "Which
+// Channel Earns" — the alias-flagging code in getChannelFunnel exists to paper
+// over exactly that. A shared list removes the cause.
+//
+// "Other" stays last and is deliberately vague: it is better than someone
+// abandoning the form because their channel isn't listed.
+export const CONTACT_SOURCES = [
+    'Instagram', 'Facebook', 'X', 'Email', 'Live Session', 'DM Conversation',
+    'Referral', 'Website', 'TikTok', 'YouTube', 'Other'
+];
+
+// How likely this one is to land. Weights are for the forecast only.
+//
+// Deliberately NOT carrying "Won" and "Lost" as options, though the spreadsheet
+// this was modelled on does. An outcome is not a probability: a deal that is won
+// belongs at the Won stage, and having it in two fields is how a row ends up
+// reading "stage: Lead Generation, probability: Won, status: Contacted" — three
+// fields telling three different stories about one deal.
+export const PIPELINE_PROBABILITIES = [
+    { key: 'high', label: 'High', weight: 0.8 },
+    { key: 'medium', label: 'Medium', weight: 0.5 },
+    { key: 'low', label: 'Low', weight: 0.25 }
+];
+
+// null, not a default weight, when nothing has been chosen. Guessing "medium"
+// for every unset deal would produce a forecast built mostly out of assumptions
+// while looking exactly like one built out of answers.
+export function probabilityWeight(key) {
+    const found = PIPELINE_PROBABILITIES.find(p => p.key === key);
+    return found ? found.weight : null;
+}
+
+// The last day of the active 90-day quarter, or null if no quarter has started.
+//
+// 90 days, matching the product's own language ("your 90-day plan"), not the 84
+// that 12 weeks comes to. The pace maths in getRevenueInsights divides by 12
+// weeks; this window is six days longer. That is deliberate for a forecast —
+// dropping a deal expected on day 88 out of "expected this quarter" would be
+// wrong in the direction that matters.
+export function getQuarterEnd(store) {
+    const start = store?.quarterStartDate ? new Date(store.quarterStartDate) : null;
+    if (!start || !Number.isFinite(start.getTime())) return null;
+    const end = new Date(start);
+    end.setDate(end.getDate() + 90);
+    return end;
+}
+
+// How long without a stage change before a live deal counts as gone quiet.
+export const PIPELINE_COLD_DAYS = 14;
+
+// The forward ladder only. `lost` returns -1 on purpose: losing a deal is not
+// progress past "proposal sent", and ranking it as such would make moving
+// something to Lost wipe the record that a call ever happened.
+function stageRank(stage) {
+    const rank = { 'lead': 0, 'call-booked': 1, 'proposal': 2, 'won': 3 };
+    return rank[stage] === undefined ? -1 : rank[stage];
+}
+
+export function isValidStage(stage) {
+    return PIPELINE_STAGES.some(s => s.key === stage);
+}
+
+// A contact's `reached` map records the first time it entered each stage, and is
+// what the funnel counts calls from. It has to be separate from the current
+// stage: a deal that is now Won still had a call booked on the way, and counting
+// calls from the current stage alone would erase every call the moment it closed.
+//
+// Moving BACKWARDS down the forward ladder clears the marks above the new stage.
+// That is the correction path — mis-click "Won", drag it back to "Proposal", and
+// the close stops counting. Without it there would be no way to undo a mistake.
+function applyStageChange(contact, nextStage) {
+    contact.reached = contact.reached || {};
+
+    const nextRank = stageRank(nextStage);
+    if (nextRank >= 0) {
+        const highestReached = Math.max(
+            stageRank(contact.stage),
+            ...Object.keys(contact.reached).map(stageRank)
+        );
+        if (nextRank < highestReached) {
+            Object.keys(contact.reached).forEach(key => {
+                if (stageRank(key) > nextRank) delete contact.reached[key];
+            });
+        }
+        // Only the stages past "lead" are worth marking — every contact starts
+        // there, so a mark on it would say nothing.
+        if (nextRank > 0 && !contact.reached[nextStage]) {
+            contact.reached[nextStage] = new Date().toISOString();
+        }
+    }
+
+    contact.stage = nextStage;
+    contact.stageChangedAt = new Date().toISOString();
+}
+
+export function addContact(contact) {
+    const store = getStore();
+    store.contacts = store.contacts || [];
+
+    const now = new Date().toISOString();
+    const entry = {
+        id: 'c_' + Date.now().toString(),
+        name: String(contact.name || '').trim(),
+        source: String(contact.source || '').trim(),
+        offer: String(contact.offer || '').trim(),
+        value: parseFloat(contact.value) || 0,
+        // When you expect it to land, which is a different question from when to
+        // chase. Close date drives the forecast; follow-up date drives the
+        // nudge, and a deal can easily have one and not the other.
+        closeDate: contact.closeDate || '',
+        probability: probabilityWeight(contact.probability) === null ? '' : contact.probability,
+        // The short "what happens next", kept out of Notes on purpose. Notes is
+        // where everything ends up; this is the one line you act on.
+        nextSteps: String(contact.nextSteps || '').trim(),
+        followUpDate: contact.followUpDate || '',
+        notes: String(contact.notes || '').trim(),
+        createdAt: now,
+        stageChangedAt: now,
+        reached: {},
+        stage: 'lead'
+    };
+
+    // A contact can be added straight into a later stage — plenty of people
+    // start using this with a proposal already out. Routed through the same
+    // function as every other move so the reached marks are set once, in one
+    // place.
+    const startStage = isValidStage(contact.stage) ? contact.stage : 'lead';
+    applyStageChange(entry, startStage);
+
+    store.contacts.push(entry);
+    saveStore(store);
+    return entry;
+}
+
+export function updateContact(id, changes) {
+    const store = getStore();
+    const contact = (store.contacts || []).find(c => String(c.id) === String(id));
+    if (!contact) return null;
+
+    ['name', 'source', 'offer', 'notes', 'nextSteps'].forEach(field => {
+        if (changes[field] !== undefined) contact[field] = String(changes[field]).trim();
+    });
+    if (changes.value !== undefined) contact.value = parseFloat(changes.value) || 0;
+    if (changes.followUpDate !== undefined) contact.followUpDate = changes.followUpDate || '';
+    if (changes.closeDate !== undefined) contact.closeDate = changes.closeDate || '';
+    if (changes.probability !== undefined) {
+        // An unrecognised value clears rather than sticking. Better an admitted
+        // blank in the forecast than a weight nothing can explain.
+        contact.probability = probabilityWeight(changes.probability) === null ? '' : changes.probability;
+    }
+
+    if (changes.stage !== undefined && isValidStage(changes.stage) && changes.stage !== contact.stage) {
+        applyStageChange(contact, changes.stage);
+    }
+
+    saveStore(store);
+    return contact;
+}
+
+export function deleteContact(id) {
+    const store = getStore();
+    const initialLen = (store.contacts || []).length;
+    store.contacts = (store.contacts || []).filter(c => String(c.id) !== String(id));
+    saveStore(store);
+    return store.contacts.length < initialLen;
+}
+
+// The board's own shape: who sits in which column, who is due, who has gone
+// quiet, and what the live pipeline is worth.
+//
+// ⚠️ This function computes NO conversion rates and no funnel totals. Leads,
+// calls, closes and every rate between them come from getFunnelInsights, which
+// is the single source for all of it — the Revenue screen, the AI coach and the
+// executive report already read from there, and a second set of maths in here
+// would be a fourth opinion on numbers the app has spent three sessions getting
+// to agree. If the pipeline screen needs a rate, call getFunnelInsights.
+export function getPipelineInsights() {
+    const store = getStore();
+    const contacts = store.contacts || [];
+    const today = getLocalDateString();
+
+    const byStage = {};
+    PIPELINE_STAGES.forEach(s => { byStage[s.key] = []; });
+
+    const coldCutoff = Date.now() - (PIPELINE_COLD_DAYS * 24 * 60 * 60 * 1000);
+
+    const quarterEnd = getQuarterEnd(store);
+    const quarterEndKey = quarterEnd ? getLocalDateString(quarterEnd) : null;
+    const quarterStartKey = store.quarterStartDate
+        ? getLocalDateString(new Date(store.quarterStartDate))
+        : null;
+
+    const decorated = contacts.map(c => {
+        const stage = isValidStage(c.stage) ? c.stage : 'lead';
+        const isOpen = PIPELINE_OPEN_STAGES.includes(stage);
+        const movedAt = new Date(c.stageChangedAt || c.createdAt).getTime();
+        const weight = probabilityWeight(c.probability);
+        const value = parseFloat(c.value) || 0;
+
+        return {
+            ...c,
+            stage,
+            isOpen,
+            // Only live deals can be overdue or go quiet. A won deal sitting
+            // untouched for a month is finished business, not a warning.
+            followUpDue: !!(isOpen && c.followUpDate && c.followUpDate <= today),
+            // The date you said it would land has passed and it hasn't. Worth
+            // saying out loud — it is the difference between a pipeline and a
+            // list of hopeful names.
+            closeOverdue: !!(isOpen && c.closeDate && c.closeDate < today),
+            closesThisQuarter: !!(
+                isOpen && c.closeDate && quarterStartKey && quarterEndKey &&
+                c.closeDate >= quarterStartKey && c.closeDate <= quarterEndKey
+            ),
+            weight,
+            // null, never 0, when no confidence has been set. Zero would read as
+            // "worth nothing" in a total that is meant to say "not estimated".
+            weightedValue: weight === null ? null : value * weight,
+            isCold: !!(isOpen && Number.isFinite(movedAt) && movedAt < coldCutoff),
+            daysSinceMove: Number.isFinite(movedAt)
+                ? Math.floor((Date.now() - movedAt) / (24 * 60 * 60 * 1000))
+                : null
+        };
+    });
+
+    decorated.forEach(c => { byStage[c.stage].push(c); });
+
+    // Newest movement first inside each column, so the deal you touched this
+    // morning is at the top of the one you are looking at.
+    Object.keys(byStage).forEach(key => {
+        byStage[key].sort((a, b) =>
+            new Date(b.stageChangedAt || b.createdAt) - new Date(a.stageChangedAt || a.createdAt));
+    });
+
+    const open = decorated.filter(c => c.isOpen);
+    const weighted = open.filter(c => c.weightedValue !== null);
+    const inQuarter = open.filter(c => c.closesThisQuarter);
+    const inQuarterWeighted = inQuarter.filter(c => c.weightedValue !== null);
+
+    const followUpsDue = decorated
+        .filter(c => c.followUpDue)
+        .sort((a, b) => String(a.followUpDate).localeCompare(String(b.followUpDate)));
+    const closeOverdue = decorated
+        .filter(c => c.closeOverdue && !c.followUpDue)
+        .sort((a, b) => String(a.closeDate).localeCompare(String(b.closeDate)));
+    const goneQuiet = decorated
+        .filter(c => c.isCold && !c.followUpDue && !c.closeOverdue)
+        .sort((a, b) => (b.daysSinceMove || 0) - (a.daysSinceMove || 0));
+
+    return {
+        contacts: decorated,
+        byStage,
+        total: decorated.length,
+        openCount: open.length,
+        // ⚠️ Every money figure below is money that MIGHT arrive, and none of it
+        // is added to any revenue figure anywhere. The Revenue screen, the
+        // quarter progress and the projection report money that did arrive; a
+        // forecast leaking into those would undo the batch 2 projection fix.
+        //
+        // What the live pipeline is worth if every open deal lands.
+        openValue: open.reduce((sum, c) => sum + (parseFloat(c.value) || 0), 0),
+        // The same thing discounted by how likely each one is. Only deals with a
+        // confidence set are in it, because a forecast padded out with assumed
+        // weights looks identical to one built from real answers.
+        weightedValue: weighted.reduce((sum, c) => sum + c.weightedValue, 0),
+        weightedCount: weighted.length,
+        // The open deals with no confidence set, so the UI can admit the gap
+        // rather than quietly leaving them out of the number.
+        unweightedCount: open.length - weighted.length,
+        unweightedValue: open
+            .filter(c => c.weightedValue === null)
+            .reduce((sum, c) => sum + (parseFloat(c.value) || 0), 0),
+        // Expected to land before the 90 days are up, weighted. This is the one
+        // that answers "how much of my goal is already in motion".
+        expectedThisQuarter: inQuarterWeighted.reduce((sum, c) => sum + c.weightedValue, 0),
+        expectedThisQuarterCount: inQuarter.length,
+        // Open deals carrying no close date at all, so nothing pretends the
+        // forecast covers the whole pipeline when it covers part of it.
+        noCloseDateCount: open.filter(c => !c.closeDate).length,
+        followUpsDue,
+        closeOverdue,
+        goneQuiet,
+        // The one list to act on, already de-duplicated and in priority order:
+        // you said you'd chase them, then the date they were meant to land has
+        // passed, then they simply went quiet.
+        needsYou: [...followUpsDue, ...closeOverdue, ...goneQuiet]
+    };
+}
+
 // The funnel: visitors, calls booked, calls closed, and the rates between them.
 //
 // One place, because there were three. The Revenue screen worked it out inline,
@@ -392,20 +718,34 @@ export function getFunnelInsights() {
     const store = getStore();
     const leads = store.leads?.entries || [];
     const metrics = store.metrics || [];
+    const contacts = store.contacts || [];
 
     const snapshotTraffic = metrics.reduce((s, m) => s + (parseFloat(m.traffic) || 0), 0);
     const snapshotCalls = metrics.reduce((s, m) => s + (parseFloat(m.calls) || 0), 0);
     const snapshotCloses = metrics.reduce((s, m) => s + (parseFloat(m.closes) || 0), 0);
     const leadCalls = leads.reduce((s, l) => s + (parseFloat(l.calls) || 0), 0);
     const leadCloses = leads.reduce((s, l) => s + (parseFloat(l.closes) || 0), 0);
-    const totalLeads = leads.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
+    const bulkLeads = leads.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
 
-    const totalCalls = snapshotCalls + leadCalls;
-    const totalCloses = snapshotCloses + leadCloses;
+    // The named pipeline is the third source, sitting alongside the bulk lead
+    // entries and the monthly snapshots that this function already summed.
+    //
+    // One contact is one lead. A call counts once the contact has ever REACHED
+    // "call booked" — reading the current stage instead would delete every call
+    // the moment a deal closed. A close counts from the CURRENT stage being
+    // "won", which is what makes moving a mis-clicked win back undo it.
+    const contactLeads = contacts.length;
+    const contactCalls = contacts.filter(c => c.reached && c.reached['call-booked']).length;
+    const contactCloses = contacts.filter(c => c.stage === 'won').length;
+
+    const totalLeads = bulkLeads + contactLeads;
+    const totalCalls = snapshotCalls + leadCalls + contactCalls;
+    const totalCloses = snapshotCloses + leadCloses + contactCloses;
 
     const anyClosesEverLogged =
         leads.some(l => (parseFloat(l.closes) || 0) > 0) ||
-        metrics.some(m => (parseFloat(m.closes) || 0) > 0);
+        metrics.some(m => (parseFloat(m.closes) || 0) > 0) ||
+        contactCloses > 0;
 
     const callCloseRate = (totalCalls > 0 && anyClosesEverLogged)
         ? (Math.min(totalCloses, totalCalls) / totalCalls) * 100
@@ -421,6 +761,12 @@ export function getFunnelInsights() {
         snapshotCloses,
         leadCalls,
         leadCloses,
+        // The split, so a screen showing "62 leads" can say where the 62 came
+        // from. Two sources adding up is only confusing when it is invisible.
+        bulkLeads,
+        contactLeads,
+        contactCalls,
+        contactCloses,
         totalLeads,
         totalCalls,
         totalCloses,
@@ -456,6 +802,7 @@ export const NOT_ATTRIBUTED = 'Not attributed';
 export function getChannelFunnel() {
     const store = getStore();
     const leads = store.leads?.entries || [];
+    const contacts = store.contacts || [];
     const sales = getRevenueInsights().entries || [];
 
     const normalise = (s) => String(s || '').trim().toLowerCase();
@@ -476,6 +823,23 @@ export function getChannelFunnel() {
         r.calls += parseFloat(l.calls) || 0;
         r.closes += parseFloat(l.closes) || 0;
         if ((parseFloat(l.closes) || 0) > 0) r.hasClosesLogged = true;
+    });
+
+    // Named contacts break down by channel on exactly the rules getFunnelInsights
+    // uses — one lead each, a call once "call booked" was ever reached, a close
+    // while the current stage is "won". They are counted here as well as there
+    // because the two have to agree: a per-channel table that excluded the
+    // pipeline would quietly total less than the funnel card above it.
+    contacts.forEach(c => {
+        const key = normalise(c.source) || '__unattributed__';
+        const label = key === '__unattributed__' ? NOT_ATTRIBUTED : String(c.source).trim();
+        const r = bucket(key, label);
+        r.leads += 1;
+        if (c.reached && c.reached['call-booked']) r.calls += 1;
+        if (c.stage === 'won') {
+            r.closes += 1;
+            r.hasClosesLogged = true;
+        }
     });
 
     sales.forEach(s => {
@@ -608,6 +972,15 @@ export function getRevenueInsights() {
     const salesRequired = price > 0 ? Math.ceil(goal / price) : 0;
     const salesMade = price > 0 ? Math.floor(totalRevenue / price) : 0;
 
+    // The same question at the two horizons a founder can actually act on. Each
+    // is rounded up from that period's own share of the revenue goal rather
+    // than by dividing salesRequired, because a third of "5 sales" is not a
+    // number anyone can go and sell. Rounding up per period means the weekly
+    // figure can total slightly above the quarter, which is the right way round:
+    // it is a floor to clear, not a budget to spend.
+    const salesRequiredPerMonth = price > 0 ? Math.ceil((goal / 3) / price) : 0;
+    const salesRequiredPerWeek = price > 0 ? Math.ceil((goal / 12) / price) : 0;
+
     // Projects & Momentum
     const Q_WEEKS = 12;
     const entriesCount = entries.length;
@@ -718,8 +1091,15 @@ export function getRevenueInsights() {
         progressPercent: Math.min(100, progressPercent),
         monthProgressPercent: Math.min(100, monthProgressPercent),
         salesRequired,
+        salesRequiredPerMonth,
+        salesRequiredPerWeek,
         salesMade,
         salesRemaining: Math.max(0, salesRequired - salesMade),
+        // Whether the sales maths can be shown at all. Without an average offer
+        // price every figure above is 0, and a card reading "0 sales a week to
+        // hit your goal" is worse than no card.
+        hasOfferPrice: price > 0,
+        averageOfferPrice: price,
         projectedRevenue,
         weeklyTargetLength,
         weeksElapsed,
@@ -774,10 +1154,28 @@ export function updateWeeklyPlan(planId, updatedFields) {
     }
 }
 
-export function updateDailyLog(dateStr, tasks) {
+// `source` identifies the weekly plan the tasks came from, so a later render can
+// tell whether they still reflect the current plan. Omit it for tasks that did
+// not come from a plan at all.
+export function updateDailyLog(dateStr, tasks, source) {
     const store = getStore();
     store.dailyLogs[dateStr] = tasks;
+
+    if (source === undefined) {
+        delete store.dailyLogSources[dateStr];
+    } else {
+        store.dailyLogSources[dateStr] = source;
+    }
+
     saveStore(store);
+}
+
+// The identity of a weekly plan, for stamping onto a day's tasks. Plans made in
+// the Monday Plan flow have no id unless they came from a generated 90-day plan,
+// so fall back to the timestamp, which is rewritten every time the plan is saved.
+export function planSourceKey(plan) {
+    if (!plan) return undefined;
+    return String(plan.id || plan.date || '');
 }
 
 export function addReview(review) {
@@ -956,6 +1354,10 @@ export function resetQuarter(reflection = null) {
         revenueGoal: store.revenue?.quarterlyGoal || 0,
         leadEntries: [...(store.leads?.entries || [])],
         leadGoal: store.leads?.quarterlyGoal || 0,
+        // Only the finished deals. The open ones are carried into the new
+        // quarter below rather than archived, so this is the whole record of
+        // them and nothing is in two places at once.
+        contacts: (store.contacts || []).filter(c => c.stage === 'won' || c.stage === 'lost'),
         metrics: [...(store.metrics || [])],
         weeklyPlans: [...(store.weeklyPlans || [])],
         reviewsCount: store.reviews.length,
@@ -982,6 +1384,13 @@ export function resetQuarter(reflection = null) {
         store.leads.entries = [];
     }
     store.metrics = [];
+
+    // Contacts are the one thing that does NOT get cleared wholesale. A deal
+    // still sitting at "proposal sent" on the last day of the quarter is a live
+    // conversation with a real person, and deleting it because the calendar
+    // turned over would be the app throwing away her actual work. Won and lost
+    // are settled, so those go to the archive above and leave here.
+    store.contacts = (store.contacts || []).filter(c => c.stage !== 'won' && c.stage !== 'lost');
 
     // Clear weekly plans for the new quarter start, keep reviews for wins history
     store.weeklyPlans = [];

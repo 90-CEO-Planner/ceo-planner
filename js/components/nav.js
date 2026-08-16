@@ -1,6 +1,6 @@
 // nav.js
 import { getStore } from '../store.js';
-import { isProTrial, trialDaysLeft, anyProFeatureLive } from './proGate.js';
+import { isProTrial, trialDaysLeft, anyProFeatureLive, canUseLeadPipeline } from './proGate.js';
 
 // Signs the user out properly. The old inline handler cleared localStorage but
 // never called signOut, so the Supabase sb-*-auth-token survived: the next person
@@ -43,6 +43,21 @@ function renderPlanPill() {
     return `<a href="#/account" class="nav-plan-pill" title="See your plan and choose one whenever you're ready">${label}</a>`;
 }
 
+// The Pipeline link, for accounts that can actually open it.
+//
+// Deliberately NOT shown to base accounts. The rule elsewhere in the app is that
+// base users SEE Pro features where they would naturally use them — but that
+// means at the point of the job, which for this one is the teaser on Revenue.
+// A permanent nav entry leading to a wall is the same nag the base-tier "See
+// what's in Pro" pill was dropped for.
+//
+// It also keeps the nav's widest case to the Pro one, which is the case to
+// measure the breakpoint against.
+function renderPipelineLink() {
+    if (!canUseLeadPipeline()) return '';
+    return `<a href="#/pipeline" class="nav-link" id="nav-pipeline">Pipeline</a>`;
+}
+
 export function renderNav() {
     const store = getStore();
     const bName = store.profile?.businessName || 'CEO Planner';
@@ -64,6 +79,7 @@ export function renderNav() {
                 <a href="#/roadmap" class="nav-link" id="nav-roadmap">90-Day Plan</a>
                 <a href="#/planner" class="nav-link" id="nav-planner">Weekly Plan</a>
                 <a href="#/revenue" class="nav-link" id="nav-revenue">Revenue</a>
+                ${renderPipelineLink()}
                 <a href="#/review" class="nav-link" id="nav-review">Friday Review</a>
                 <a href="#/coach" class="nav-link" id="nav-coach">Notepad</a>
                 <a href="#/monthly-review" class="nav-link" id="nav-monthly-review">Monthly Review</a>

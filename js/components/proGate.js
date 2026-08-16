@@ -37,7 +37,9 @@ export const PRO_FEATURES = {
         blurb: 'Connect Stripe once and every sale appears here on its own, at the moment it happens. No manual entry, no forgotten Tuesday, and every rate on this page becomes something you can actually trust. (PayPal coming soon)'
     },
     'lead-pipeline': {
-        shipped: false,
+        // Shipped 16 Aug 2026. Lives on its own screen at #/pipeline, with the
+        // nav link rendered only for accounts that have it.
+        shipped: true,
         title: 'A real lead pipeline',
         blurb: 'Named contacts instead of a running count. Move each one through lead, call booked, proposal sent, won or lost, set a follow-up date, and see at a glance who has gone quiet on you.'
     },
@@ -152,6 +154,16 @@ export function trialDaysLeft() {
     const ms = new Date(endsAt).getTime() - Date.now();
     if (Number.isNaN(ms)) return null;
     return Math.max(0, Math.ceil(ms / 86400000));
+}
+
+// Can this account open the lead pipeline screen?
+//
+// One answer, asked by three places: the nav link, the screen's own guard, and
+// the Revenue card that either links into it or advertises it. Two copies of
+// this rule would eventually disagree, and the failure mode is a nav link
+// pointing at a locked screen — the exact shape of the canConnectStripe bug.
+export function canUseLeadPipeline() {
+    return isProUser() && isFeatureLive('lead-pipeline');
 }
 
 // A small "PRO" chip, for sitting next to a heading or a label.

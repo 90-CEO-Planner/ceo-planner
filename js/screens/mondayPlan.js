@@ -1,4 +1,4 @@
-import { getStore, addWeeklyPlan, updateWeeklyPlan, getRevenueInsights, clearDraftMondayPlan, getLocalDateString, updateDailyLog } from '../store.js';
+import { getStore, addWeeklyPlan, updateWeeklyPlan, getRevenueInsights, clearDraftMondayPlan, getLocalDateString, updateDailyLog, planSourceKey } from '../store.js';
 
 let mondayStep = 1;
 const MONDAY_TOTAL_STEPS = 5;
@@ -363,10 +363,13 @@ function mondayPlanAttachEvents() {
                 addWeeklyPlan(newPlan);
             }
 
-            // 2.5 Save the specific tasks for Monday immediately into the daily log
+            // 2.5 Save the specific tasks for Monday immediately into the daily
+            // log, stamped with the plan they came from so the dashboard can tell
+            // later whether they still match. addWeeklyPlan sets `id` and `date`
+            // on this same object, so the key is read after saving, not before.
             const todayStr = getLocalDateString();
             const cleanTasks = mondayPlanData.daily3.map(t => ({ text: t, done: false }));
-            updateDailyLog(todayStr, cleanTasks);
+            updateDailyLog(todayStr, cleanTasks, planSourceKey(newPlan));
 
             // 3. Reset internal state for next week
             mondayStep = 1;

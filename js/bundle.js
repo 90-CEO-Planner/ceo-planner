@@ -260,12 +260,264 @@ window.readFunctionError = async function readFunctionError(error) {
     try {
         if (error && error.context && typeof error.context.json === 'function') {
             const body = await error.context.json();
+            // Our own functions answer with { error }. The Supabase gateway
+            // rejects a bad JWT before the function runs and answers with
+            // { message } instead, which used to fall through to the generic
+            // "non-2xx status code" text.
             if (body && body.error) return body.error;
+            if (body && body.message) return body.message;
         }
     } catch (err) {
         // Body wasn't readable, fall back to the generic message below
     }
+
+    // A transport failure has no response to read. supabase-js words this as
+    // "Failed to send a request to the Edge Function", which tells a customer
+    // nothing and reads like the app is broken rather than the connection.
+    if (error && error.name === 'FunctionsFetchError') {
+        return 'Could not reach the AI coach. Check your connection and try again.';
+    }
+
     return (error && error.message) || 'Something went wrong. Please try again.';
+};
+
+// Reads the session supabase-js persisted, without going through the SDK.
+//
+// Needed because `auth.getSession()` is not reliable enough on its own to
+// declare somebody signed out. It serialises through a navigator lock shared by
+// every tab of the app, so with two tabs open — each running its own hourly
+// token refresh — a call can come back empty while a perfectly good session is
+// sitting in storage. Trusting that empty answer is what told a signed-in user
+// her session had expired.
+// Every localStorage key that looks like a supabase-js auth session. Found by
+// shape rather than by asking the SDK for `storageKey`, because the CDN tag in
+// index.html is an unpinned `@2` — the exact build, and what it chooses to
+// expose, can change without this app shipping anything.
+function findAuthStorageKeys() {
+    const keys = [];
+    try {
+        const declared = window.db && window.db.auth && window.db.auth.storageKey;
+        if (declared) keys.push(declared);
+
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k && k.startsWith('sb-') && k.endsWith('-auth-token') && keys.indexOf(k) === -1) {
+                keys.push(k);
+            }
+        }
+    } catch (err) {
+        // Storage unavailable (private mode, blocked cookies). Nothing to find.
+    }
+    return keys;
+}
+
+function tokenFromStorage(trace) {
+    const keys = findAuthStorageKeys();
+    if (keys.length === 0) {
+        trace.push('storage: no sb-*-auth-token key present');
+        return null;
+    }
+
+    for (const key of keys) {
+        try {
+            const raw = localStorage.getItem(key);
+            if (!raw) continue;
+
+            // v2 stores the session at the top level; older releases nested it
+            // under currentSession. Read both so a returning user is not signed
+            // out by a storage shape we did not expect.
+            const parsed = JSON.parse(raw);
+            const session = (parsed && parsed.currentSession) || parsed;
+            if (!session || !session.access_token) {
+                trace.push(`storage(${key}): no access_token in the stored value`);
+                continue;
+            }
+
+            // An expired token is worse than none: the function rejects it and
+            // the customer is told to sign in for a session that only needed
+            // refreshing.
+            if (session.expires_at && (session.expires_at * 1000) <= Date.now()) {
+                trace.push(`storage(${key}): token expired`);
+                continue;
+            }
+
+            return session.access_token;
+        } catch (err) {
+            trace.push(`storage(${key}): unreadable (${err.message})`);
+        }
+    }
+    return null;
+}
+
+// Asks for a brand new access token. Kept separate because it rotates the
+// refresh token, so it is a last resort rather than a routine step — two tabs
+// racing to rotate the same token is one of the ways a healthy session starts
+// looking broken.
+async function forceRefreshToken(trace) {
+    try {
+        const { data, error } = await window.db.auth.refreshSession();
+        if (data && data.session && data.session.access_token) {
+            return data.session.access_token;
+        }
+        if (trace) trace.push('refreshSession: ' + (error ? error.message : 'returned no session'));
+    } catch (err) {
+        if (trace) trace.push('refreshSession threw: ' + err.message);
+    }
+    return null;
+}
+
+// Resolves the signed-in user's access token.
+//
+// Passing this explicitly matters because supabase-js will not tell you when it
+// has no session: `_getAccessToken()` ends with `?? this.supabaseKey`, so it
+// quietly sends the public anon key instead. The anon key is a valid JWT with
+// no `sub` claim, so the chat function rejects it as a bad token.
+//
+// The order below is deliberate — ask the SDK, fall back to what it stored, and
+// only then rotate the token.
+// Telling a signed-in user to sign in is a dead end for her and a mystery for
+// whoever has to fix it, so when all three routes fail the reason each one gave
+// is written to the console. Names of storage keys and error text only — never
+// a token.
+async function getAccessToken() {
+    const trace = [];
+
+    try {
+        const { data, error } = await window.db.auth.getSession();
+        if (data && data.session && data.session.access_token) {
+            return data.session.access_token;
+        }
+        trace.push('getSession: ' + (error ? error.message : 'returned no session'));
+    } catch (err) {
+        trace.push('getSession threw: ' + err.message);
+    }
+
+    const stored = tokenFromStorage(trace);
+    if (stored) return stored;
+
+    const refreshed = await forceRefreshToken(trace);
+    if (refreshed) return refreshed;
+
+    console.warn(
+        '[CEO Planner] No access token for the AI request.\n' +
+        trace.map(t => '  - ' + t).join('\n') +
+        '\n  - localStorage keys: ' + Object.keys(localStorage).join(', ')
+    );
+    return null;
+}
+
+// Brings the app's idea of being logged in back in line with reality.
+//
+// The login gate is a localStorage flag, `ceo_auth`, written at sign-in and
+// never checked against the actual Supabase session again (js/app.js:35). The
+// two drift apart easily: clearing site data, a refresh token that expired or
+// was rotated away by another device, or signing in on a different port during
+// development. The flag still says "true", so every screen renders happily from
+// cached data and the app looks completely signed in — until the first thing
+// that genuinely needs the server, the AI coach, fails. That mismatch is the
+// whole story behind being told your session expired while looking at a screen
+// full of your own numbers.
+//
+// Deliberately hard to trigger. A session that is merely slow, held by another
+// tab's lock, or briefly unreadable still leaves a usable token for
+// getAccessToken to find, and returns here as signed in. Offline is excluded
+// outright: a failed refresh with no network says nothing about the session.
+// Only a browser that is online and has no Supabase session anywhere is treated
+// as signed out.
+//
+// The planner data in localStorage is left alone. It may hold work that never
+// reached the server, and it is restored on the next sign-in.
+window.reconcileAuthState = async function reconcileAuthState() {
+    if (localStorage.getItem('ceo_auth') !== 'true') return true;
+    if (navigator.onLine === false) return true;
+
+    const token = await getAccessToken();
+    if (token) return true;
+
+    console.warn('[CEO Planner] Locally signed in, but this browser has no Supabase session. Sending you to sign in again.');
+
+    ['ceo_auth', 'ceo_sub_status', 'ceo_plan_tier', 'ceo_trial_ends_at']
+        .forEach(key => localStorage.removeItem(key));
+
+    window.location.hash = '#/login';
+    return false;
+};
+
+// The single way the app talks to the `chat` edge function.
+//
+// Every AI feature used to call window.db.functions.invoke directly, which left
+// two failure modes reaching customers as raw SDK text:
+//
+//   1. The function is invoked rarely enough to be cold almost every time, and
+//      a cold worker occasionally fails to boot. The preflight then answers 502
+//      and supabase-js reports "Failed to send a request to the Edge Function".
+//      One retry clears it — the second attempt boots in around 20ms.
+//   2. No session meant the anon key went out and came back 401 (see above).
+//
+// Both are recovered from here rather than shown to the customer. Telling
+// somebody to sign in is the last thing this does, not the first: every route
+// to a fresh token is tried before the request is given up on.
+//
+// Returns the OpenAI response body, or throws an Error whose message is safe to
+// show the customer.
+window.invokeChat = async function invokeChat(messages) {
+    let token = await getAccessToken();
+    if (!token) {
+        throw new Error('Your session has expired. Please sign in again to use the AI coach.');
+    }
+
+    let lastError = null;
+    let transportRetries = 0;
+    let tokenRefreshed = false;
+
+    // At most three: the first, one for a cold worker, one for a stale token.
+    for (let attempt = 0; attempt < 3; attempt++) {
+        // Passing the token explicitly rather than trusting the SDK to attach
+        // it, so this can never fall back to the anon key behind our backs.
+        const { data, error } = await window.db.functions.invoke('chat', {
+            body: { messages },
+            headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (!error) {
+            if (data && data.error) {
+                throw new Error(data.error.message || data.error);
+            }
+            return data;
+        }
+
+        lastError = error;
+
+        // A transport failure never reached the server, so nothing was charged
+        // against the daily AI allowance and the cold-boot case is worth one
+        // more go.
+        if (error.name === 'FunctionsFetchError' && transportRetries === 0) {
+            transportRetries++;
+            await new Promise(resolve => setTimeout(resolve, 1200));
+            continue;
+        }
+
+        // 401 means the token was not accepted. Reading .status does not consume
+        // the response body, so readFunctionError can still report the real
+        // message if the retry fails too. Rotating the token and trying once
+        // more beats telling a plainly signed-in user to sign in.
+        const status = error.context && error.context.status;
+        if (status === 401 && !tokenRefreshed) {
+            tokenRefreshed = true;
+            const fresh = await forceRefreshToken();
+            if (fresh) {
+                token = fresh;
+                continue;
+            }
+        }
+
+        // Any other response — 402, 429, 503 — is a real decision from the
+        // server. Repeating it would burn a second call off the quota for the
+        // same refusal.
+        break;
+    }
+
+    throw new Error(await window.readFunctionError(lastError));
 };
 
 // The statuses that lock someone out of the app.
@@ -396,6 +648,15 @@ const defaultState = {
         quarterlyGoal: 0,
         entries: [] // Array of { id, date, amount, source }
     },
+    // The named lead pipeline. A different kind of thing from leads.entries
+    // above, which are bulk counters ("50 leads from the webinar"). One row here
+    // is one real person with a name, a stage and a follow-up date.
+    //
+    // They are ADDITIVE to leads.entries, not a replacement — the funnel already
+    // sums two sources (bulk entries and monthly snapshots) and this is a third.
+    // See getFunnelInsights for the split it hands back so the screens can show
+    // where each number came from.
+    contacts: [], // Array of { id, name, source, offer, value, stage, reached, followUpDate, notes }
     metrics: [], // Array of { id, date, traffic, calls, social }
     settings: {
         currency: '$'
@@ -409,6 +670,11 @@ const defaultState = {
     reviews: [], // Array of review objects
     monthlyReviews: [], // Array of monthly review objects
     dailyLogs: {}, // Dict of { "2023-11-20": [{text: "Task 1", done: false}, ...] }
+    // Which weekly plan each day's tasks were built from, as { "2023-11-20": "planId" }.
+    // Without it there is no way to tell a day's tasks are stale: rewriting the
+    // week's plan on a Monday left that morning's Daily 3 sitting there, still
+    // showing the actions from the plan the user had just replaced.
+    dailyLogSources: {},
     streak: 0, // Friday Review Streak
     planningStreak: 0, // Monday Plan Streak
     draftMondayPlan: null, // AI generated plan waiting for Monday
@@ -430,6 +696,7 @@ function getStore() {
                 goals: { ...defaultState.goals, ...(parsed.goals || {}) },
                 revenue: { ...defaultState.revenue, ...(parsed.revenue || {}), quickOffers: parsed.revenue?.quickOffers || [] },
                 leads: { ...defaultState.leads, ...(parsed.leads || {}) },
+                contacts: parsed.contacts || [],
                 settings: { ...defaultState.settings, ...(parsed.settings || {}) },
                 metrics: parsed.metrics || [],
                 quarterStartDate: parsed.quarterStartDate || '',
@@ -438,6 +705,7 @@ function getStore() {
                 reviews: parsed.reviews || [],
                 monthlyReviews: parsed.monthlyReviews || [],
                 dailyLogs: parsed.dailyLogs || {},
+                dailyLogSources: parsed.dailyLogSources || {},
                 draftMondayPlan: parsed.draftMondayPlan || null,
                 notes: parsed.notes || [],
                 setupChecklist: parsed.setupChecklist || [],
@@ -651,6 +919,316 @@ function mergeImportedSales(manualEntries, importedEntries) {
     return manualEntries.concat(flagged);
 }
 
+// ---------------------------------------------------------------------------
+// The named lead pipeline (Pro item 2)
+// ---------------------------------------------------------------------------
+//
+// Stages, in the order a deal actually travels. `lost` is at the end of the
+// list because that is where it belongs on screen, but it is an EXIT, not a
+// further step — see stageRank below, which deliberately gives it no rank.
+const PIPELINE_STAGES = [
+    { key: 'lead', label: 'Lead', hint: 'In touch, nothing booked yet' },
+    { key: 'call-booked', label: 'Call booked', hint: 'A conversation is in the diary' },
+    { key: 'proposal', label: 'Proposal sent', hint: 'They have your offer and a price' },
+    { key: 'won', label: 'Won', hint: 'They said yes' },
+    { key: 'lost', label: 'Lost', hint: 'Not this time' }
+];
+
+// The stages where a deal is still live, so still worth a follow-up.
+const PIPELINE_OPEN_STAGES = ['lead', 'call-booked', 'proposal'];
+
+// Where a lead or a sale came from, in ONE place. The Revenue sale form and the
+// pipeline both render this list, because they both feed getChannelFunnel(),
+// which groups channels by matching the text. Two lists meant "IG Story" typed
+// in one place and "Instagram" picked in the other became two rows in "Which
+// Channel Earns" — the alias-flagging code in getChannelFunnel exists to paper
+// over exactly that. A shared list removes the cause.
+//
+// "Other" stays last and is deliberately vague: it is better than someone
+// abandoning the form because their channel isn't listed.
+const CONTACT_SOURCES = [
+    'Instagram', 'Facebook', 'X', 'Email', 'Live Session', 'DM Conversation',
+    'Referral', 'Website', 'TikTok', 'YouTube', 'Other'
+];
+
+// How likely this one is to land. Weights are for the forecast only.
+//
+// Deliberately NOT carrying "Won" and "Lost" as options, though the spreadsheet
+// this was modelled on does. An outcome is not a probability: a deal that is won
+// belongs at the Won stage, and having it in two fields is how a row ends up
+// reading "stage: Lead Generation, probability: Won, status: Contacted" — three
+// fields telling three different stories about one deal.
+const PIPELINE_PROBABILITIES = [
+    { key: 'high', label: 'High', weight: 0.8 },
+    { key: 'medium', label: 'Medium', weight: 0.5 },
+    { key: 'low', label: 'Low', weight: 0.25 }
+];
+
+// null, not a default weight, when nothing has been chosen. Guessing "medium"
+// for every unset deal would produce a forecast built mostly out of assumptions
+// while looking exactly like one built out of answers.
+function probabilityWeight(key) {
+    const found = PIPELINE_PROBABILITIES.find(p => p.key === key);
+    return found ? found.weight : null;
+}
+
+// The last day of the active 90-day quarter, or null if no quarter has started.
+//
+// 90 days, matching the product's own language ("your 90-day plan"), not the 84
+// that 12 weeks comes to. The pace maths in getRevenueInsights divides by 12
+// weeks; this window is six days longer. That is deliberate for a forecast —
+// dropping a deal expected on day 88 out of "expected this quarter" would be
+// wrong in the direction that matters.
+function getQuarterEnd(store) {
+    const start = store?.quarterStartDate ? new Date(store.quarterStartDate) : null;
+    if (!start || !Number.isFinite(start.getTime())) return null;
+    const end = new Date(start);
+    end.setDate(end.getDate() + 90);
+    return end;
+}
+
+// How long without a stage change before a live deal counts as gone quiet.
+const PIPELINE_COLD_DAYS = 14;
+
+// The forward ladder only. `lost` returns -1 on purpose: losing a deal is not
+// progress past "proposal sent", and ranking it as such would make moving
+// something to Lost wipe the record that a call ever happened.
+function stageRank(stage) {
+    const rank = { 'lead': 0, 'call-booked': 1, 'proposal': 2, 'won': 3 };
+    return rank[stage] === undefined ? -1 : rank[stage];
+}
+
+function isValidStage(stage) {
+    return PIPELINE_STAGES.some(s => s.key === stage);
+}
+
+// A contact's `reached` map records the first time it entered each stage, and is
+// what the funnel counts calls from. It has to be separate from the current
+// stage: a deal that is now Won still had a call booked on the way, and counting
+// calls from the current stage alone would erase every call the moment it closed.
+//
+// Moving BACKWARDS down the forward ladder clears the marks above the new stage.
+// That is the correction path — mis-click "Won", drag it back to "Proposal", and
+// the close stops counting. Without it there would be no way to undo a mistake.
+function applyStageChange(contact, nextStage) {
+    contact.reached = contact.reached || {};
+
+    const nextRank = stageRank(nextStage);
+    if (nextRank >= 0) {
+        const highestReached = Math.max(
+            stageRank(contact.stage),
+            ...Object.keys(contact.reached).map(stageRank)
+        );
+        if (nextRank < highestReached) {
+            Object.keys(contact.reached).forEach(key => {
+                if (stageRank(key) > nextRank) delete contact.reached[key];
+            });
+        }
+        // Only the stages past "lead" are worth marking — every contact starts
+        // there, so a mark on it would say nothing.
+        if (nextRank > 0 && !contact.reached[nextStage]) {
+            contact.reached[nextStage] = new Date().toISOString();
+        }
+    }
+
+    contact.stage = nextStage;
+    contact.stageChangedAt = new Date().toISOString();
+}
+
+function addContact(contact) {
+    const store = getStore();
+    store.contacts = store.contacts || [];
+
+    const now = new Date().toISOString();
+    const entry = {
+        id: 'c_' + Date.now().toString(),
+        name: String(contact.name || '').trim(),
+        source: String(contact.source || '').trim(),
+        offer: String(contact.offer || '').trim(),
+        value: parseFloat(contact.value) || 0,
+        // When you expect it to land, which is a different question from when to
+        // chase. Close date drives the forecast; follow-up date drives the
+        // nudge, and a deal can easily have one and not the other.
+        closeDate: contact.closeDate || '',
+        probability: probabilityWeight(contact.probability) === null ? '' : contact.probability,
+        // The short "what happens next", kept out of Notes on purpose. Notes is
+        // where everything ends up; this is the one line you act on.
+        nextSteps: String(contact.nextSteps || '').trim(),
+        followUpDate: contact.followUpDate || '',
+        notes: String(contact.notes || '').trim(),
+        createdAt: now,
+        stageChangedAt: now,
+        reached: {},
+        stage: 'lead'
+    };
+
+    // A contact can be added straight into a later stage — plenty of people
+    // start using this with a proposal already out. Routed through the same
+    // function as every other move so the reached marks are set once, in one
+    // place.
+    const startStage = isValidStage(contact.stage) ? contact.stage : 'lead';
+    applyStageChange(entry, startStage);
+
+    store.contacts.push(entry);
+    saveStore(store);
+    return entry;
+}
+
+function updateContact(id, changes) {
+    const store = getStore();
+    const contact = (store.contacts || []).find(c => String(c.id) === String(id));
+    if (!contact) return null;
+
+    ['name', 'source', 'offer', 'notes', 'nextSteps'].forEach(field => {
+        if (changes[field] !== undefined) contact[field] = String(changes[field]).trim();
+    });
+    if (changes.value !== undefined) contact.value = parseFloat(changes.value) || 0;
+    if (changes.followUpDate !== undefined) contact.followUpDate = changes.followUpDate || '';
+    if (changes.closeDate !== undefined) contact.closeDate = changes.closeDate || '';
+    if (changes.probability !== undefined) {
+        // An unrecognised value clears rather than sticking. Better an admitted
+        // blank in the forecast than a weight nothing can explain.
+        contact.probability = probabilityWeight(changes.probability) === null ? '' : changes.probability;
+    }
+
+    if (changes.stage !== undefined && isValidStage(changes.stage) && changes.stage !== contact.stage) {
+        applyStageChange(contact, changes.stage);
+    }
+
+    saveStore(store);
+    return contact;
+}
+
+function deleteContact(id) {
+    const store = getStore();
+    const initialLen = (store.contacts || []).length;
+    store.contacts = (store.contacts || []).filter(c => String(c.id) !== String(id));
+    saveStore(store);
+    return store.contacts.length < initialLen;
+}
+
+// The board's own shape: who sits in which column, who is due, who has gone
+// quiet, and what the live pipeline is worth.
+//
+// ⚠️ This function computes NO conversion rates and no funnel totals. Leads,
+// calls, closes and every rate between them come from getFunnelInsights, which
+// is the single source for all of it — the Revenue screen, the AI coach and the
+// executive report already read from there, and a second set of maths in here
+// would be a fourth opinion on numbers the app has spent three sessions getting
+// to agree. If the pipeline screen needs a rate, call getFunnelInsights.
+function getPipelineInsights() {
+    const store = getStore();
+    const contacts = store.contacts || [];
+    const today = getLocalDateString();
+
+    const byStage = {};
+    PIPELINE_STAGES.forEach(s => { byStage[s.key] = []; });
+
+    const coldCutoff = Date.now() - (PIPELINE_COLD_DAYS * 24 * 60 * 60 * 1000);
+
+    const quarterEnd = getQuarterEnd(store);
+    const quarterEndKey = quarterEnd ? getLocalDateString(quarterEnd) : null;
+    const quarterStartKey = store.quarterStartDate
+        ? getLocalDateString(new Date(store.quarterStartDate))
+        : null;
+
+    const decorated = contacts.map(c => {
+        const stage = isValidStage(c.stage) ? c.stage : 'lead';
+        const isOpen = PIPELINE_OPEN_STAGES.includes(stage);
+        const movedAt = new Date(c.stageChangedAt || c.createdAt).getTime();
+        const weight = probabilityWeight(c.probability);
+        const value = parseFloat(c.value) || 0;
+
+        return {
+            ...c,
+            stage,
+            isOpen,
+            // Only live deals can be overdue or go quiet. A won deal sitting
+            // untouched for a month is finished business, not a warning.
+            followUpDue: !!(isOpen && c.followUpDate && c.followUpDate <= today),
+            // The date you said it would land has passed and it hasn't. Worth
+            // saying out loud — it is the difference between a pipeline and a
+            // list of hopeful names.
+            closeOverdue: !!(isOpen && c.closeDate && c.closeDate < today),
+            closesThisQuarter: !!(
+                isOpen && c.closeDate && quarterStartKey && quarterEndKey &&
+                c.closeDate >= quarterStartKey && c.closeDate <= quarterEndKey
+            ),
+            weight,
+            // null, never 0, when no confidence has been set. Zero would read as
+            // "worth nothing" in a total that is meant to say "not estimated".
+            weightedValue: weight === null ? null : value * weight,
+            isCold: !!(isOpen && Number.isFinite(movedAt) && movedAt < coldCutoff),
+            daysSinceMove: Number.isFinite(movedAt)
+                ? Math.floor((Date.now() - movedAt) / (24 * 60 * 60 * 1000))
+                : null
+        };
+    });
+
+    decorated.forEach(c => { byStage[c.stage].push(c); });
+
+    // Newest movement first inside each column, so the deal you touched this
+    // morning is at the top of the one you are looking at.
+    Object.keys(byStage).forEach(key => {
+        byStage[key].sort((a, b) =>
+            new Date(b.stageChangedAt || b.createdAt) - new Date(a.stageChangedAt || a.createdAt));
+    });
+
+    const open = decorated.filter(c => c.isOpen);
+    const weighted = open.filter(c => c.weightedValue !== null);
+    const inQuarter = open.filter(c => c.closesThisQuarter);
+    const inQuarterWeighted = inQuarter.filter(c => c.weightedValue !== null);
+
+    const followUpsDue = decorated
+        .filter(c => c.followUpDue)
+        .sort((a, b) => String(a.followUpDate).localeCompare(String(b.followUpDate)));
+    const closeOverdue = decorated
+        .filter(c => c.closeOverdue && !c.followUpDue)
+        .sort((a, b) => String(a.closeDate).localeCompare(String(b.closeDate)));
+    const goneQuiet = decorated
+        .filter(c => c.isCold && !c.followUpDue && !c.closeOverdue)
+        .sort((a, b) => (b.daysSinceMove || 0) - (a.daysSinceMove || 0));
+
+    return {
+        contacts: decorated,
+        byStage,
+        total: decorated.length,
+        openCount: open.length,
+        // ⚠️ Every money figure below is money that MIGHT arrive, and none of it
+        // is added to any revenue figure anywhere. The Revenue screen, the
+        // quarter progress and the projection report money that did arrive; a
+        // forecast leaking into those would undo the batch 2 projection fix.
+        //
+        // What the live pipeline is worth if every open deal lands.
+        openValue: open.reduce((sum, c) => sum + (parseFloat(c.value) || 0), 0),
+        // The same thing discounted by how likely each one is. Only deals with a
+        // confidence set are in it, because a forecast padded out with assumed
+        // weights looks identical to one built from real answers.
+        weightedValue: weighted.reduce((sum, c) => sum + c.weightedValue, 0),
+        weightedCount: weighted.length,
+        // The open deals with no confidence set, so the UI can admit the gap
+        // rather than quietly leaving them out of the number.
+        unweightedCount: open.length - weighted.length,
+        unweightedValue: open
+            .filter(c => c.weightedValue === null)
+            .reduce((sum, c) => sum + (parseFloat(c.value) || 0), 0),
+        // Expected to land before the 90 days are up, weighted. This is the one
+        // that answers "how much of my goal is already in motion".
+        expectedThisQuarter: inQuarterWeighted.reduce((sum, c) => sum + c.weightedValue, 0),
+        expectedThisQuarterCount: inQuarter.length,
+        // Open deals carrying no close date at all, so nothing pretends the
+        // forecast covers the whole pipeline when it covers part of it.
+        noCloseDateCount: open.filter(c => !c.closeDate).length,
+        followUpsDue,
+        closeOverdue,
+        goneQuiet,
+        // The one list to act on, already de-duplicated and in priority order:
+        // you said you'd chase them, then the date they were meant to land has
+        // passed, then they simply went quiet.
+        needsYou: [...followUpsDue, ...closeOverdue, ...goneQuiet]
+    };
+}
+
 // The funnel: visitors, calls booked, calls closed, and the rates between them.
 //
 // One place, because there were three. The Revenue screen worked it out inline,
@@ -669,20 +1247,34 @@ function getFunnelInsights() {
     const store = getStore();
     const leads = store.leads?.entries || [];
     const metrics = store.metrics || [];
+    const contacts = store.contacts || [];
 
     const snapshotTraffic = metrics.reduce((s, m) => s + (parseFloat(m.traffic) || 0), 0);
     const snapshotCalls = metrics.reduce((s, m) => s + (parseFloat(m.calls) || 0), 0);
     const snapshotCloses = metrics.reduce((s, m) => s + (parseFloat(m.closes) || 0), 0);
     const leadCalls = leads.reduce((s, l) => s + (parseFloat(l.calls) || 0), 0);
     const leadCloses = leads.reduce((s, l) => s + (parseFloat(l.closes) || 0), 0);
-    const totalLeads = leads.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
+    const bulkLeads = leads.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
 
-    const totalCalls = snapshotCalls + leadCalls;
-    const totalCloses = snapshotCloses + leadCloses;
+    // The named pipeline is the third source, sitting alongside the bulk lead
+    // entries and the monthly snapshots that this function already summed.
+    //
+    // One contact is one lead. A call counts once the contact has ever REACHED
+    // "call booked" — reading the current stage instead would delete every call
+    // the moment a deal closed. A close counts from the CURRENT stage being
+    // "won", which is what makes moving a mis-clicked win back undo it.
+    const contactLeads = contacts.length;
+    const contactCalls = contacts.filter(c => c.reached && c.reached['call-booked']).length;
+    const contactCloses = contacts.filter(c => c.stage === 'won').length;
+
+    const totalLeads = bulkLeads + contactLeads;
+    const totalCalls = snapshotCalls + leadCalls + contactCalls;
+    const totalCloses = snapshotCloses + leadCloses + contactCloses;
 
     const anyClosesEverLogged =
         leads.some(l => (parseFloat(l.closes) || 0) > 0) ||
-        metrics.some(m => (parseFloat(m.closes) || 0) > 0);
+        metrics.some(m => (parseFloat(m.closes) || 0) > 0) ||
+        contactCloses > 0;
 
     const callCloseRate = (totalCalls > 0 && anyClosesEverLogged)
         ? (Math.min(totalCloses, totalCalls) / totalCalls) * 100
@@ -698,6 +1290,12 @@ function getFunnelInsights() {
         snapshotCloses,
         leadCalls,
         leadCloses,
+        // The split, so a screen showing "62 leads" can say where the 62 came
+        // from. Two sources adding up is only confusing when it is invisible.
+        bulkLeads,
+        contactLeads,
+        contactCalls,
+        contactCloses,
         totalLeads,
         totalCalls,
         totalCloses,
@@ -733,6 +1331,7 @@ const NOT_ATTRIBUTED = 'Not attributed';
 function getChannelFunnel() {
     const store = getStore();
     const leads = store.leads?.entries || [];
+    const contacts = store.contacts || [];
     const sales = getRevenueInsights().entries || [];
 
     const normalise = (s) => String(s || '').trim().toLowerCase();
@@ -753,6 +1352,23 @@ function getChannelFunnel() {
         r.calls += parseFloat(l.calls) || 0;
         r.closes += parseFloat(l.closes) || 0;
         if ((parseFloat(l.closes) || 0) > 0) r.hasClosesLogged = true;
+    });
+
+    // Named contacts break down by channel on exactly the rules getFunnelInsights
+    // uses — one lead each, a call once "call booked" was ever reached, a close
+    // while the current stage is "won". They are counted here as well as there
+    // because the two have to agree: a per-channel table that excluded the
+    // pipeline would quietly total less than the funnel card above it.
+    contacts.forEach(c => {
+        const key = normalise(c.source) || '__unattributed__';
+        const label = key === '__unattributed__' ? NOT_ATTRIBUTED : String(c.source).trim();
+        const r = bucket(key, label);
+        r.leads += 1;
+        if (c.reached && c.reached['call-booked']) r.calls += 1;
+        if (c.stage === 'won') {
+            r.closes += 1;
+            r.hasClosesLogged = true;
+        }
     });
 
     sales.forEach(s => {
@@ -885,6 +1501,15 @@ function getRevenueInsights() {
     const salesRequired = price > 0 ? Math.ceil(goal / price) : 0;
     const salesMade = price > 0 ? Math.floor(totalRevenue / price) : 0;
 
+    // The same question at the two horizons a founder can actually act on. Each
+    // is rounded up from that period's own share of the revenue goal rather
+    // than by dividing salesRequired, because a third of "5 sales" is not a
+    // number anyone can go and sell. Rounding up per period means the weekly
+    // figure can total slightly above the quarter, which is the right way round:
+    // it is a floor to clear, not a budget to spend.
+    const salesRequiredPerMonth = price > 0 ? Math.ceil((goal / 3) / price) : 0;
+    const salesRequiredPerWeek = price > 0 ? Math.ceil((goal / 12) / price) : 0;
+
     // Projects & Momentum
     const Q_WEEKS = 12;
     const entriesCount = entries.length;
@@ -995,8 +1620,15 @@ function getRevenueInsights() {
         progressPercent: Math.min(100, progressPercent),
         monthProgressPercent: Math.min(100, monthProgressPercent),
         salesRequired,
+        salesRequiredPerMonth,
+        salesRequiredPerWeek,
         salesMade,
         salesRemaining: Math.max(0, salesRequired - salesMade),
+        // Whether the sales maths can be shown at all. Without an average offer
+        // price every figure above is 0, and a card reading "0 sales a week to
+        // hit your goal" is worse than no card.
+        hasOfferPrice: price > 0,
+        averageOfferPrice: price,
         projectedRevenue,
         weeklyTargetLength,
         weeksElapsed,
@@ -1051,10 +1683,28 @@ function updateWeeklyPlan(planId, updatedFields) {
     }
 }
 
-function updateDailyLog(dateStr, tasks) {
+// `source` identifies the weekly plan the tasks came from, so a later render can
+// tell whether they still reflect the current plan. Omit it for tasks that did
+// not come from a plan at all.
+function updateDailyLog(dateStr, tasks, source) {
     const store = getStore();
     store.dailyLogs[dateStr] = tasks;
+
+    if (source === undefined) {
+        delete store.dailyLogSources[dateStr];
+    } else {
+        store.dailyLogSources[dateStr] = source;
+    }
+
     saveStore(store);
+}
+
+// The identity of a weekly plan, for stamping onto a day's tasks. Plans made in
+// the Monday Plan flow have no id unless they came from a generated 90-day plan,
+// so fall back to the timestamp, which is rewritten every time the plan is saved.
+function planSourceKey(plan) {
+    if (!plan) return undefined;
+    return String(plan.id || plan.date || '');
 }
 
 function addReview(review) {
@@ -1233,6 +1883,10 @@ function resetQuarter(reflection = null) {
         revenueGoal: store.revenue?.quarterlyGoal || 0,
         leadEntries: [...(store.leads?.entries || [])],
         leadGoal: store.leads?.quarterlyGoal || 0,
+        // Only the finished deals. The open ones are carried into the new
+        // quarter below rather than archived, so this is the whole record of
+        // them and nothing is in two places at once.
+        contacts: (store.contacts || []).filter(c => c.stage === 'won' || c.stage === 'lost'),
         metrics: [...(store.metrics || [])],
         weeklyPlans: [...(store.weeklyPlans || [])],
         reviewsCount: store.reviews.length,
@@ -1259,6 +1913,13 @@ function resetQuarter(reflection = null) {
         store.leads.entries = [];
     }
     store.metrics = [];
+
+    // Contacts are the one thing that does NOT get cleared wholesale. A deal
+    // still sitting at "proposal sent" on the last day of the quarter is a live
+    // conversation with a real person, and deleting it because the calendar
+    // turned over would be the app throwing away her actual work. Won and lost
+    // are settled, so those go to the archive above and leave here.
+    store.contacts = (store.contacts || []).filter(c => c.stage !== 'won' && c.stage !== 'lost');
 
     // Clear weekly plans for the new quarter start, keep reviews for wins history
     store.weeklyPlans = [];
@@ -1862,20 +2523,7 @@ async function generateAIResponse(messageHistory) {
     ];
 
     try {
-        const { data, error } = await window.db.functions.invoke('chat', {
-            body: { messages: messages },
-        });
-
-        if (error) {
-            console.error("Edge Function Invocation Error:", error);
-            throw new Error(await window.readFunctionError(error));
-        }
-
-        if (data.error) {
-            console.error("OpenAI API Error:", data.error);
-            throw new Error(data.error.message || data.error);
-        }
-
+        const data = await window.invokeChat(messages);
         return data.choices[0].message.content;
     } catch (error) {
         console.error("Generative AI Service Failed:", error);
@@ -1911,12 +2559,7 @@ You MUST return ONLY a raw JSON strictly following this schema with no markdown 
 }`;
 
     try {
-        const { data, error } = await window.db.functions.invoke('chat', {
-            body: { messages: [{ role: 'user', content: prompt }] },
-        });
-
-        if (error) throw new Error(await window.readFunctionError(error));
-        if (data.error) throw new Error(data.error.message || data.error);
+        const data = await window.invokeChat([{ role: 'user', content: prompt }]);
 
         let content = data.choices[0].message.content;
         content = content.replace(/^```json/g, '').replace(/```$/g, '').trim();
@@ -2025,17 +2668,10 @@ OUTPUT FORMAT (return exactly this JSON shape):
 CRITICAL: Return ONLY the JSON object above. No explanation, no preamble, no code fences.`;
 
     try {
-        const { data, error } = await window.db.functions.invoke('chat', {
-            body: { 
-                messages: [
-                    { role: 'system', content: systemPrompt }, 
-                    { role: 'user', content: 'Generate my 90-day action plan now. Return only the JSON object, no prose, no markdown fences.' }
-                ] 
-            },
-        });
-
-        if (error) throw new Error(await window.readFunctionError(error));
-        if (data.error) throw new Error(data.error.message || data.error);
+        const data = await window.invokeChat([
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: 'Generate my 90-day action plan now. Return only the JSON object, no prose, no markdown fences.' }
+        ]);
 
         let content = data.choices[0].message.content;
         content = content.replace(/^```json/gi, '').replace(/```$/g, '').trim();
@@ -2095,7 +2731,9 @@ const PRO_FEATURES = {
         blurb: 'Connect Stripe once and every sale appears here on its own, at the moment it happens. No manual entry, no forgotten Tuesday, and every rate on this page becomes something you can actually trust. (PayPal coming soon)'
     },
     'lead-pipeline': {
-        shipped: false,
+        // Shipped 16 Aug 2026. Lives on its own screen at #/pipeline, with the
+        // nav link rendered only for accounts that have it.
+        shipped: true,
         title: 'A real lead pipeline',
         blurb: 'Named contacts instead of a running count. Move each one through lead, call booked, proposal sent, won or lost, set a follow-up date, and see at a glance who has gone quiet on you.'
     },
@@ -2210,6 +2848,16 @@ function trialDaysLeft() {
     const ms = new Date(endsAt).getTime() - Date.now();
     if (Number.isNaN(ms)) return null;
     return Math.max(0, Math.ceil(ms / 86400000));
+}
+
+// Can this account open the lead pipeline screen?
+//
+// One answer, asked by three places: the nav link, the screen's own guard, and
+// the Revenue card that either links into it or advertises it. Two copies of
+// this rule would eventually disagree, and the failure mode is a nav link
+// pointing at a locked screen — the exact shape of the canConnectStripe bug.
+function canUseLeadPipeline() {
+    return isProUser() && isFeatureLive('lead-pipeline');
 }
 
 // A small "PRO" chip, for sitting next to a heading or a label.
@@ -2463,6 +3111,21 @@ function renderPlanPill() {
     return `<a href="#/account" class="nav-plan-pill" title="See your plan and choose one whenever you're ready">${label}</a>`;
 }
 
+// The Pipeline link, for accounts that can actually open it.
+//
+// Deliberately NOT shown to base accounts. The rule elsewhere in the app is that
+// base users SEE Pro features where they would naturally use them — but that
+// means at the point of the job, which for this one is the teaser on Revenue.
+// A permanent nav entry leading to a wall is the same nag the base-tier "See
+// what's in Pro" pill was dropped for.
+//
+// It also keeps the nav's widest case to the Pro one, which is the case to
+// measure the breakpoint against.
+function renderPipelineLink() {
+    if (!canUseLeadPipeline()) return '';
+    return `<a href="#/pipeline" class="nav-link" id="nav-pipeline">Pipeline</a>`;
+}
+
 function renderNav() {
     const store = getStore();
     const bName = store.profile?.businessName || 'CEO Planner';
@@ -2484,6 +3147,7 @@ function renderNav() {
                 <a href="#/roadmap" class="nav-link" id="nav-roadmap">90-Day Plan</a>
                 <a href="#/planner" class="nav-link" id="nav-planner">Weekly Plan</a>
                 <a href="#/revenue" class="nav-link" id="nav-revenue">Revenue</a>
+                ${renderPipelineLink()}
                 <a href="#/review" class="nav-link" id="nav-review">Friday Review</a>
                 <a href="#/coach" class="nav-link" id="nav-coach">Notepad</a>
                 <a href="#/monthly-review" class="nav-link" id="nav-monthly-review">Monthly Review</a>
@@ -3857,11 +4521,15 @@ function renderDashboard() {
         const tasks = [];
         const usedTasks = new Set();
         
+        // `slot` picks the generic phrasing deterministically instead of
+        // re-rolling at random, which is what produced the "(Part 2)" suffixes:
+        // two priorities landing on the same random sentence.
         const addTask = (text, fallback) => {
-            let t = breakdownTask(text, fallback);
+            const slot = tasks.length;
+            let t = breakdownTask(text, fallback, slot);
             let attempts = 0;
             while (usedTasks.has(t) && attempts < 10) {
-                t = breakdownTask(text, fallback);
+                t = breakdownTask(text, fallback, slot + attempts + 1);
                 attempts++;
             }
             if (usedTasks.has(t)) {
@@ -3891,7 +4559,28 @@ function renderDashboard() {
         return tasks;
     };
 
-    function breakdownTask(taskText, fallback) {
+    // Deterministic stand-in for Math.random() when choosing a phrasing.
+    //
+    // The Daily 3 is built during render and only written to the store later, in
+    // attachEvents. Anything that stops that write landing — a full localStorage
+    // quota, which saveStore swallows into a console error, or a render whose
+    // attachEvents never runs — used to mean a fresh roll of the dice on the next
+    // load, so the day's tasks changed under the user on every refresh.
+    //
+    // Seeding the choice from the date, the slot and the task text means a given
+    // day always produces the same three tasks. Persistence is now an
+    // optimisation and a place to keep the tick state, not the thing the wording
+    // depends on.
+    function pickOption(options, seedText, slot) {
+        const seed = `${getLocalDateString()}|${slot}|${seedText}`;
+        let hash = 0;
+        for (let i = 0; i < seed.length; i++) {
+            hash = ((hash << 5) - hash + seed.charCodeAt(i)) | 0;
+        }
+        return options[Math.abs(hash) % options.length];
+    }
+
+    function breakdownTask(taskText, fallback, slot = 0) {
         if (!taskText || taskText.trim() === '') return fallback;
         const lower = taskText.toLowerCase();
 
@@ -3904,87 +4593,94 @@ function renderDashboard() {
         if (isPhysicalOrEcom) {
             if (lower.match(/launch|new|collection/)) {
                 const options = ['Draft email sequence announcing your new product collection', 'Take teaser product photos of the new items', 'Set up the new product pages or listings on your store website', 'Outline the launch day promotion timeline'];
-                return options[Math.floor(Math.random() * options.length)];
+                return pickOption(options, taskText, slot);
             }
             if (lower.match(/email|newsletter/)) {
                 const options = ['Draft the weekly newsletter highlighting one best-selling product', 'Set up an automated cart-abandonment email sequence', 'Write a welcome email for new shop signups offering a discount'];
-                return options[Math.floor(Math.random() * options.length)];
+                return pickOption(options, taskText, slot);
             }
             if (lower.match(/post|reel|tiktok|content|video/)) {
                 const options = ['Record a behind-the-scenes video showing how your products are made/poured', 'Create a photo post styling your products beautifully in a home environment', 'Engage with 15 ideal customers or decor/niche creators on Instagram'];
-                return options[Math.floor(Math.random() * options.length)];
+                return pickOption(options, taskText, slot);
             }
             if (lower.match(/lead|magnet|freebie|opt-in/)) {
                 const options = ['Design a popup signup incentive offering free shipping or 10% off', 'Create a short product guide or quiz to help buyers choose the right scent/style', 'Set up a newsletter subscription form at your checkout page'];
-                return options[Math.floor(Math.random() * options.length)];
+                return pickOption(options, taskText, slot);
             }
             if (lower.match(/sales|sell|close|revenue|income|offer/)) {
                 const options = ['Create a limited-time product bundle or special discount code', 'Pitch your product line to a local boutique or physical retail shop for wholesale', 'Optimize your checkout page by adding a simple bump or add-on product'];
-                return options[Math.floor(Math.random() * options.length)];
+                return pickOption(options, taskText, slot);
             }
             if (lower.match(/website|landing page|store/)) {
                 const options = ['Review your online store landing page on mobile and optimize the load time', 'Add customer photo reviews to your best-selling product pages', 'Test your checkout flow end-to-end to ensure zero friction for buyers'];
-                return options[Math.floor(Math.random() * options.length)];
+                return pickOption(options, taskText, slot);
             }
             if (lower.match(/market|fair|booth|local/)) {
                 const options = ['Research local craft fairs, seasonal markets, or pop-up events and submit applications', 'Design or refine your physical booth table layout and signage', 'Print a QR code display to collect email signups at your checkout counter'];
-                return options[Math.floor(Math.random() * options.length)];
+                return pickOption(options, taskText, slot);
             }
         }
 
         // Context-Aware Keyword Matching for Daily Actions (Service-based Fallback)
         if (lower.match(/launch|beta/)) {
             const options = ['Draft the launch email sequence', 'Create a list of VIPs to invite to the beta', 'Outline the core offer for the launch', 'Set up the checkout or registration page'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
         if (lower.match(/podcast|collab|pitch/)) {
             const options = ['Research 3-5 potential podcasts/creators and draft a custom pitch', 'Follow up with past podcast hosts for a second appearance', 'Outline 3 new podcast topics to pitch'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
         if (lower.match(/course|program|module/)) {
             const options = ['Outline the curriculum or record the first module for the course', 'Review student feedback to improve the next module', 'Draft the sales page copy for your program'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
         if (lower.match(/email|newsletter|sequence/)) {
             const options = ['Draft the outline and first draft of the email sequence', 'Write 2 engaging emails for your newsletter', 'Review email metrics and optimize the subject lines'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
         if (lower.match(/post|reel|tiktok|content|video/)) {
             const options = ['Script or outline 3 pieces of content and batch record/write them', 'Repurpose your top-performing post into a short video script', 'Engage with 10 ideal clients before posting your content'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
         if (lower.match(/lead|magnet|freebie|opt-in/)) {
             const options = ['Design the core asset for the lead magnet (PDF, video outline, checklist)', 'Draft the opt-in page copy for your new freebie', 'Plan the 3-part welcome sequence for new subscribers'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
         if (lower.match(/sales|sell|close|revenue|income/)) {
             const options = ['Identify 5 warm leads from recent interactions and send a personalized DM/email', 'Follow up with 3 prospects who ghosted or said "not right now"', 'Review your sales process to identify and fix one bottleneck'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
         if (lower.match(/webinar|masterclass|live/)) {
             const options = ['Draft the slide deck outline focusing on the core problem and solution', 'Promote your upcoming live session on your main social channel', 'Write the follow-up email sequence for webinar attendees'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
         if (lower.match(/website|landing page|sales page/)) {
             const options = ['Draft the copy for the top three sections of the page (Headline, Problem, Solution)', 'Review your landing page on mobile and optimize the call-to-action', 'Source 3 fresh testimonials to add to your sales page'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
         if (lower.match(/hire|va|delegate/)) {
             const options = ['Document the step-by-step SOP for the task you want to delegate', 'Draft the job description and post it on your preferred platform', 'Review applications or conduct a 15-minute interview'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
         if (lower.match(/brand|niche|messaging/)) {
             const options = ['Write down 3 core beliefs your brand stands for to use in upcoming messaging', 'Review your social media bios and update them for clarity', 'Identify 3 common objections from your audience and draft responses'];
-            return options[Math.floor(Math.random() * options.length)];
+            return pickOption(options, taskText, slot);
         }
 
-        // Generic fallbacks for unrecognized text
+        // Nothing matched, so the priority is described in words this engine does
+        // not recognise. These keep the user's own wording intact and lead with a
+        // verb she can act on today.
+        //
+        // The previous version cut her text off at 30 characters and prefixed it
+        // with "Outline the first three actionable steps for:" — which read as
+        // filler, and turned a priority of "a" into a whole sentence of nothing.
+        const subject = taskText.trim();
         const genericOptions = [
-            `Outline the first three actionable steps for: ${taskText.substring(0, 30)}${taskText.length > 30 ? '...' : ''}`,
-            `Block out 60 minutes of uninterrupted time to start: ${taskText.substring(0, 30)}${taskText.length > 30 ? '...' : ''}`,
-            `Gather all resources, links, and documents needed to execute: ${taskText.substring(0, 30)}${taskText.length > 30 ? '...' : ''}`
+            `Decide the very next step for "${subject}" and take it today`,
+            `Spend 60 focused minutes moving "${subject}" forward`,
+            `Clear the one thing currently blocking "${subject}"`
         ];
-        return genericOptions[Math.floor(Math.random() * genericOptions.length)];
+        return genericOptions[slot % genericOptions.length];
     }
 
     // Use the explicit Daily 3 from the actual day if available, otherwise fallback to AI generated tasks based on priorities & weekly plan.
@@ -3998,12 +4694,64 @@ function renderDashboard() {
                 <a href="#/wizard" class="btn btn-primary btn-sm" style="display: inline-block;">Start Setup</a>
             </div>
         `;
+    } else if (!activePlan) {
+        // No plan for this week, so there is nothing honest to put here.
+        //
+        // This used to invent three tasks out of the 90-Day priorities. They were
+        // not things the user had decided to do, they counted towards the CEO
+        // Weekly Score as though they were, and with thin priorities they read as
+        // filler. An empty Daily 3 sends the score into its existing "No Plan"
+        // state, which is the truth.
+        todaysLog = null;
+        dailyTasksHtml = `
+            <div style="padding: 1.5rem; background: var(--color-bg-light); border-radius: var(--radius-sm); border: 1px dashed var(--color-border); text-align: center;">
+                <p style="font-size: 0.9rem; color: var(--color-text-main); margin: 0 0 0.35rem 0; font-weight: 600;">No plan for this week yet</p>
+                <p style="font-size: 0.85rem; color: var(--color-text-muted); margin: 0 0 1rem 0; line-height: 1.5;">Your Daily 3 comes from the actions you set on Monday, so it stays yours rather than something the app made up.</p>
+                <a href="#/monday-plan" class="btn btn-primary btn-sm" style="display: inline-block;">Plan This Week</a>
+            </div>
+        `;
     } else {
-        if (!todaysLog) {
-            const currentPriorities = activePlan && activePlan.topActions ? activePlan.topActions : g.priorities;
-            let generatedTasks = generateDaily3([0, 1, 2].map(i => currentPriorities[i] || ''), activePlan);
-            todaysLog = generatedTasks.map(t => ({ text: t, done: false }));
-            window._tempGeneratedTodaysLog = todaysLog; // to be saved on attachEvents
+        // The week's plan already carries three real actions: the ones typed into
+        // the Monday Plan, or the ones the 90-day AI plan wrote for this week,
+        // which applyGeneratedPlan stores as `daily3`. They are written against
+        // the actual business.
+        //
+        // This used to walk straight past them and run the keyword templates over
+        // the weekly *priorities* instead, so a plan whose Monday action read
+        // "Send 3 personal sales invitations" surfaced on the dashboard as
+        // "Outline the first three actionable steps for: a". mondayPlan.js already
+        // fixed this for its own suggestions; the dashboard kept the bug — it
+        // generated the real tasks, saved them, and ignored them.
+        const planKey = planSourceKey(activePlan);
+
+        // Rewriting the week's plan on a Monday morning used to leave that day's
+        // tasks untouched, because a log already existed for the date. Comparing
+        // the plan the tasks were built from against the current one picks that up.
+        const builtFrom = store.dailyLogSources ? store.dailyLogSources[todayStrDash] : undefined;
+        const isStale = Boolean(todaysLog) && builtFrom !== planKey;
+
+        if (!todaysLog || isStale) {
+            const plannedDaily3 = Array.isArray(activePlan.daily3)
+                ? activePlan.daily3.map(t => (t || '').trim()).filter(Boolean)
+                : [];
+
+            let generatedTasks;
+            if (plannedDaily3.length > 0) {
+                generatedTasks = plannedDaily3.slice(0, 3);
+            } else {
+                const currentPriorities = activePlan.topActions || g.priorities;
+                generatedTasks = generateDaily3([0, 1, 2].map(i => currentPriorities[i] || ''), activePlan);
+            }
+
+            // Anything already ticked that survived the rewrite keeps its tick.
+            // Losing a morning's completed work because the plan was edited at
+            // lunchtime would be its own bug.
+            const doneByText = {};
+            (todaysLog || []).forEach(t => { if (t && t.done) doneByText[t.text] = true; });
+
+            todaysLog = generatedTasks.map(t => ({ text: t, done: Boolean(doneByText[t]) }));
+            // Saved in attachEvents, along with the plan it was built from.
+            window._tempGeneratedTodaysLog = { tasks: todaysLog, source: planKey };
         }
 
         todaysLog.forEach((taskObj, i) => {
@@ -4392,7 +5140,8 @@ function dashboardAttachEvents() {
     // Daily 3 state persistence using the store logic
     const todayStr = getLocalDateString();
     if (window._tempGeneratedTodaysLog) {
-        updateDailyLog(todayStr, window._tempGeneratedTodaysLog);
+        const pending = window._tempGeneratedTodaysLog;
+        updateDailyLog(todayStr, pending.tasks, pending.source);
         delete window._tempGeneratedTodaysLog;
     }
 
@@ -4510,8 +5259,12 @@ function dashboardAttachEvents() {
                 let log = updatedStore.dailyLogs[todayStr] || [];
                 if (log[i]) {
                     log[i].done = e.target.checked;
-                    updateDailyLog(todayStr, log);
-                    
+                    // Carry the existing stamp through. Dropping it would make the
+                    // tasks look like they came from a different plan on the next
+                    // render, which would rebuild them and throw away the tick
+                    // that was just made.
+                    updateDailyLog(todayStr, log, (updatedStore.dailyLogSources || {})[todayStr]);
+
                     // Check if all 3 are completed and firstDaily3Completed is not set
                     const allDone = log.length === 3 && log.every(t => t.done);
                     if (allDone && !updatedStore.profile?.firstDaily3Completed) {
@@ -5322,13 +6075,95 @@ function renderRevenue() {
             </div>
         `;
     }
-    
+
+    // How many sales the revenue goal actually asks for, at the three horizons a
+    // founder plans against. Every figure comes from getRevenueInsights so this
+    // card can never disagree with the goal and progress shown above it.
+    //
+    // The whole thing hangs on an average offer price. Without one the numbers
+    // are all zero, so the card explains what is missing and where to set it
+    // rather than announcing that she needs to make no sales at all.
+    let salesTargetCardHtml = '';
+    if (insights.goal > 0) {
+        salesTargetCardHtml = insights.hasOfferPrice
+            ? `
+            <div class="card mb-6" style="padding: 1.5rem 2rem;">
+                <div class="flex justify-between items-center mb-4" style="flex-wrap: wrap; gap: 0.5rem;">
+                    <h3 style="margin: 0; display: flex; align-items: center;">
+                        Sales You Need
+                        ${renderTooltip(
+                            `How many sales it takes to reach your ${currency}${insights.goal.toLocaleString()} quarter goal, at your average offer price of ${currency}${insights.averageOfferPrice.toLocaleString()}.`,
+                            'A revenue goal is hard to act on. A number of sales is not. Each figure is rounded up, so hitting it always clears the target rather than landing just under.'
+                        )}
+                    </h3>
+                    <p style="margin: 0; font-size: 0.8rem; color: var(--color-text-muted);">
+                        Based on ${currency}${insights.averageOfferPrice.toLocaleString()} per sale
+                    </p>
+                </div>
+
+                <!-- Deliberately not .grid-cols-3: that collapses to a single
+                     column on mobile, which turns three short numbers into three
+                     tall stacked blocks. They are small enough to stay side by
+                     side at every width. -->
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem;">
+                    <div style="text-align: center; padding: 1rem; background: var(--color-bg-light); border-radius: 10px;">
+                        <p style="font-size: 0.75rem; color: var(--color-text-muted); font-weight: 600; margin: 0 0 0.35rem 0; text-transform: uppercase;">Per Week</p>
+                        <h3 style="font-size: 2rem; color: var(--color-primary-dark); margin: 0;">${insights.salesRequiredPerWeek}</h3>
+                    </div>
+                    <div style="text-align: center; padding: 1rem; background: var(--color-bg-light); border-radius: 10px;">
+                        <p style="font-size: 0.75rem; color: var(--color-text-muted); font-weight: 600; margin: 0 0 0.35rem 0; text-transform: uppercase;">Per Month</p>
+                        <h3 style="font-size: 2rem; color: var(--color-primary-dark); margin: 0;">${insights.salesRequiredPerMonth}</h3>
+                    </div>
+                    <div style="text-align: center; padding: 1rem; background: var(--color-bg-light); border-radius: 10px;">
+                        <p style="font-size: 0.75rem; color: var(--color-text-muted); font-weight: 600; margin: 0 0 0.35rem 0; text-transform: uppercase;">This Quarter</p>
+                        <h3 style="font-size: 2rem; color: var(--color-primary-dark); margin: 0;">${insights.salesRequired}</h3>
+                    </div>
+                </div>
+
+                <p style="margin: 1rem 0 0 0; font-size: 0.9rem; color: var(--color-text-main); text-align: center; line-height: 1.5;">
+                    ${insights.salesRemaining === 0
+                        ? `You've covered all ${insights.salesRequired} sales for this quarter. Everything from here is ahead of target.`
+                        : `${insights.salesMade} of ${insights.salesRequired} covered so far, <strong>${insights.salesRemaining} to go</strong> with ${insights.weeksRemaining} ${insights.weeksRemaining === 1 ? 'week' : 'weeks'} left.`}
+                </p>
+            </div>
+            `
+            : `
+            <div class="card mb-6" style="padding: 1.5rem 2rem; border-left: 4px solid var(--color-accent);">
+                <h3 style="margin: 0 0 0.5rem 0;">Sales You Need</h3>
+                <p style="margin: 0; font-size: 0.9rem; color: var(--color-text-main); line-height: 1.5;">
+                    Set your average offer price in <a href="#/settings" style="color: var(--color-primary-dark); font-weight: 600;">Settings</a>
+                    and this will show how many sales a week, a month and a quarter it takes to reach your
+                    ${currency}${insights.goal.toLocaleString()} goal.
+                </p>
+            </div>
+            `;
+    }
+
+    // Calls and closes both arrive from three places now: leads logged in bulk,
+    // monthly snapshots, and the named pipeline. That sum lives in
+    // getFunnelInsights rather than here, so this screen, the pipeline screen,
+    // the AI Coach and the executive report cannot drift apart — which they had:
+    // the Coach was still dividing total sales by total calls and quoting
+    // impossible close rates long after this screen had been corrected.
+    //
+    // ⚠️ Read totals from `funnel`. Do not re-sum store.leads.entries here — that
+    // is what this line used to do, and it is why the lead count on this page
+    // would have ignored the pipeline entirely.
+    const funnel = getFunnelInsights();
+    const { totalCalls, totalCloses, anyClosesEverLogged, totalLeads } = funnel;
+
     // Core calculations
     const leads = store.leads?.entries || [];
-    const totalLeads = leads.reduce((sum, l) => sum + (parseFloat(l.amount) || 0), 0);
     const leadGoal = parseFloat(store.leads?.quarterlyGoal) || 0;
     const leadProgressPercent = leadGoal > 0 ? (totalLeads / leadGoal) * 100 : 0;
-    
+
+    // Shown wherever the lead count is, but only once both sources are in play.
+    // "62 leads" is confusing when you remember typing 50; "50 logged in bulk,
+    // 12 named contacts" is not.
+    const leadSplitNote = (funnel.contactLeads > 0 && funnel.bulkLeads > 0)
+        ? `${funnel.bulkLeads.toLocaleString()} logged in bulk, ${funnel.contactLeads.toLocaleString()} named ${funnel.contactLeads === 1 ? 'contact' : 'contacts'}`
+        : '';
+
     // Sales logged through this app's own pipeline. Payments imported from Stripe
     // are deliberately excluded from this particular count: it is used below as a
     // stand-in for "how many calls closed", and a subscription renewal that
@@ -5337,13 +6172,6 @@ function renderRevenue() {
     const salesCount = (insights.entries || []).filter(e => !e.imported).length;
     const metrics = store.metrics || [];
     
-    // Calls and closes both arrive from two places, leads and monthly snapshots.
-    // That sum now lives in getFunnelInsights rather than here, so this screen,
-    // the AI Coach and the executive report cannot drift apart — which they had:
-    // the Coach was still dividing total sales by total calls and quoting
-    // impossible close rates long after this screen had been corrected.
-    const funnel = getFunnelInsights();
-    const { totalCalls, totalCloses, anyClosesEverLogged } = funnel;
     const effectiveCloses = Math.max(salesCount, totalCloses);
 
     // Conversion Rates
@@ -5427,6 +6255,8 @@ function renderRevenue() {
                         Quarter Lead Goal
                     </p>
                     <h3 style="font-size: 1.75rem; color: var(--color-primary-dark); margin: 0;">${totalLeads.toLocaleString()} / ${leadGoal.toLocaleString()}</h3>
+                    ${leadSplitNote ? `
+                    <p style="font-size: 0.7rem; color: var(--color-text-muted); margin: 0.5rem 0 0 0; line-height: 1.35;">${leadSplitNote}</p>` : ''}
                 </div>
                 <div class="card" style="padding: 1.5rem; text-align: center; border: 2px solid var(--color-accent-light);">
                     <p style="display: flex; align-items: center; justify-content: center; font-size: 0.8rem; color: var(--color-accent-dark); font-weight: 600; margin-bottom: 0.5rem; text-transform: uppercase;">
@@ -5447,8 +6277,10 @@ function renderRevenue() {
                 </div>
             </div>
 
+            ${salesTargetCardHtml}
+
             <div class="grid-sidebar mb-6">
-                
+
                 <!-- Main Content Left -->
                 <div>
                    <!-- Multi-Level Progress Board -->
@@ -5502,8 +6334,9 @@ function renderRevenue() {
                            <div class="progress-container" style="height: 12px; background: var(--color-bg-light); border-radius: var(--radius-full); overflow: hidden; margin-bottom: 0.5rem;">
                                <div class="progress-bar" style="height: 100%; width: ${leadProgressPercent}%; background: var(--color-secondary); transition: width 0.5s ease-out;"></div>
                            </div>
-                           <div class="flex justify-between" style="font-size: 0.8rem; color: var(--color-text-muted);">
+                           <div class="flex justify-between" style="font-size: 0.8rem; color: var(--color-text-muted); gap: 1rem; flex-wrap: wrap;">
                                <span>${totalLeads.toLocaleString()} / ${leadGoal.toLocaleString()} leads</span>
+                               ${leadSplitNote ? `<span>${leadSplitNote}</span>` : ''}
                            </div>
                        </div>
                    </div>
@@ -5622,18 +6455,14 @@ function renderRevenue() {
                            </div>
                            <div class="form-group">
                                <label>Source</label>
+                               <!-- Built from CONTACT_SOURCES in store.js, which the
+                                    pipeline screen also renders. The list used to be
+                                    hardcoded here while the pipeline took free text,
+                                    so the same channel could arrive under two
+                                    spellings and split into two rows in "Which
+                                    Channel Earns". -->
                                <select id="log-source" class="form-control" required>
-                                   <option value="Instagram">Instagram</option>
-                                   <option value="Facebook">Facebook</option>
-                                   <option value="X">X</option>
-                                   <option value="Email">Email</option>
-                                   <option value="Live Session">Live Session</option>
-                                   <option value="DM Conversation">DM Conversation</option>
-                                   <option value="Referral">Referral</option>
-                                   <option value="Website">Website</option>
-                                   <option value="TikTok">TikTok</option>
-                                   <option value="YouTube">YouTube</option>
-                                   <option value="Other">Other</option>
+                                   ${CONTACT_SOURCES.map(s => `<option value="${s}">${s}</option>`).join('')}
                                </select>
                            </div>
                            <div class="form-group">
@@ -5736,11 +6565,18 @@ function renderRevenue() {
                            </div>
                        </div>
                        ${renderPipelineEvents(insights.entries, leads, currency)}
-                       ${proTeaser(
-                           'lead-pipeline',
-                           'Know exactly who to follow up today',
-                           'Track leads by name through booked, proposal and won, and see who has gone quiet.'
-                       )}
+                       ${canUseLeadPipeline()
+                           // Same shape as the Stripe panel above: once the
+                           // account has the feature, proTeaser deletes itself,
+                           // and leaving the hole would take away the one useful
+                           // control on the card. A live summary and a way in
+                           // takes its place.
+                           ? renderPipelineSummary(currency)
+                           : proTeaser(
+                               'lead-pipeline',
+                               'Know exactly who to follow up today',
+                               'Track leads by name through booked, proposal and won, and see who has gone quiet.'
+                           )}
                    </div>
 
                 </div>
@@ -5775,6 +6611,55 @@ function renderRevenue() {
                 opacity: 1 !important;
             }
         </style>
+    `;
+}
+
+// The human label for a stage in the CSV export. The stored keys are slugs
+// ('call-booked'), and an export is read by a person, not by this app.
+function stageLabelForCsv(key) {
+    const stage = PIPELINE_STAGES.find(s => s.key === key);
+    return stage ? stage.label : (key || '');
+}
+
+// Blank, not "Unknown", when no confidence was set. An export is data, and an
+// empty cell filters and pivots correctly where an invented word does not.
+function probabilityLabelForCsv(key) {
+    const p = PIPELINE_PROBABILITIES.find(x => x.key === key);
+    return p ? p.label : '';
+}
+
+// The named-pipeline summary that replaces the teaser once the account has the
+// feature. Deliberately small: it answers "is anyone waiting on me" and gets out
+// of the way. The board itself lives at #/pipeline, because five stage columns
+// need more width than this sidebar has.
+//
+// Every number here comes from getPipelineInsights, which is the same source the
+// pipeline screen reads. No counting is done in this file.
+function renderPipelineSummary(currency) {
+    const pipeline = getPipelineInsights();
+    // ⚠️ Read the assembled list, never re-add the categories. This line used to
+    // be `followUpsDue.length + goneQuiet.length`, and the moment a third
+    // category (an overdue close date) was added it silently undercounted — this
+    // card said 2 while the pipeline screen said 3, from the same data.
+    const needsYou = pipeline.needsYou.length;
+
+    const body = pipeline.total === 0
+        ? `<p style="font-size: 0.85rem; color: var(--color-text-muted); margin: 0 0 0.75rem 0;">
+               Nothing in your pipeline yet. Add the person you spoke to most recently.
+           </p>`
+        : `<p style="font-size: 0.85rem; color: var(--color-text-main); margin: 0 0 0.75rem 0; line-height: 1.5;">
+               ${pipeline.openCount} open ${pipeline.openCount === 1 ? 'deal' : 'deals'}${pipeline.openValue > 0 ? ` worth ${currency}${formatAmount(pipeline.openValue)}` : ''}.
+               ${needsYou > 0
+                   ? `<strong style="color: var(--color-accent-dark);">${needsYou} ${needsYou === 1 ? 'needs' : 'need'} you today.</strong>`
+                   : 'Nobody is waiting on you.'}
+           </p>`;
+
+    return `
+        <div class="card mt-4" style="padding: 1.25rem; border-left: 3px solid var(--color-primary);">
+            <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('lead-pipeline', 'Your lead pipeline')}</p>
+            ${body}
+            <a href="#/pipeline" class="btn btn-outline btn-sm" style="width: 100%; text-align: center;">Open pipeline</a>
+        </div>
     `;
 }
 
@@ -6190,12 +7075,7 @@ window.generateAiReport = async function() {
         ${insights.entries.slice(-5).map(e => `Source: ${e.source}, Amount: ${e.amount}`).join('\n')}
         `;
 
-        const { data, error } = await window.db.functions.invoke('chat', {
-            body: { messages: [{ role: 'user', content: prompt }] },
-        });
-
-        if (error) throw new Error(await window.readFunctionError(error));
-        if (data.error) throw new Error(data.error.message || data.error);
+        const data = await window.invokeChat([{ role: 'user', content: prompt }]);
 
         const reportText = data.choices[0].message.content;
         aiContent.innerHTML = window.marked.parse(reportText);
@@ -6584,10 +7464,21 @@ function revenueAttachEvents() {
                 ? (new Date(d).getTime() >= quarterStart.getTime() ? 'Yes' : 'No')
                 : '';
 
+            // The three pipeline columns are APPENDED, never inserted. Anyone
+            // with a saved spreadsheet, a pivot table or a formula built on last
+            // month's export keeps working; inserting a column mid-table would
+            // silently move every one after it.
+            //
+            // Pipeline Value has its own column rather than going in Amount on
+            // purpose: Amount holds money that arrived, and a deal that might
+            // close is not that. Summing the Amount column has to stay a true
+            // answer to "what did I make".
             let csvContent = row([
                 'Type', 'Date', 'Amount', 'Currency', 'Source', 'Offer',
                 'Calls', 'Closes', 'Traffic', 'Social Audience',
-                'Counts Toward This Quarter', 'Notes'
+                'Counts Toward This Quarter', 'Notes',
+                'Contact Name', 'Stage', 'Pipeline Value',
+                'Likelihood', 'Expected Close Date', 'Next Step'
             ]);
 
             entries.forEach(e => {
@@ -6615,6 +7506,24 @@ function revenueAttachEvents() {
                     m.calls || 0, (m.closes === undefined || m.closes === null) ? '' : m.closes,
                     m.traffic || 0, m.social || 0,
                     inQuarter(m.date), ''
+                ]);
+            });
+
+            // The named pipeline. Dated by when the contact was created, so the
+            // quarter column means the same thing it does on every other row.
+            // Calls and Closes carry the same 1-or-0 the funnel counts, so a
+            // spreadsheet totalling those columns reaches the same figure the
+            // app shows rather than a different one.
+            (store.contacts || []).forEach(c => {
+                csvContent += row([
+                    'Contact', isoDate(c.createdAt), '', '',
+                    c.source || '', c.offer || '',
+                    (c.reached && c.reached['call-booked']) ? 1 : 0,
+                    c.stage === 'won' ? 1 : 0,
+                    '', '',
+                    inQuarter(c.createdAt), c.notes || '',
+                    c.name || '', stageLabelForCsv(c.stage), parseFloat(c.value) || 0,
+                    probabilityLabelForCsv(c.probability), c.closeDate || '', c.nextSteps || ''
                 ]);
             });
 
@@ -6699,6 +7608,574 @@ function renderChart(viewMode) {
             }).join('')}
         </div>
     `;
+}
+
+
+// --- js\screens\pipeline.js ---
+// pipeline.js — the named lead pipeline (Pro item 2)
+//
+// One screen, one job: who am I talking to, where has it got to, and who needs
+// me today. Everything numerical on this page that could also appear somewhere
+// else — leads, calls, closes, the close rate — is READ from getFunnelInsights
+// rather than worked out here. That is not a style preference: the Revenue
+// screen, the AI coach and the executive report all read from that one function
+// precisely because they used to each do their own maths and disagree in front
+// of the user. A pipeline screen with a fourth opinion would undo that.
+//
+// getPipelineInsights supplies the board's own shape (columns, follow-ups, who
+// has gone quiet) and deliberately computes no rates at all.
+// One line, not wrapped. build_bundle.ps1 strips imports with a single-line
+// regex, so a multi-line import survives into the bundle and breaks it at parse
+// time — the same trap CLAUDE.md documents for multi-line exports.
+
+// Which card is open for editing, at module level so a re-render keeps it open —
+// the same reason activeLogTab lives at module level in revenue.js.
+let editingId = null;
+
+// Contact names, sources and notes are free text the user typed, and they land
+// in value="" attributes and in card bodies. Deliberately not called escapeHtml:
+// the bundle flattens every file into one scope, fridayReview.js already has a
+// global by that name, and two identical-looking definitions where the last one
+// silently wins is a trap waiting for whoever edits one of them.
+function escapeField(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+// The stage a contact is in, as a coloured chip. Won and lost are the only two
+// that get colour — they are the outcomes, and everything else is in motion.
+// The value used by the offer dropdown to mean "not one of my saved offers".
+// A sentinel rather than an empty string, because empty already means "no offer
+// chosen" and the two need different behaviour.
+const OFFER_OTHER = '__other__';
+
+// Builds a <select> of the user's saved quick offers, plus Other.
+//
+// Quick offers are capped at three on the base plan (Pro item 9 lifts it), so
+// anyone selling a fourth thing would be stuck with a dropdown that cannot
+// describe their deal. Other reveals a text box instead of blocking them.
+function offerSelectHtml(idPrefix, currentOffer) {
+    const store = getStore();
+    const offers = (store.revenue?.quickOffers || []).map(o => o.name).filter(Boolean);
+    const isSaved = currentOffer && offers.includes(currentOffer);
+    const showOther = currentOffer && !isSaved;
+
+    return `
+        <select class="form-control" id="${idPrefix}-select" data-offer-select>
+            <option value=""${!currentOffer ? ' selected' : ''}>No offer yet</option>
+            ${offers.map(name => `<option value="${escapeField(name)}"${name === currentOffer ? ' selected' : ''}>${escapeField(name)}</option>`).join('')}
+            <option value="${OFFER_OTHER}"${showOther ? ' selected' : ''}>Other…</option>
+        </select>
+        <input type="text" class="form-control mt-2" id="${idPrefix}-other" data-offer-other
+               placeholder="Name the offer" value="${showOther ? escapeField(currentOffer) : ''}"
+               style="display: ${showOther ? 'block' : 'none'};">
+    `;
+}
+
+// Reads whichever of the two offer controls is actually in play.
+function readOfferValue(scope, idPrefix) {
+    const select = scope.querySelector(`#${idPrefix}-select`);
+    if (!select) return '';
+    if (select.value !== OFFER_OTHER) return select.value;
+    const other = scope.querySelector(`#${idPrefix}-other`);
+    return other ? other.value.trim() : '';
+}
+
+// Shows and hides the "Other" text box. Delegated in attachEvents so both the
+// add form and any open edit form get it without separate wiring.
+function bindOfferSelects(root) {
+    root.querySelectorAll('[data-offer-select]').forEach(select => {
+        select.addEventListener('change', () => {
+            const other = select.parentElement.querySelector('[data-offer-other]');
+            if (!other) return;
+            const wantsOther = select.value === OFFER_OTHER;
+            other.style.display = wantsOther ? 'block' : 'none';
+            if (wantsOther) other.focus();
+        });
+    });
+}
+
+// One field in the add form: a label row that always sits on its own line, an
+// info circle explaining what the field is for, then the control underneath.
+//
+// This exists because the fields used to be bare <label> + .form-control inside
+// a .form-group. A bare <label> is inline by default, and `.form-control` is not
+// defined anywhere in the CSS — it is a class the codebase uses but never
+// styles. So each label only wrapped above its input when the input happened to
+// be wide enough to push it there, and a narrow <select> sat beside its label
+// instead. The result was a row of fields at four different heights.
+function field(id, labelText, tip, controlHtml) {
+    return `
+        <div class="pipeline-field">
+            <div class="pipeline-field-label">
+                <label for="${id}">${labelText}</label>
+                ${tip}
+            </div>
+            ${controlHtml}
+        </div>
+    `;
+}
+
+const STAGE_COLOURS = {
+    'lead': 'var(--color-text-muted)',
+    'call-booked': 'var(--color-primary-dark)',
+    'proposal': 'var(--color-accent-dark)',
+    'won': 'var(--color-secondary-dark)',
+    'lost': 'var(--color-text-muted)'
+};
+
+function renderPipeline() {
+    window.setScreenModule({ attachEvents: pipelineAttachEvents });
+
+    // Base accounts have no nav link to here, but a typed URL or an old
+    // bookmark still lands. Explain rather than redirect: being bounced with no
+    // reason given is the worst version of a paywall.
+    if (!canUseLeadPipeline()) {
+        return `
+            ${renderNav()}
+            <div class="main-content">
+                <div class="card" style="max-width: 620px; margin: 3rem auto; padding: 2rem; text-align: center;" data-locked-pipeline>
+                    <p style="${PRO_CARD_HEADING_STYLE} justify-content: center;">${proCardHeading('lead-pipeline', 'A real lead pipeline')}</p>
+                    <p style="color: var(--color-text-muted); line-height: 1.6; margin-bottom: 1.5rem;">
+                        Named contacts instead of a running count. This one is part of Pro.
+                    </p>
+                    <button type="button" class="btn btn-primary" data-pro-feature="lead-pipeline">Tell me more</button>
+                    <p style="margin-top: 1.5rem;"><a href="#/revenue" style="font-size: 0.875rem; color: var(--color-text-muted);">Back to Revenue</a></p>
+                </div>
+            </div>
+        `;
+    }
+
+    const store = getStore();
+    const currency = store.settings?.currency || '$';
+    const pipeline = getPipelineInsights();
+    const funnel = getFunnelInsights();
+
+    // Already de-duplicated and prioritised by getPipelineInsights. Not
+    // assembled here, so the count in the heading and the rows underneath can
+    // never disagree.
+    const needsYou = pipeline.needsYou;
+
+    return `
+        ${renderNav()}
+        <!-- dashboard-layout widens main-content from 800px to 1200px. Without it
+             the five stage columns need a sideways scroll on a full desktop
+             window, which defeats the point of a board. -->
+        <div class="main-content dashboard-layout">
+            <div class="flex justify-between items-center mb-6 flex-mobile-col" style="gap: 1rem;">
+                <div>
+                    <h2 style="margin-bottom: 0.25rem;">Lead Pipeline</h2>
+                    <p style="color: var(--color-text-muted); margin: 0;">Every conversation you have open, and who is waiting on you.</p>
+                </div>
+                <p style="${PRO_CARD_HEADING_STYLE} margin: 0;">${proCardHeading('lead-pipeline', 'Pipeline')}</p>
+            </div>
+
+            <div class="grid-cols-4 mb-6">
+                <div class="card" style="padding: 1.5rem; text-align: center;">
+                    <p style="font-size: 0.8rem; color: var(--color-text-muted); font-weight: 600; margin-bottom: 0.5rem; text-transform: uppercase;">Open Deals</p>
+                    <h3 style="font-size: 1.75rem; color: var(--color-black); margin: 0;">${pipeline.openCount}</h3>
+                </div>
+                <div class="card" style="padding: 1.5rem; text-align: center; border: 2px solid var(--color-primary-light);">
+                    <p style="display: flex; align-items: center; justify-content: center; font-size: 0.8rem; color: var(--color-primary-dark); font-weight: 600; margin-bottom: 0.5rem; text-transform: uppercase;">
+                        Pipeline Value
+                        ${renderTooltip(
+                            "What your open conversations are worth if every one of them lands, and underneath, the same figure discounted by how likely you said each one is.",
+                            "It is deliberately kept out of your revenue figures and your quarter progress. This is money that might happen; everything on the Revenue screen is money that did.",
+                            "bottom",
+                            { what: 'What this answers', why: 'Why it is not in your revenue' }
+                        )}
+                    </p>
+                    <h3 style="font-size: 1.75rem; color: var(--color-primary-dark); margin: 0;">${currency}${formatAmount(pipeline.openValue)}</h3>
+                    ${pipeline.weightedCount > 0 ? `
+                    <p style="font-size: 0.7rem; color: var(--color-text-muted); margin: 0.5rem 0 0 0; line-height: 1.35;">
+                        ${currency}${formatAmount(pipeline.weightedValue)} allowing for how likely they are${pipeline.unweightedCount > 0 ? `, from the ${pipeline.weightedCount} you have rated` : ''}
+                    </p>` : pipeline.openCount > 0 ? `
+                    <p style="font-size: 0.7rem; color: var(--color-text-muted); margin: 0.5rem 0 0 0; line-height: 1.35;">
+                        Set how likely each one is and you'll get a weighted figure here too.
+                    </p>` : ''}
+                </div>
+                <div class="card" style="padding: 1.5rem; text-align: center; border: 2px solid var(--color-accent-light);">
+                    <p style="display: flex; align-items: center; justify-content: center; font-size: 0.8rem; color: var(--color-accent-dark); font-weight: 600; margin-bottom: 0.5rem; text-transform: uppercase;">
+                        Expected This Quarter
+                        ${renderTooltip(
+                            "Of the deals you expect to close before your 90 days are up, what they are worth once discounted by how likely each one is.",
+                            "It only counts open deals that have both a close date inside this quarter and a confidence set, so it is an honest floor rather than a hopeful ceiling. Like every figure on this page it stays out of your revenue and your quarter progress.",
+                            "bottom",
+                            { what: 'What this answers', why: 'What it does and does not include' }
+                        )}
+                    </p>
+                    <h3 style="font-size: 1.75rem; color: var(--color-accent-dark); margin: 0;">${currency}${formatAmount(pipeline.expectedThisQuarter)}</h3>
+                    ${pipeline.noCloseDateCount > 0 ? `
+                    <p style="font-size: 0.7rem; color: var(--color-text-muted); margin: 0.5rem 0 0 0; line-height: 1.35;">
+                        ${pipeline.noCloseDateCount} open ${pipeline.noCloseDateCount === 1 ? 'deal has' : 'deals have'} no close date, so ${pipeline.noCloseDateCount === 1 ? 'it is' : 'they are'} not in this
+                    </p>` : ''}
+                </div>
+                <div class="card" style="padding: 1.5rem; text-align: center;">
+                    <p style="display: flex; align-items: center; justify-content: center; font-size: 0.8rem; color: var(--color-text-muted); font-weight: 600; margin-bottom: 0.5rem; text-transform: uppercase;">
+                        Call Close Rate
+                        ${renderTooltip(
+                            "Of the calls you booked, how many turned into a sale.",
+                            "This is the same figure shown on Revenue and the same one your AI coach reads. It counts calls and closes from this pipeline, from any leads you log in bulk, and from your monthly snapshots, so all three agree.",
+                            "bottom",
+                            { what: 'What this answers', why: 'Where the number comes from' }
+                        )}
+                    </p>
+                    <h3 style="font-size: 1.75rem; color: var(--color-black); margin: 0;">${funnel.callCloseRate === null ? '&mdash;' : funnel.callCloseRate.toFixed(1) + '%'}</h3>
+                </div>
+            </div>
+
+            ${needsYou.length > 0 ? `
+            <div class="card mb-6" style="border-left: 4px solid var(--color-accent); padding: 1.5rem;">
+                <h3 style="margin: 0 0 1rem 0;">Needs you today (${needsYou.length})</h3>
+                <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+                    ${needsYou.map(c => `
+                        <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; padding-bottom: 0.75rem; border-bottom: 1px solid var(--color-border);">
+                            <div>
+                                <span style="font-weight: 600; color: var(--color-black);">${escapeField(c.name)}</span>
+                                <span style="font-size: 0.8rem; color: var(--color-text-muted); display: block;">
+                                    ${stageLabel(c.stage)}${c.source ? ' • ' + escapeField(c.source) : ''}
+                                </span>
+                                ${c.nextSteps ? `
+                                <span style="font-size: 0.8rem; color: var(--color-text-main); display: block; margin-top: 0.2rem;">
+                                    Next: ${escapeField(c.nextSteps)}
+                                </span>` : ''}
+                            </div>
+                            <span style="font-size: 0.8rem; font-weight: 600; color: ${c.followUpDue ? 'var(--color-accent-dark)' : '#B54708'};">
+                                ${c.followUpDue
+                                    ? 'Follow up due ' + escapeField(c.followUpDate)
+                                    : c.closeOverdue
+                                        ? 'Was due to close ' + escapeField(c.closeDate)
+                                        : 'Quiet for ' + c.daysSinceMove + ' days'}
+                            </span>
+                        </div>
+                    `).join('')}
+                </div>
+                <p style="font-size: 0.8rem; color: var(--color-text-muted); margin: 1rem 0 0 0;">
+                    Three things land here: a follow-up date that has arrived, a close date that has passed, and anything still open and untouched for ${PIPELINE_COLD_DAYS} days.
+                </p>
+            </div>
+            ` : ''}
+
+            <div class="card mb-6" style="padding: 1.5rem;">
+                <h3 style="margin: 0 0 0.25rem 0;">Add a contact</h3>
+                <p style="font-size: 0.85rem; color: var(--color-text-muted); margin: 0 0 1.25rem 0;">
+                    Only the name is required. Everything else can be filled in later, and each circle explains what the field is for.
+                </p>
+                <form id="add-contact-form">
+                    <div class="pipeline-form-grid">
+                        ${field('contact-name', 'Name', renderTooltip(
+                            "The person you are talking to, however you would say their name out loud.",
+                            "It is the only field you have to fill in. A pipeline with one name in it is already more useful than a number.",
+                            'bottom', { what: 'What goes here', why: 'Good to know' }
+                        ), `<input type="text" id="contact-name" class="form-control" required placeholder="e.g. Sarah Miles">`)}
+
+                        ${field('contact-source', 'Source', renderTooltip(
+                            "Where this person came from, whether that was a post, a referral or an email.",
+                            "It is the same list the Revenue page uses, so Which Channel Earns can tell you which of your channels actually turns into money.",
+                            'bottom', { what: 'What goes here', why: 'What it feeds' }
+                        ), `
+                            <select id="contact-source" class="form-control">
+                                <option value="">Not sure yet</option>
+                                ${CONTACT_SOURCES.map(s => `<option value="${s}">${s}</option>`).join('')}
+                            </select>`)}
+
+                        ${field('contact-offer-select', 'Offer', renderTooltip(
+                            "Which of your offers this conversation is about.",
+                            "Built from your Quick Offers so it matches what you log on the Revenue page. Choose Other if it is something not on that list yet.",
+                            'bottom', { what: 'What goes here', why: 'Where the list comes from' }
+                        ), offerSelectHtml('contact-offer', ''))}
+
+                        ${field('contact-value', `Value (${currency})`, renderTooltip(
+                            "What this deal is worth to you if it lands.",
+                            "It feeds your pipeline value and your forecast, and it deliberately stays out of your revenue figures until the money has actually arrived.",
+                            'bottom', { what: 'What goes here', why: 'What it feeds' }
+                        ), `<input type="number" id="contact-value" class="form-control" min="0" step="any" placeholder="0.00">`)}
+
+                        ${field('contact-probability', 'How likely', renderTooltip(
+                            "Your honest gut feel on whether this one closes: low, medium or high.",
+                            "It is what discounts your forecast. Leave it blank and the deal is simply left out of the weighted figure rather than being guessed at.",
+                            'bottom', { what: 'What goes here', why: 'Why blank is fine' }
+                        ), `
+                            <select id="contact-probability" class="form-control">
+                                <option value="">Not sure yet</option>
+                                ${PIPELINE_PROBABILITIES.map(p => `<option value="${p.key}">${p.label}</option>`).join('')}
+                            </select>`)}
+
+                        ${field('contact-stage', 'Stage', renderTooltip(
+                            "How far along the conversation has got.",
+                            "Moving someone to Call booked counts a call in your funnel, and Won counts a close. Move them back and both undo, so a mis-click is always fixable.",
+                            'bottom', { what: 'What goes here', why: 'What it changes' }
+                        ), `
+                            <select id="contact-stage" class="form-control">
+                                ${PIPELINE_STAGES.map(s => `<option value="${s.key}">${s.label}</option>`).join('')}
+                            </select>`)}
+
+                        ${field('contact-close', 'Close date', renderTooltip(
+                            "When you expect this one to actually land.",
+                            "Different from a follow-up date. This is what Expected This Quarter is built from, and if the date passes while the deal is still open it appears in Needs You Today.",
+                            'bottom', { what: 'What goes here', why: 'How it differs from follow-up' }
+                        ), `<input type="date" id="contact-close" class="form-control">`)}
+
+                        ${field('contact-followup', 'Follow up', renderTooltip(
+                            "The day you want to be reminded to chase this one.",
+                            "It appears in Needs You Today the moment that date arrives, and anything left untouched for two weeks shows up there anyway.",
+                            'bottom', { what: 'What goes here', why: 'What it triggers' }
+                        ), `<input type="date" id="contact-followup" class="form-control">`)}
+
+                        ${field('contact-next', 'Next step', renderTooltip(
+                            "The one thing you will actually do next. Send the payment plan, not follow up.",
+                            "It shows on the card and beside the reminder, so when the day comes you do not have to remember what you meant.",
+                            'bottom', { what: 'What goes here', why: 'Why it is worth writing' }
+                        ), `<input type="text" id="contact-next" class="form-control" placeholder="e.g. Send the payment plan">`)}
+                    </div>
+                    <button type="submit" class="btn btn-primary mt-4" style="width: 100%;">Add to pipeline</button>
+                </form>
+            </div>
+
+            ${pipeline.total === 0 ? `
+                <div class="card" style="padding: 3rem 2rem; text-align: center;">
+                    <p style="font-size: 1.05rem; color: var(--color-text-main); margin: 0 0 0.5rem 0;">Nothing in the pipeline yet.</p>
+                    <p style="color: var(--color-text-muted); margin: 0;">
+                        Add the person you spoke to most recently. One name is enough to make this useful.
+                    </p>
+                </div>
+            ` : `
+                <div class="pipeline-board">
+                    ${PIPELINE_STAGES.map(stage => renderColumn(stage, pipeline.byStage[stage.key], currency)).join('')}
+                </div>
+                <p style="font-size: 0.8rem; color: var(--color-text-muted); margin-top: 1rem;">
+                    These contacts add ${funnel.contactLeads} ${funnel.contactLeads === 1 ? 'lead' : 'leads'},
+                    ${funnel.contactCalls} ${funnel.contactCalls === 1 ? 'call' : 'calls'} and
+                    ${funnel.contactCloses} ${funnel.contactCloses === 1 ? 'close' : 'closes'} to the funnel on your Revenue screen,
+                    on top of anything you log there in bulk.
+                </p>
+            `}
+        </div>
+    `;
+}
+
+function stageLabel(key) {
+    const stage = PIPELINE_STAGES.find(s => s.key === key);
+    return stage ? stage.label : key;
+}
+
+function renderColumn(stage, contacts, currency) {
+    const list = contacts || [];
+    const value = list.reduce((sum, c) => sum + (parseFloat(c.value) || 0), 0);
+
+    return `
+        <div class="pipeline-column">
+            <div class="pipeline-column-head">
+                <span class="pipeline-column-title" style="color: ${STAGE_COLOURS[stage.key]};">${stage.label}</span>
+                <span class="pipeline-column-count">${list.length}</span>
+            </div>
+            <p class="pipeline-column-hint">${stage.hint}</p>
+            ${value > 0 ? `<p class="pipeline-column-value">${currency}${formatAmount(value)}</p>` : ''}
+            <div class="pipeline-column-body">
+                ${list.length === 0
+                    ? `<p class="pipeline-column-empty">Empty</p>`
+                    : list.map(c => renderCard(c, currency)).join('')}
+            </div>
+        </div>
+    `;
+}
+
+function renderCard(contact, currency) {
+    if (String(editingId) === String(contact.id)) return renderEditCard(contact, currency);
+
+    const meta = [contact.source, contact.offer].filter(Boolean).map(escapeField).join(' • ');
+    const prob = PIPELINE_PROBABILITIES.find(p => p.key === contact.probability);
+
+    return `
+        <div class="pipeline-card" data-id="${contact.id}">
+            <div class="pipeline-card-top">
+                <span class="pipeline-card-name">${escapeField(contact.name)}</span>
+                ${contact.value > 0 ? `<span class="pipeline-card-value">${currency}${formatAmount(contact.value)}</span>` : ''}
+            </div>
+            ${meta ? `<p class="pipeline-card-meta">${meta}</p>` : ''}
+            ${prob ? `<span class="pipeline-card-prob pipeline-card-prob-${prob.key}">${prob.label} chance</span>` : ''}
+            ${contact.closeDate && contact.isOpen && !contact.closeOverdue
+                ? `<p class="pipeline-card-flag">Closing ${escapeField(contact.closeDate)}</p>`
+                : ''}
+            ${contact.followUpDue
+                ? `<p class="pipeline-card-flag pipeline-card-flag-due">Follow up due ${escapeField(contact.followUpDate)}</p>`
+                : contact.closeOverdue
+                    ? `<p class="pipeline-card-flag pipeline-card-flag-cold">Was due to close ${escapeField(contact.closeDate)}</p>`
+                    : contact.isCold
+                        ? `<p class="pipeline-card-flag pipeline-card-flag-cold">Quiet for ${contact.daysSinceMove} days</p>`
+                        : contact.followUpDate && contact.isOpen
+                            ? `<p class="pipeline-card-flag">Follow up ${escapeField(contact.followUpDate)}</p>`
+                            : ''}
+            ${contact.nextSteps ? `<p class="pipeline-card-next">Next: ${escapeField(contact.nextSteps)}</p>` : ''}
+            <select class="form-control pipeline-card-stage" data-stage-for="${contact.id}" aria-label="Stage for ${escapeField(contact.name)}">
+                ${PIPELINE_STAGES.map(s => `<option value="${s.key}"${s.key === contact.stage ? ' selected' : ''}>${s.label}</option>`).join('')}
+            </select>
+            <div class="pipeline-card-actions">
+                <button type="button" class="btn btn-ghost btn-sm btn-edit-contact" data-id="${contact.id}">Edit</button>
+                <button type="button" class="btn btn-ghost btn-sm btn-delete-contact" data-id="${contact.id}" aria-label="Remove ${escapeField(contact.name)}">🗑️</button>
+            </div>
+        </div>
+    `;
+}
+
+// The edit form replaces the card in place rather than opening a modal. A
+// pipeline you cannot correct is worse than no pipeline: the first typo in a
+// name, or a value entered as 47 when it was 470, has to be fixable without
+// deleting the contact and losing the stage history with it.
+function renderEditCard(contact, currency) {
+    return `
+        <div class="pipeline-card pipeline-card-editing" data-id="${contact.id}">
+            <form class="pipeline-edit-form" data-edit-for="${contact.id}">
+                <label class="pipeline-edit-label">Name</label>
+                <input type="text" class="form-control" data-field="name" value="${escapeField(contact.name)}" required>
+
+                <label class="pipeline-edit-label">Where they came from</label>
+                <select class="form-control" data-field="source">
+                    <option value=""${!contact.source ? ' selected' : ''}>Not sure yet</option>
+                    ${CONTACT_SOURCES.map(s => `<option value="${s}"${s === contact.source ? ' selected' : ''}>${s}</option>`).join('')}
+                    ${contact.source && !CONTACT_SOURCES.includes(contact.source)
+                        // A source typed before this became a dropdown, or one
+                        // that arrived from an import. Kept as its own option so
+                        // opening the edit form can never silently rewrite it.
+                        ? `<option value="${escapeField(contact.source)}" selected>${escapeField(contact.source)}</option>`
+                        : ''}
+                </select>
+
+                <label class="pipeline-edit-label">Offer</label>
+                ${offerSelectHtml('edit-offer-' + contact.id, contact.offer)}
+
+                <label class="pipeline-edit-label">Deal value (${currency})</label>
+                <input type="number" class="form-control" data-field="value" min="0" step="any" value="${contact.value || ''}">
+
+                <label class="pipeline-edit-label">How likely</label>
+                <select class="form-control" data-field="probability">
+                    <option value=""${!contact.probability ? ' selected' : ''}>Not sure yet</option>
+                    ${PIPELINE_PROBABILITIES.map(p => `<option value="${p.key}"${p.key === contact.probability ? ' selected' : ''}>${p.label}</option>`).join('')}
+                </select>
+
+                <label class="pipeline-edit-label">Expected to close</label>
+                <input type="date" class="form-control" data-field="closeDate" value="${escapeField(contact.closeDate)}">
+
+                <label class="pipeline-edit-label">Follow up on</label>
+                <input type="date" class="form-control" data-field="followUpDate" value="${escapeField(contact.followUpDate)}">
+
+                <label class="pipeline-edit-label">Next step</label>
+                <input type="text" class="form-control" data-field="nextSteps" value="${escapeField(contact.nextSteps)}">
+
+                <label class="pipeline-edit-label">Notes</label>
+                <textarea class="form-control" data-field="notes" rows="2">${escapeField(contact.notes)}</textarea>
+
+                <div class="pipeline-card-actions">
+                    <button type="submit" class="btn btn-primary btn-sm">Save</button>
+                    <button type="button" class="btn btn-ghost btn-sm btn-cancel-edit">Cancel</button>
+                </div>
+            </form>
+        </div>
+    `;
+}
+
+function pipelineAttachEvents() {
+    if (!canUseLeadPipeline()) {
+        // The locked view's only control is the modal trigger, and initProGate's
+        // delegated listener already owns that. Nothing to bind.
+        return;
+    }
+
+    // Every offer dropdown on the screen at once — the add form's, plus the one
+    // in whichever card is open for editing.
+    bindOfferSelects(document);
+
+    const addForm = document.getElementById('add-contact-form');
+    if (addForm) {
+        addForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const name = document.getElementById('contact-name').value.trim();
+            if (!name) {
+                showToast('Give them a name first.', 'error');
+                return;
+            }
+            addContact({
+                name,
+                source: document.getElementById('contact-source').value,
+                offer: readOfferValue(addForm, 'contact-offer'),
+                value: document.getElementById('contact-value').value,
+                probability: document.getElementById('contact-probability').value,
+                stage: document.getElementById('contact-stage').value,
+                closeDate: document.getElementById('contact-close').value,
+                followUpDate: document.getElementById('contact-followup').value,
+                nextSteps: document.getElementById('contact-next').value
+            });
+            showToast(`${name} added to your pipeline.`);
+            rerenderScreen();
+        });
+    }
+
+    document.querySelectorAll('[data-stage-for]').forEach(select => {
+        select.addEventListener('change', (e) => {
+            const id = e.target.getAttribute('data-stage-for');
+            const contact = updateContact(id, { stage: e.target.value });
+            if (contact) {
+                showToast(`${contact.name} moved to ${stageLabel(contact.stage)}.`);
+            }
+            rerenderScreen();
+        });
+    });
+
+    document.querySelectorAll('.btn-edit-contact').forEach(btn => {
+        btn.addEventListener('click', () => {
+            editingId = btn.getAttribute('data-id');
+            rerenderScreen();
+        });
+    });
+
+    document.querySelectorAll('.btn-cancel-edit').forEach(btn => {
+        btn.addEventListener('click', () => {
+            editingId = null;
+            rerenderScreen();
+        });
+    });
+
+    document.querySelectorAll('.pipeline-edit-form').forEach(form => {
+        form.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const id = form.getAttribute('data-edit-for');
+            const changes = {};
+            form.querySelectorAll('[data-field]').forEach(input => {
+                changes[input.getAttribute('data-field')] = input.value;
+            });
+            // Offer is the one field with two controls behind it, so it is read
+            // by name rather than swept up with the rest.
+            changes.offer = readOfferValue(form, 'edit-offer-' + id);
+            if (!String(changes.name || '').trim()) {
+                showToast('A contact needs a name.', 'error');
+                return;
+            }
+            updateContact(id, changes);
+            editingId = null;
+            showToast('Saved.');
+            rerenderScreen();
+        });
+    });
+
+    document.querySelectorAll('.btn-delete-contact').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const id = btn.getAttribute('data-id');
+            const store = getStore();
+            const contact = (store.contacts || []).find(c => String(c.id) === String(id));
+            const ok = await showConfirm(
+                `Remove ${contact ? contact.name : 'this contact'} from your pipeline? Their calls and closes stop counting towards your funnel.`,
+                { title: 'Remove contact', confirmText: 'Remove', danger: true }
+            );
+            if (!ok) return;
+            deleteContact(id);
+            if (String(editingId) === String(id)) editingId = null;
+            showToast('Removed.');
+            rerenderScreen();
+        });
+    });
 }
 
 
@@ -7486,6 +8963,17 @@ function renderSettings() {
                 <label class="form-label" style="font-weight: 600;">Quarterly Lead Goal</label>
                 <input type="number" id="set-lead-goal" class="form-input" value="${store.leads?.quarterlyGoal || 0}" min="0" required>
             </div>
+            <!-- Only settable in the onboarding wizard until now, so anyone who
+                 skipped past it or priced differently since had no way to correct
+                 it — and the Revenue tab's sales targets are derived from it. -->
+            <div class="form-group mb-4">
+                <label class="form-label" style="font-weight: 600;">Average Offer Price</label>
+                <div style="position: relative; display: flex; align-items: center;">
+                    <span style="position: absolute; left: 1rem; z-index: 1; font-weight: 600; color: var(--color-text-muted);">${store.settings?.currency || '$'}</span>
+                    <input type="number" id="set-offer-price" class="form-input" value="${store.revenue?.averageOfferPrice || 0}" min="0" step="1" style="padding-left: 2rem;">
+                </div>
+                <span class="form-helper">What a typical sale is worth. Revenue uses this to work out how many sales a week, a month and a quarter your goal needs.</span>
+            </div>
             
             <div class="form-group mb-0">
                 <label class="form-label" style="font-weight: 600;">Top 3 Priorities</label>
@@ -7676,7 +9164,14 @@ function settingsAttachEvents() {
             const currency = document.getElementById('set-currency')?.value;
             if (currency) updateSettings({ currency });
 
-            updateRevenueSettings({ quarterlyGoal: revenueGoal });
+            // Left alone rather than coerced to 0 if the field is somehow absent,
+            // so a missing input can never silently wipe a price the user set.
+            const offerPriceRaw = document.getElementById('set-offer-price')?.value;
+            const offerPriceUpdate = (offerPriceRaw === undefined || offerPriceRaw === '')
+                ? {}
+                : { averageOfferPrice: Math.max(0, parseFloat(offerPriceRaw) || 0) };
+
+            updateRevenueSettings({ quarterlyGoal: revenueGoal, ...offerPriceUpdate });
             updateLeadGoal(leadGoal);
 
             updateGoals({
@@ -8958,12 +10453,7 @@ Analyze what actually worked for me based on my real data. Give me a clear direc
 Analyze what drained me. Be ruthless. Tell me exactly what I need to stop doing, automate, or delegate to protect my CEO focus.`;
 
             try {
-                const { data, error } = await window.db.functions.invoke('chat', {
-                    body: { messages: [{ role: 'user', content: promptText }] }
-                });
-
-                if (error) throw new Error(await window.readFunctionError(error));
-                if (data.error) throw new Error(data.error.message || data.error);
+                const data = await window.invokeChat([{ role: 'user', content: promptText }]);
 
                 // For simple markdown bolding and line breaks since we aren't using a markdown parser library
                 let aiOutput = data.choices[0].message.content
@@ -9406,10 +10896,13 @@ function mondayPlanAttachEvents() {
                 addWeeklyPlan(newPlan);
             }
 
-            // 2.5 Save the specific tasks for Monday immediately into the daily log
+            // 2.5 Save the specific tasks for Monday immediately into the daily
+            // log, stamped with the plan they came from so the dashboard can tell
+            // later whether they still match. addWeeklyPlan sets `id` and `date`
+            // on this same object, so the key is read after saving, not before.
             const todayStr = getLocalDateString();
             const cleanTasks = mondayPlanData.daily3.map(t => ({ text: t, done: false }));
-            updateDailyLog(todayStr, cleanTasks);
+            updateDailyLog(todayStr, cleanTasks, planSourceKey(newPlan));
 
             // 3. Reset internal state for next week
             mondayStep = 1;
@@ -10355,6 +11848,9 @@ function router() {
         case '#/revenue':
             appContainer.innerHTML = renderRevenue();
             break;
+        case '#/pipeline':
+            appContainer.innerHTML = renderPipeline();
+            break;
         case '#/review':
             appContainer.innerHTML = renderReview();
             break;
@@ -10577,7 +12073,12 @@ window.addEventListener('load', () => {
 
     // Confirm the trial is still valid against the database, not just localStorage
     lastRevalidatedAt = Date.now();
-    revalidateAccess();
+    // Check the session is real before checking what it is entitled to. Without
+    // this the app happily runs on a `ceo_auth` flag with no Supabase session
+    // behind it, and only admits something is wrong when the AI coach fails.
+    window.reconcileAuthState().then(signedIn => {
+        if (signedIn) revalidateAccess();
+    });
 
     // Bring in any Stripe sales that landed since last time, quietly and at most
     // once an hour. This is what makes "every sale appears here on its own" true:

@@ -171,6 +171,17 @@ export function renderSettings() {
                 <label class="form-label" style="font-weight: 600;">Quarterly Lead Goal</label>
                 <input type="number" id="set-lead-goal" class="form-input" value="${store.leads?.quarterlyGoal || 0}" min="0" required>
             </div>
+            <!-- Only settable in the onboarding wizard until now, so anyone who
+                 skipped past it or priced differently since had no way to correct
+                 it — and the Revenue tab's sales targets are derived from it. -->
+            <div class="form-group mb-4">
+                <label class="form-label" style="font-weight: 600;">Average Offer Price</label>
+                <div style="position: relative; display: flex; align-items: center;">
+                    <span style="position: absolute; left: 1rem; z-index: 1; font-weight: 600; color: var(--color-text-muted);">${store.settings?.currency || '$'}</span>
+                    <input type="number" id="set-offer-price" class="form-input" value="${store.revenue?.averageOfferPrice || 0}" min="0" step="1" style="padding-left: 2rem;">
+                </div>
+                <span class="form-helper">What a typical sale is worth. Revenue uses this to work out how many sales a week, a month and a quarter your goal needs.</span>
+            </div>
             
             <div class="form-group mb-0">
                 <label class="form-label" style="font-weight: 600;">Top 3 Priorities</label>
@@ -361,7 +372,14 @@ function settingsAttachEvents() {
             const currency = document.getElementById('set-currency')?.value;
             if (currency) updateSettings({ currency });
 
-            updateRevenueSettings({ quarterlyGoal: revenueGoal });
+            // Left alone rather than coerced to 0 if the field is somehow absent,
+            // so a missing input can never silently wipe a price the user set.
+            const offerPriceRaw = document.getElementById('set-offer-price')?.value;
+            const offerPriceUpdate = (offerPriceRaw === undefined || offerPriceRaw === '')
+                ? {}
+                : { averageOfferPrice: Math.max(0, parseFloat(offerPriceRaw) || 0) };
+
+            updateRevenueSettings({ quarterlyGoal: revenueGoal, ...offerPriceUpdate });
             updateLeadGoal(leadGoal);
 
             updateGoals({
