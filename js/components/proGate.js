@@ -76,7 +76,10 @@ export const PRO_FEATURES = {
         blurb: 'Right now the conversation resets every time you refresh the page. With Pro your coach keeps the thread, so you can pick up on Thursday where you left off on Monday without explaining yourself again.'
     },
     'week-regen': {
-        shipped: false,
+        // Shipped 17 Aug 2026. Only unapplied generated weeks can be rewritten —
+        // a week the user has lived through stays as they lived it, which is the
+        // same rule applyGeneratedPlan has followed since batch 2.2.
+        shipped: true,
         title: 'Rebuild one week, keep the rest',
         blurb: 'Something changed in week five and the plan needs to bend. Regenerate that single week instead of the whole quarter, and leave everything you have already done exactly as it is.'
     },
@@ -106,6 +109,9 @@ export const PRO_FEATURES = {
             'AI planning written from your real numbers',
             '300 AI requests a day instead of 120',
             'A coach that remembers your conversations',
+            // Added when week-regen shipped, 17 Aug 2026. The list had nine
+            // bullets for ten features and this was the missing one.
+            'Rebuild one week of your plan without touching the rest',
             'Weekly digest by email',
             'Branded PDF reports',
             'Unlimited quick offers'
@@ -346,6 +352,13 @@ export function canRememberChats() {
     return isProUser() && isFeatureLive('coach-memory');
 }
 
+// Can this account rewrite a single week of the roadmap instead of the whole
+// quarter? Same single-answer rule as the three above, asked by the dashboard
+// button and by the modal behind it.
+export function canRegenerateWeek() {
+    return isProUser() && isFeatureLive('week-regen');
+}
+
 // A small "PRO" chip, for sitting next to a heading or a label.
 export function proBadge() {
     return `<span class="pro-badge">PRO</span>`;
@@ -386,6 +399,11 @@ export const PRO_CARD_HEADING_STYLE =
 //
 //   ${proLock('pdf-export', 'PDF Report')}
 //
+// Carries the same PRO chip as proCardHeading, sitting between the padlock and
+// the label. The padlock alone says "you can't press this"; the chip says why,
+// so a locked control in a row of ordinary buttons names the tier it belongs to
+// without the user having to click it to find out.
+//
 // Disappears on exactly the same rule as proTeaser — the account has the tier
 // AND the feature exists. Hiding it on tier alone was a bug: the trial resolves
 // to Pro, so every trial user lost the lock buttons while keeping the teasers,
@@ -396,6 +414,7 @@ export function proLock(featureKey, label) {
     return `
         <button type="button" class="pro-lock" data-pro-feature="${featureKey}">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+            ${proBadge()}
             <span>${label}</span>
         </button>
     `;

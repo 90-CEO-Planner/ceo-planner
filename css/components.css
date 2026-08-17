@@ -575,6 +575,65 @@
     flex-shrink: 0;
 }
 
+/* The chip inside a locked control. A plain .pro-badge would vanish here — its
+   background is the same pale yellow the button already sits on — so it fills
+   in with the solid brand yellow and dark text instead. Sized down a touch, the
+   same way .pro-teaser-heading does it, so the label stays the loudest thing. */
+.pro-lock .pro-badge {
+    flex-shrink: 0;
+    background: var(--color-secondary);
+    color: var(--color-black);
+    border-color: var(--color-secondary);
+    font-size: 0.6rem;
+}
+
+/* Redo-one-week modal. Shares .confirm-overlay / .confirm-card with showConfirm()
+   so it feels like the same app, and only widens the card — a week's preview is
+   a focus line, three priorities and a triplet, which is cramped at 420px. */
+.week-regen-card {
+    max-width: 520px;
+}
+
+.week-regen-preview {
+    background: var(--color-bg-light);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: 1rem;
+    margin-bottom: var(--spacing-lg);
+    /* A long week from the model must scroll inside the card rather than push
+       the buttons off a short screen. */
+    max-height: 45vh;
+    overflow-y: auto;
+}
+
+.week-regen-focus {
+    margin: 0 0 1rem 0;
+    font-weight: 600;
+    color: var(--color-primary-dark);
+}
+
+.week-regen-label {
+    margin: 0 0 0.35rem 0;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+    color: var(--color-text-muted);
+}
+
+.week-regen-list {
+    margin: 0 0 1rem 0;
+    padding-left: 1.25rem;
+    font-size: 0.9rem;
+}
+
+.week-regen-triplet {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    font-size: 0.9rem;
+}
+
 /* Full-width teaser strip. Sits in the flow of a screen, next to the manual way
    of doing the job it would replace. Muted on purpose — it has to be findable
    without competing with the control the user actually came to press. */

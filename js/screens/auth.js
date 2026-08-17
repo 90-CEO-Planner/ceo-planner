@@ -79,6 +79,10 @@ export function renderAuth(mode = 'login') {
                     </div>
                     ` : ''}
 
+                    ${mode !== 'reset' ? `
+                    <div id="auth-captcha" style="display: flex; justify-content: center; min-height: 0;"></div>
+                    ` : ''}
+
                     <button type="submit" class="btn btn-primary" style="width: 100%; padding: 0.75rem; font-size: 1rem; border-radius: 8px; margin-top: 0.5rem; box-shadow: 0 4px 6px -1px rgba(78, 14, 255, 0.2);">${btnText}</button>
 
                     ${mode === 'signup' ? `
@@ -98,6 +102,111 @@ export function renderAuth(mode = 'login') {
     `;
 }
 
+// --- Bot protection ---------------------------------------------------------
+//
+// Added after a run of automated signups in August 2026: roughly one every few
+// hours, each with a keyboard-mash name and a Gmail address wearing scattered
+// dots. They cost nothing in AI usage, but every one of them reached Loops as a
+// live trial contact, and junk addresses on the list are what damage sending
+// reputation for the real subscribers.
+//
+// Two independent defences, because either alone leaves a gap. Turnstile stops
+// the automated traffic; canonicalEmail stops one person quietly farming an
+// unlimited run of free trials out of a single inbox.
+
+let turnstileWidgetId = null;
+
+function captchaSiteKey() {
+    return window.CEO_TURNSTILE_SITE_KEY || null;
+}
+
+// Supabase enforces the captcha on signup, password sign-in *and* password
+// recovery the moment it is switched on, so all three need a token. Only the
+// reset form is exempt: it calls updateUser on an already-valid session, which
+// is not a captcha-protected endpoint.
+function captchaAppliesTo(mode) {
+    return mode !== 'reset' && !!captchaSiteKey();
+}
+
+function mountCaptcha(mode, attempt = 0) {
+    if (!captchaAppliesTo(mode)) return;
+
+    const holder = document.getElementById('auth-captcha');
+    if (!holder) return;
+
+    // The Turnstile script is loaded async from Cloudflare, so on a cold load it
+    // is routinely not ready by the time this screen attaches its events. Wait
+    // for it rather than leaving the form with no widget and no way to submit.
+    if (typeof window.turnstile === 'undefined') {
+        if (attempt < 40) setTimeout(() => mountCaptcha(mode, attempt + 1), 150);
+        return;
+    }
+
+    // Navigating login -> signup rebuilds the form, orphaning the old widget.
+    if (turnstileWidgetId !== null) {
+        try { window.turnstile.remove(turnstileWidgetId); } catch (err) { /* already gone */ }
+        turnstileWidgetId = null;
+    }
+    holder.innerHTML = '';
+
+    turnstileWidgetId = window.turnstile.render(holder, {
+        sitekey: captchaSiteKey(),
+        theme: 'light',
+    });
+}
+
+function captchaToken(mode) {
+    if (!captchaAppliesTo(mode) || turnstileWidgetId === null) return undefined;
+    try {
+        return window.turnstile.getResponse(turnstileWidgetId) || undefined;
+    } catch (err) {
+        return undefined;
+    }
+}
+
+// Tokens are single use. Every failed attempt has to hand the widget back a
+// fresh one, or the retry is refused for a reason the customer cannot see.
+function resetCaptcha() {
+    if (turnstileWidgetId === null || typeof window.turnstile === 'undefined') return;
+    try { window.turnstile.reset(turnstileWidgetId); } catch (err) { /* nothing to reset */ }
+}
+
+// One Gmail inbox, one account.
+//
+// Gmail ignores dots in the local part and everything after a `+`, so
+// `l.o.gan@gmail.com`, `logan+x@gmail.com` and `logan@gmail.com` are all the
+// same mailbox. That is precisely how the August bot run produced a stream of
+// "unique" addresses that still received mail, and it is the standard way to
+// farm an endless supply of free trials. Folding an address back to its
+// canonical form means the second attempt collides with the existing account
+// and Supabase refuses it.
+//
+// Applied on the way in to signup, login and password recovery alike, so the
+// same inbox always resolves to the same account however the address is typed.
+//
+// Deliberately limited to Gmail's own domains. Most providers treat dots as
+// significant, and stripping them elsewhere would merge two unrelated people.
+function canonicalEmail(email) {
+    if (!email) return email;
+
+    const at = email.lastIndexOf('@');
+    if (at === -1) return email;
+
+    let local = email.slice(0, at);
+    const domain = email.slice(at + 1);
+    if (domain !== 'gmail.com' && domain !== 'googlemail.com') return email;
+
+    const plus = local.indexOf('+');
+    if (plus !== -1) local = local.slice(0, plus);
+    local = local.split('.').join('');
+
+    // An address that was nothing but dots and tags. Leave it exactly as typed
+    // and let Supabase reject it, rather than inventing an empty local part.
+    if (!local) return email;
+
+    return local + '@gmail.com';
+}
+
 function authAttachEvents() {
     const form = document.getElementById('auth-form');
     if (!form) return;
@@ -106,6 +215,9 @@ function authAttachEvents() {
     const isSignup = hash.startsWith('#/signup');
     const isForgot = hash.startsWith('#/forgot-password');
     const isReset = hash.startsWith('#/reset-password');
+
+    const captchaMode = isReset ? 'reset' : 'auth';
+    mountCaptcha(captchaMode);
 
     // Auto-fill email if they came from Stripe Checkout or password reset link
     const hashQuery = hash.includes('?') ? hash.split('?')[1] : '';
@@ -130,23 +242,36 @@ function authAttachEvents() {
         
         const emailEl = document.getElementById('auth-email');
         const rawEmail = emailEl ? emailEl.value : null;
-        const email = rawEmail ? rawEmail.trim().toLowerCase() : null;
-        
+        const email = rawEmail ? canonicalEmail(rawEmail.trim().toLowerCase()) : null;
+
         const passwordEl = document.getElementById('auth-password');
         const password = passwordEl ? passwordEl.value : null;
-        
+
         const btn = form.querySelector('button[type="submit"]');
         const originalText = btn.innerText;
+
+        // Turnstile usually solves itself in the background, but it can still be
+        // working when somebody submits quickly. Supabase would answer with a
+        // raw "captcha protection: request disallowed", so say something useful
+        // instead and leave the form exactly as it was.
+        const token = captchaToken(captchaMode);
+        if (captchaAppliesTo(captchaMode) && !token) {
+            showToast("Still checking you're human. Give it a second and try again.", 'error');
+            return;
+        }
+
         btn.innerText = "Processing...";
         btn.style.opacity = '0.8';
-        
+
         if (isForgot) {
             if (email) {
                 window.db.auth.resetPasswordForEmail(email, {
-                    redirectTo: window.location.origin + window.location.pathname + '#/reset-password'
+                    redirectTo: window.location.origin + window.location.pathname + '#/reset-password',
+                    captchaToken: token
                 }).then(({ error }) => {
                     btn.innerText = originalText;
                     btn.style.opacity = '1';
+                    resetCaptcha();
                     if (error) {
                         showToast("We couldn't send that reset email: " + error.message, 'error');
                     } else {
@@ -176,12 +301,13 @@ function authAttachEvents() {
             window.db.auth.signUp({
                 email: email,
                 password: password,
-                options: { data: { name: name } }
+                options: { data: { name: name }, captchaToken: token }
             }).then(async ({ data: signUpData, error: signUpError }) => {
                 if (signUpError) {
                     showToast("Sign up failed: " + signUpError.message, 'error');
                     btn.innerText = originalText;
                     btn.style.opacity = '1';
+                    resetCaptcha();
                     return;
                 }
 
@@ -219,12 +345,14 @@ function authAttachEvents() {
             // Real Supabase Login
             window.db.auth.signInWithPassword({
                 email: email,
-                password: password
+                password: password,
+                options: { captchaToken: token }
             }).then(async ({ data, error }) => {
                 if (error) {
                     showToast("Login failed: " + error.message, 'error');
                     btn.innerText = originalText;
                     btn.style.opacity = '1';
+                    resetCaptcha();
                 } else {
                     // Drop whoever was on this device before doing anything else.
                     // This used to only *overwrite* on a successful cloud read, and

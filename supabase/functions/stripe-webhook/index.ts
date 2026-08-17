@@ -10,6 +10,34 @@ const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') as string, {
 
 const cryptoProvider = Stripe.createSubtleCryptoProvider()
 
+// Must stay identical to canonicalEmail in js/screens/auth.js.
+//
+// The app folds Gmail dots and +tags at signup, so an account created by
+// someone typing `sarah.jones@gmail.com` is stored as `sarahjones@gmail.com`.
+// Stripe does no such thing and hands back whatever the customer typed at
+// checkout. Without the same fold here, the profile lookup below misses, a
+// paying customer is mistaken for a brand new one, her account is never flipped
+// to active, and the trial clock keeps running until it locks her out of
+// something she has already paid for.
+function canonicalEmail(email: string): string {
+  if (!email) return email
+
+  const at = email.lastIndexOf('@')
+  if (at === -1) return email
+
+  let local = email.slice(0, at)
+  const domain = email.slice(at + 1)
+  if (domain !== 'gmail.com' && domain !== 'googlemail.com') return email
+
+  const plus = local.indexOf('+')
+  if (plus !== -1) local = local.slice(0, plus)
+  local = local.split('.').join('')
+
+  if (!local) return email
+
+  return local + '@gmail.com'
+}
+
 // Helper function to upsert contact and properties to Loops.so
 async function syncToLoops(
   email: string,
@@ -97,7 +125,7 @@ serve(async (req) => {
       // But we can store the customer ID if the user exists.
       
       if (email) {
-        const normalizedEmail = email.toLowerCase().trim()
+        const normalizedEmail = canonicalEmail(email.toLowerCase().trim())
         console.log(`Checkout completed for ${normalizedEmail}`)
 
         const fullName = session.customer_details?.name || ''

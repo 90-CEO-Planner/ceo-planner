@@ -60,6 +60,11 @@ At the start of your work week, head to the **Weekly Plan** tab to align your sh
     - **Follow-ups:** Nurturing existing leads.
 4. **The Daily 3 Breakdown:** Once saved, the engine automatically extracts and breaks down your weekly priorities into smaller "Daily 3" action steps on your dashboard.
 
+**When one week stops being realistic:**
+**Regenerate Plan** on the dashboard rebuilds every week you have not started yet. It is the right tool when the whole quarter has moved, and a heavy one when only a single week has.
+
+On Pro there is a second option: **Redo one week**, on the dashboard and on each week's card in your 90-Day Roadmap. Pick the week, say what changed if you want to, and your coach writes that week again on its own. The other eleven stay exactly as they are, and so does everything you have already lived through — a week you have applied on the Weekly Plan page is never rewritten, on either plan. You see the new week before anything is saved, so if you prefer the one you had, keep it. Weeks that have been rewritten are marked on the roadmap.
+
 ---
 
 ## 4. Daily Execution
@@ -185,6 +190,18 @@ window.CEO_CHECKOUT_MONTHLY = 'https://buy.stripe.com/7sY28q2DXgrp6H67VM18c08';
 window.CEO_CHECKOUT_ANNUAL = 'https://buy.stripe.com/28E8wO92l6QP1mM3Fw18c09';
 // Existing customers whose card failed manage themselves here
 window.CEO_BILLING_PORTAL = 'https://billing.stripe.com/p/login/eVq3cucex8YXc1q0tk18c00';
+
+// Cloudflare Turnstile site key, for the bot protection on the auth forms.
+// Public by design — the matching secret key lives in Supabase, which is what
+// actually verifies the token.
+//
+// Set 17 Aug 2026, together with the matching secret in Supabase
+// (Authentication -> Attack Protection). The two must stay switched on
+// together: clearing this while the Supabase secret is still saved makes
+// Supabase reject every signup AND every login for a missing captcha token, so
+// never blank it as a quick "turn the captcha off" — clear the Supabase side
+// first.
+window.CEO_TURNSTILE_SITE_KEY = '0x4AAAAAAESsYq8ysZijiBEz';
 
 // Pro tier checkout. Deliberately null: Pro is being built and has no price in
 // Stripe yet, so the locked-feature modal explains the feature and stops there
@@ -2187,6 +2204,66 @@ function applyGeneratedPlan(plan) {
     saveStore(store);
 }
 
+// Which weeks of the roadmap can be rewritten one at a time?
+//
+// Only generated weeks that have not been applied yet. An applied week is one
+// the user pushed into their Weekly Planner and lived through, and the rule the
+// whole plan runs on — set in batch 2.2 and honoured by applyGeneratedPlan
+// above — is that nothing the user has actually lived through is ever rewritten
+// by the app. A week they wrote themselves is not ours to rewrite either.
+//
+// Returned in week order, because every caller shows them in a list.
+function getRegenerableWeeks() {
+    const store = getStore();
+    return (store.weeklyPlans || [])
+        .filter(p => p.generated && !p.applied && p.weekNumber != null)
+        .sort((a, b) => a.weekNumber - b.weekNumber);
+}
+
+// Swap one generated week for a freshly written one, leaving the other eleven
+// exactly as they are.
+//
+// Matched on `id` rather than on week number: the store has held two rows with
+// the same weekNumber before (an applied one and a generated one), and matching
+// on the number would overwrite whichever came first — which could be the
+// applied week this feature promises not to touch.
+//
+// `week` is the shape regenerateOneWeek() returns. Refuses anything that isn't
+// an unapplied generated week, and returns true only if a row was actually
+// replaced, so the caller never reports success over a no-op.
+function replaceGeneratedWeek(planId, week) {
+    if (!week || !week.weeklyFocus) return false;
+
+    const store = getStore();
+    const idx = (store.weeklyPlans || []).findIndex(p => String(p.id) === String(planId));
+    if (idx === -1) return false;
+
+    const existing = store.weeklyPlans[idx];
+    if (!existing.generated || existing.applied) return false;
+
+    // The id and the week's place in the quarter are kept. Everything the model
+    // wrote is replaced. `regeneratedAt` is what the roadmap reads to mark the
+    // week as rewritten, and it is also the honest answer to "did this work?"
+    // when a user asks later why a week looks different from the plan they
+    // remember.
+    store.weeklyPlans[idx] = {
+        ...existing,
+        winCondition: week.weeklyFocus,
+        topActions: week.topPriorities,
+        visibilityAction: week.visibilityAction,
+        revenueAction: week.revenueAction,
+        followUps: week.followUpAction,
+        daily3: week.dailyThree,
+        successCheck: week.successCheck,
+        generated: true,
+        applied: false,
+        regeneratedAt: new Date().toISOString()
+    };
+
+    saveStore(store);
+    return true;
+}
+
 function addNote(note) {
     const store = getStore();
     note.id = Date.now().toString();
@@ -3065,7 +3142,15 @@ You MUST return ONLY a raw JSON strictly following this schema with no markdown 
     }
 }
 
-async function generate90DayActionPlan() {
+// The block of real user context a planner opens with: who they are, what they
+// sell, what they promised themselves this quarter.
+//
+// Extracted because there are two planners now — the 90-day one below and the
+// single-week one after it — and they have to see the same picture. A week
+// rewritten against a thinner context than the quarter it belongs to reads as
+// though a different app wrote it, which is exactly what "redo one week" must
+// never feel like.
+function buildPlanningContext() {
     const store = getStore();
 
     const ceoName = store.profile?.name || "CEO";
@@ -3092,11 +3177,7 @@ async function generate90DayActionPlan() {
         salesRequired = Math.ceil(revenueGoal / avgOfferPrice);
     }
 
-    const systemPrompt = `You are an elite strategic planner for solo entrepreneurs. You build calibrated, realistic 90-day action plans — not generic advice. You think like a Chief of Staff: ruthless about scope, honest about constraints, specific about weekly cadence.
-
-You are planning for ${ceoName}, founder of ${businessName}.
-
-REAL CONTEXT (use this and only this):
+    const block = `REAL CONTEXT (use this and only this):
 - Business stage: ${stage}
 - Business model: ${businessModel}
 - #1 Bottleneck right now: ${bottleneck}
@@ -3110,7 +3191,19 @@ REAL CONTEXT (use this and only this):
 - Implied number of sales required this quarter: ${salesRequired}
 - Quarterly Lead Goal: ${leadGoal}
 - Currency: ${currency}
-- CEO Commitment statement: "${statement}"
+- CEO Commitment statement: "${statement}"`;
+
+    return { store, ceoName, businessName, currency, salesRequired, block };
+}
+
+async function generate90DayActionPlan() {
+    const { ceoName, businessName, salesRequired, block } = buildPlanningContext();
+
+    const systemPrompt = `You are an elite strategic planner for solo entrepreneurs. You build calibrated, realistic 90-day action plans — not generic advice. You think like a Chief of Staff: ruthless about scope, honest about constraints, specific about weekly cadence.
+
+You are planning for ${ceoName}, founder of ${businessName}.
+
+${block}
 
 RULES (apply all of them):
 1. Calibrate targets honestly. If the math is unrealistic given stage and bottleneck, note it in the plan and propose a stretch vs. realistic split. Never inflate.
@@ -3188,6 +3281,151 @@ CRITICAL: Return ONLY the JSON object above. No explanation, no preamble, no cod
         return parsedPlan;
     } catch (error) {
         console.error("Failed to generate 90-Day Action Plan:", error);
+        return null;
+    }
+}
+
+// Rewrite a single week of the roadmap, leaving the other eleven alone.
+//
+// The whole-quarter regenerator above is the blunt instrument: it answers "the
+// plan is wrong", and the price is that every week you had not started yet is
+// replaced. This answers the much more common thing — one week stopped being
+// realistic, because a launch slipped or a client landed or you were ill — and
+// it is the reason the Pro copy says "keep the rest".
+//
+// `targetWeek` is the stored weekly plan being replaced, not a week number, so
+// the model can be shown what it is rewriting. `note` is the user's own sentence
+// about what changed; it is optional, and it is the only part of the prompt the
+// quarter planner never sees.
+//
+// Returns a week object in the same shape `applyGeneratedPlan` writes, or null.
+// The caller decides what to do with null — this never half-writes a week.
+async function regenerateOneWeek(targetWeek, note) {
+    if (!targetWeek || targetWeek.weekNumber == null) {
+        console.error('regenerateOneWeek called without a target week');
+        return null;
+    }
+
+    const { store, ceoName, businessName, block } = buildPlanningContext();
+    const weekNumber = targetWeek.weekNumber;
+    const monthIndex = targetWeek.monthIndex || Math.ceil(weekNumber / 4);
+
+    const themes = store.monthlyThemes || {};
+    const theme = themes['month' + monthIndex] || 'Unknown';
+
+    // The weeks either side, so the rewrite lands in a sequence rather than in
+    // isolation. Focus lines only: the full text of two more weeks would triple
+    // the prompt for very little the model can act on.
+    const plans = store.weeklyPlans || [];
+    const neighbour = (n) => {
+        const w = plans.find(p => p.weekNumber === n && p.id !== targetWeek.id);
+        return w ? `Week ${n}: ${w.winCondition || 'no focus set'}` : `Week ${n}: not planned`;
+    };
+    const before = weekNumber > 1 ? neighbour(weekNumber - 1) : 'Week 0: the quarter has not started yet';
+    const after = weekNumber < 12 ? neighbour(weekNumber + 1) : 'Week 13: the quarter is over';
+
+    // Where the quarter actually stands. Without this the model rewrites week
+    // nine as though it were week one, which is the failure the whole-quarter
+    // planner was already criticised for internally.
+    const insights = getRevenueInsights();
+    const currency = store.settings?.currency || '$';
+    const weeksElapsed = getWeeksElapsed(store) || 1;
+
+    const changeNote = (note && note.trim())
+        ? `WHAT CHANGED (the user's own words, treat this as the most important instruction after the context above):\n"${note.trim().slice(0, 500)}"`
+        : 'WHAT CHANGED: the user did not say. Assume the week simply needs a fresher, sharper version of the same intent.';
+
+    const systemPrompt = `You are an elite strategic planner for solo entrepreneurs, acting as Chief of Staff to ${ceoName}, founder of ${businessName}.
+
+You are NOT rebuilding their quarter. You are rewriting exactly ONE week of an existing 90-day plan. Every other week stays as it is, so your week has to fit between the two around it.
+
+${block}
+
+THE QUARTER SO FAR:
+- Plan summary: ${store.planSummary || 'Not recorded.'}
+- Theme for month ${monthIndex}: ${theme}
+- Week being rewritten: ${weekNumber} of 12
+- Weeks elapsed in the quarter: ${weeksElapsed}
+- Revenue logged so far: ${currency}${(insights.totalRevenue || 0).toLocaleString()} against a goal of ${currency}${(insights.goal || 0).toLocaleString()}
+
+THE WEEK AS IT STANDS (this is what you are replacing):
+- Focus: ${targetWeek.winCondition || 'None'}
+- Top 3: ${(targetWeek.topActions || []).join(' | ') || 'None'}
+- Visibility: ${targetWeek.visibilityAction || 'None'}
+- Revenue: ${targetWeek.revenueAction || 'None'}
+- Follow-up: ${targetWeek.followUps || 'None'}
+
+THE WEEKS EITHER SIDE (do not duplicate their work, do not contradict them):
+- ${before}
+- ${after}
+
+${changeNote}
+
+RULES (apply all of them):
+1. Return ONE week, numbered ${weekNumber}, in month ${monthIndex}. Never renumber it.
+2. It must still serve the 90-Day Outcome and the theme for month ${monthIndex}. A rewritten week is a different route to the same place, not a different place.
+3. Keep the week's shape: a Top 3, ONE visibility action, ONE revenue action, ONE follow-up action. Visibility and revenue are non-negotiable.
+4. Write a genuinely different week. If what comes back is the old week reworded, you have failed — the user asked for this because the old one stopped working.
+5. Respect where the quarter actually is. Week ${weekNumber} of 12 with ${currency}${(insights.totalRevenue || 0).toLocaleString()} logged is not week one; do not send them back to foundations they have already built, and do not set a target the remaining weeks cannot carry.
+6. Tie every action to their #1 bottleneck or their 90-Day Outcome. Generic tasks ("post on social media") are forbidden.
+7. Match intensity to their stage. A tired founder is reading this on their phone. Warm, direct, specific, no hype, no jargon.
+8. Keep each topPriorities entry under 70 characters. They render in single-line inputs and anything longer is cut off mid-sentence. One action per entry, no "Task:"/"Execution:" labels, no semicolons joining two actions.
+9. The successCheck must be realistic for their stage and tied to completing this week's actions, not to a lag metric they cannot control.
+10. Never recommend tools they did not mention. Never assume budget or team.
+11. Output JSON only. No markdown, no code fences, no prose before or after.
+
+OUTPUT FORMAT (return exactly this JSON shape, one object, not an array):
+{
+  "weekNumber": ${weekNumber},
+  "monthIndex": ${monthIndex},
+  "weeklyFocus": "One sentence focus for the week, tied to the monthly theme.",
+  "topPriorities": [
+    "[One specific action, max 70 characters]",
+    "[One specific action, max 70 characters]",
+    "[One specific action, max 70 characters]"
+  ],
+  "visibilityAction": "ONE specific visibility task this week (audience-facing, no sale).",
+  "revenueAction": "ONE specific revenue task this week (a direct invitation to buy).",
+  "followUpAction": "ONE specific follow-up task this week (nurture an existing lead).",
+  "dailyThree": ["Mon-Tue micro task", "Wed-Thu micro task", "Fri micro task"],
+  "successCheck": "How they will know this week worked (a measurable outcome).",
+  "whatChanged": "One short sentence, addressed to the user, saying how this week now differs from the one it replaced."
+}
+
+CRITICAL: Return ONLY the JSON object above. No explanation, no preamble, no code fences.`;
+
+    try {
+        // One week is a twelfth of the work the quarter planner does, so the
+        // ceiling is a twelfth of the size. Same reasoning as there: it exists
+        // to stop a runaway, not to shape the answer.
+        const data = await window.invokeChat(
+            [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: `Rewrite week ${weekNumber} now. Return only the JSON object, no prose, no markdown fences.` }
+            ],
+            { json: true, maxTokens: 1200 }
+        );
+
+        let content = data.choices[0].message.content;
+        content = content.replace(/^```json/gi, '').replace(/```$/g, '').trim();
+        const week = JSON.parse(content);
+
+        // Shape check before anything is written. A week missing its triplet
+        // would render as "undefined" on the roadmap and the Weekly Planner,
+        // and the user would have spent a regeneration to get it.
+        if (!week || !week.weeklyFocus || !Array.isArray(week.topPriorities) || week.topPriorities.length === 0
+            || !week.visibilityAction || !week.revenueAction) {
+            throw new Error('Invalid week shape returned from AI.');
+        }
+
+        // The model is told twice not to renumber, but the store is what has to
+        // be right — a week that came back as week 3 would overwrite week 3.
+        week.weekNumber = weekNumber;
+        week.monthIndex = monthIndex;
+
+        return week;
+    } catch (error) {
+        console.error(`Failed to regenerate week ${weekNumber}:`, error);
         return null;
     }
 }
@@ -3273,7 +3511,10 @@ const PRO_FEATURES = {
         blurb: 'Right now the conversation resets every time you refresh the page. With Pro your coach keeps the thread, so you can pick up on Thursday where you left off on Monday without explaining yourself again.'
     },
     'week-regen': {
-        shipped: false,
+        // Shipped 17 Aug 2026. Only unapplied generated weeks can be rewritten —
+        // a week the user has lived through stays as they lived it, which is the
+        // same rule applyGeneratedPlan has followed since batch 2.2.
+        shipped: true,
         title: 'Rebuild one week, keep the rest',
         blurb: 'Something changed in week five and the plan needs to bend. Regenerate that single week instead of the whole quarter, and leave everything you have already done exactly as it is.'
     },
@@ -3303,6 +3544,9 @@ const PRO_FEATURES = {
             'AI planning written from your real numbers',
             '300 AI requests a day instead of 120',
             'A coach that remembers your conversations',
+            // Added when week-regen shipped, 17 Aug 2026. The list had nine
+            // bullets for ten features and this was the missing one.
+            'Rebuild one week of your plan without touching the rest',
             'Weekly digest by email',
             'Branded PDF reports',
             'Unlimited quick offers'
@@ -3543,6 +3787,13 @@ function canRememberChats() {
     return isProUser() && isFeatureLive('coach-memory');
 }
 
+// Can this account rewrite a single week of the roadmap instead of the whole
+// quarter? Same single-answer rule as the three above, asked by the dashboard
+// button and by the modal behind it.
+function canRegenerateWeek() {
+    return isProUser() && isFeatureLive('week-regen');
+}
+
 // A small "PRO" chip, for sitting next to a heading or a label.
 function proBadge() {
     return `<span class="pro-badge">PRO</span>`;
@@ -3583,6 +3834,11 @@ const PRO_CARD_HEADING_STYLE =
 //
 //   ${proLock('pdf-export', 'PDF Report')}
 //
+// Carries the same PRO chip as proCardHeading, sitting between the padlock and
+// the label. The padlock alone says "you can't press this"; the chip says why,
+// so a locked control in a row of ordinary buttons names the tier it belongs to
+// without the user having to click it to find out.
+//
 // Disappears on exactly the same rule as proTeaser — the account has the tier
 // AND the feature exists. Hiding it on tier alone was a bug: the trial resolves
 // to Pro, so every trial user lost the lock buttons while keeping the teasers,
@@ -3593,6 +3849,7 @@ function proLock(featureKey, label) {
     return `
         <button type="button" class="pro-lock" data-pro-feature="${featureKey}">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+            ${proBadge()}
             <span>${label}</span>
         </button>
     `;
@@ -4973,6 +5230,224 @@ function initChatWidget() {
 }
 
 
+// --- js\components\weekRegen.js ---
+// Rewrite one week of the roadmap — the Pro answer to "the plan needs to bend".
+//
+// The dashboard already has a Regenerate Plan button, and it is deliberately
+// blunt: it replaces every week you have not started yet. That is the right tool
+// when the quarter itself is wrong, and the wrong one when a single week stopped
+// being realistic because a launch slipped or a client landed. This is that
+// second tool.
+//
+// Two things about the flow are on purpose:
+//
+// 1. Nothing is written until the user has read the new week. The quarter
+//    regenerator commits straight away, which is defensible when it is replacing
+//    a plan the user already declared wrong. Here the user is choosing one week
+//    out of twelve and has every right to say "no, the old one was better" — so
+//    the model's answer is shown first and the store is only touched on Use.
+// 2. Only unapplied generated weeks are offered. getRegenerableWeeks() is the
+//    single place that rule lives; this file never filters weeks itself.
+
+
+const NOTE_MAX = 300;
+
+// `preselectId` is the id of a stored weekly plan to open on. The dashboard
+// passes nothing, because from there the user has not said which week they mean;
+// the roadmap passes the week whose button was pressed.
+function showWeekRegenModal(preselectId) {
+    // Belt and braces. The dashboard only renders the button for accounts that
+    // pass this, but the modal is exported and a future caller might not.
+    if (!canRegenerateWeek()) return;
+
+    const weeks = getRegenerableWeeks();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'confirm-overlay';
+    overlay.innerHTML = `
+        <div class="confirm-card card week-regen-card" role="dialog" aria-modal="true" aria-labelledby="week-regen-title">
+            <span class="pro-badge">PRO</span>
+            <h3 id="week-regen-title" class="confirm-title" style="margin-top: 0.5rem;">Redo one week</h3>
+            <div class="week-regen-body"></div>
+        </div>
+    `;
+
+    const body = overlay.querySelector('.week-regen-body');
+    const previouslyFocused = document.activeElement;
+
+    const close = () => {
+        document.removeEventListener('keydown', onKeydown);
+        overlay.remove();
+        if (previouslyFocused && typeof previouslyFocused.focus === 'function') {
+            previouslyFocused.focus();
+        }
+    };
+
+    // Escape closes, except while the model is working — closing mid-call would
+    // leave the user with no way back to a week they are about to be charged a
+    // request for.
+    let working = false;
+    const onKeydown = (e) => {
+        if (e.key === 'Escape' && !working) close();
+    };
+    document.addEventListener('keydown', onKeydown);
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay && !working) close();
+    });
+
+    // --- Nothing to rewrite --------------------------------------------------
+    //
+    // Either the quarter has not been generated yet, or every generated week has
+    // already been applied. Both are ordinary states, so this explains the rule
+    // rather than reading as an error.
+    if (weeks.length === 0) {
+        body.innerHTML = `
+            <p class="confirm-message">There is no week to rewrite right now. This works on weeks of your 90-Day Plan that you haven't started yet — once you've applied a week on the Weekly Planner it stays exactly as you worked it.</p>
+            <div class="confirm-actions">
+                <button type="button" class="btn btn-primary week-regen-close">Got it</button>
+            </div>
+        `;
+        body.querySelector('.week-regen-close').addEventListener('click', close);
+        document.body.appendChild(overlay);
+        body.querySelector('.week-regen-close').focus();
+        return;
+    }
+
+    // --- Step one: which week, and what changed ------------------------------
+    const options = weeks.map(w => {
+        const focus = (w.winCondition || 'No focus set').slice(0, 70);
+        const opt = document.createElement('option');
+        opt.value = w.id;
+        opt.textContent = `Week ${w.weekNumber} — ${focus}`;
+        return opt.outerHTML;
+    }).join('');
+
+    body.innerHTML = `
+        <p class="confirm-message">Pick a week and I'll write it again from scratch, keeping the other eleven exactly as they are.</p>
+        <label class="form-label" for="week-regen-select">Week to rewrite</label>
+        <select id="week-regen-select" class="form-input">${options}</select>
+        <label class="form-label" for="week-regen-note" style="margin-top: 1rem;">What changed? <span style="font-weight: 400; color: var(--color-text-muted);">(optional)</span></label>
+        <textarea id="week-regen-note" class="form-input" rows="3" maxlength="${NOTE_MAX}" placeholder="A launch slipped, a client landed, I'm ill this week..."></textarea>
+        <p style="font-size: 0.8rem; color: var(--color-text-muted); margin: 0.35rem 0 1.25rem 0;">Telling me why makes the new week land better than a blank rewrite.</p>
+        <div class="confirm-actions">
+            <button type="button" class="btn btn-ghost week-regen-cancel">Cancel</button>
+            <button type="button" class="btn btn-primary week-regen-go">Rewrite this week</button>
+        </div>
+    `;
+
+    const select = body.querySelector('#week-regen-select');
+    const note = body.querySelector('#week-regen-note');
+    const btnGo = body.querySelector('.week-regen-go');
+
+    if (preselectId && weeks.some(w => String(w.id) === String(preselectId))) {
+        select.value = String(preselectId);
+    }
+
+    body.querySelector('.week-regen-cancel').addEventListener('click', close);
+
+    btnGo.addEventListener('click', async () => {
+        const target = weeks.find(w => String(w.id) === String(select.value));
+        if (!target) return;
+
+        working = true;
+        btnGo.disabled = true;
+        select.disabled = true;
+        note.disabled = true;
+        btnGo.textContent = 'Writing week ' + target.weekNumber + '...';
+
+        let fresh = null;
+        try {
+            fresh = await regenerateOneWeek(target, note.value);
+        } catch (err) {
+            console.error(err);
+        }
+
+        working = false;
+
+        if (!fresh) {
+            btnGo.disabled = false;
+            select.disabled = false;
+            note.disabled = false;
+            btnGo.textContent = 'Rewrite this week';
+            showToast("Couldn't rewrite that week right now. Please try again in a moment.", 'error');
+            return;
+        }
+
+        renderPreview(target, fresh);
+    });
+
+    // --- Step two: read it, then decide --------------------------------------
+    function renderPreview(target, fresh) {
+        body.innerHTML = `
+            <p class="confirm-message week-regen-summary"></p>
+            <div class="week-regen-preview">
+                <p class="week-regen-focus"></p>
+                <p class="week-regen-label">Top 3</p>
+                <ul class="week-regen-list"></ul>
+                <p class="week-regen-label">The triplet</p>
+                <div class="week-regen-triplet"></div>
+            </div>
+            <div class="confirm-actions">
+                <button type="button" class="btn btn-ghost week-regen-discard">Keep the old one</button>
+                <button type="button" class="btn btn-primary week-regen-use">Use this week</button>
+            </div>
+        `;
+
+        // Everything below is model output going onto the page, so it is set as
+        // text rather than as HTML.
+        body.querySelector('.week-regen-summary').textContent =
+            fresh.whatChanged || `Here is week ${target.weekNumber} rewritten. Nothing is saved until you say so.`;
+        body.querySelector('.week-regen-focus').textContent = fresh.weeklyFocus;
+
+        const list = body.querySelector('.week-regen-list');
+        (fresh.topPriorities || []).forEach(p => {
+            const li = document.createElement('li');
+            li.textContent = p;
+            list.appendChild(li);
+        });
+
+        const triplet = body.querySelector('.week-regen-triplet');
+        [
+            ['Visibility', fresh.visibilityAction],
+            ['Revenue', fresh.revenueAction],
+            ['Follow-up', fresh.followUpAction]
+        ].forEach(([label, value]) => {
+            if (!value) return;
+            const row = document.createElement('div');
+            const strong = document.createElement('strong');
+            strong.textContent = label + ': ';
+            row.appendChild(strong);
+            row.appendChild(document.createTextNode(value));
+            triplet.appendChild(row);
+        });
+
+        body.querySelector('.week-regen-discard').addEventListener('click', () => {
+            close();
+            showToast(`Week ${target.weekNumber} left as it was`);
+        });
+
+        body.querySelector('.week-regen-use').addEventListener('click', () => {
+            const saved = replaceGeneratedWeek(target.id, fresh);
+            close();
+            if (saved) {
+                showToast(`Week ${target.weekNumber} rewritten`);
+                rerenderScreen();
+            } else {
+                // The only way here is the week having been applied in another
+                // tab while this modal was open. Saying so is better than a
+                // success message over a week that did not change.
+                showToast(`Week ${target.weekNumber} has been started since you opened this, so it was left alone.`, 'error');
+            }
+        });
+
+        body.querySelector('.week-regen-use').focus();
+    }
+
+    document.body.appendChild(overlay);
+    select.focus();
+}
+
+
 // --- js\screens\welcome.js ---
 // welcome.js
 
@@ -5788,7 +6263,12 @@ function renderDashboard() {
                             Regenerate Plan
                         </button>
                     </div>
-                    ${proLock('week-regen', 'Redo one week')}
+                    ${canRegenerateWeek() ? `
+                        <button class="btn btn-outline btn-sm btn-redo-week" style="display: flex; align-items: center; gap: 0.4rem;">
+                            <span class="pro-badge">PRO</span>
+                            Redo one week
+                        </button>
+                    ` : proLock('week-regen', 'Redo one week')}
                     <button class="btn btn-primary btn-sm btn-open-quick-sale" style="display: flex; align-items: center; gap: 0.25rem;">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                         Log a Sale
@@ -6711,6 +7191,14 @@ function dashboardAttachEvents() {
                 scoreDetailsEl.textContent = 'Please plan your week to start tracking';
             }
         }
+    }
+
+    // Redo one week (Pro). The button only exists for accounts that can use it —
+    // base accounts get the lock beside it instead, which opens the Pro modal
+    // through the delegated handler in proGate.js rather than through this one.
+    const btnRedoWeek = document.querySelector('.btn-redo-week');
+    if (btnRedoWeek) {
+        btnRedoWeek.addEventListener('click', () => showWeekRegenModal());
     }
 
     // Regenerate Plan Logic
@@ -13214,6 +13702,10 @@ function renderAuth(mode = 'login') {
                     </div>
                     ` : ''}
 
+                    ${mode !== 'reset' ? `
+                    <div id="auth-captcha" style="display: flex; justify-content: center; min-height: 0;"></div>
+                    ` : ''}
+
                     <button type="submit" class="btn btn-primary" style="width: 100%; padding: 0.75rem; font-size: 1rem; border-radius: 8px; margin-top: 0.5rem; box-shadow: 0 4px 6px -1px rgba(78, 14, 255, 0.2);">${btnText}</button>
 
                     ${mode === 'signup' ? `
@@ -13233,6 +13725,111 @@ function renderAuth(mode = 'login') {
     `;
 }
 
+// --- Bot protection ---------------------------------------------------------
+//
+// Added after a run of automated signups in August 2026: roughly one every few
+// hours, each with a keyboard-mash name and a Gmail address wearing scattered
+// dots. They cost nothing in AI usage, but every one of them reached Loops as a
+// live trial contact, and junk addresses on the list are what damage sending
+// reputation for the real subscribers.
+//
+// Two independent defences, because either alone leaves a gap. Turnstile stops
+// the automated traffic; canonicalEmail stops one person quietly farming an
+// unlimited run of free trials out of a single inbox.
+
+let turnstileWidgetId = null;
+
+function captchaSiteKey() {
+    return window.CEO_TURNSTILE_SITE_KEY || null;
+}
+
+// Supabase enforces the captcha on signup, password sign-in *and* password
+// recovery the moment it is switched on, so all three need a token. Only the
+// reset form is exempt: it calls updateUser on an already-valid session, which
+// is not a captcha-protected endpoint.
+function captchaAppliesTo(mode) {
+    return mode !== 'reset' && !!captchaSiteKey();
+}
+
+function mountCaptcha(mode, attempt = 0) {
+    if (!captchaAppliesTo(mode)) return;
+
+    const holder = document.getElementById('auth-captcha');
+    if (!holder) return;
+
+    // The Turnstile script is loaded async from Cloudflare, so on a cold load it
+    // is routinely not ready by the time this screen attaches its events. Wait
+    // for it rather than leaving the form with no widget and no way to submit.
+    if (typeof window.turnstile === 'undefined') {
+        if (attempt < 40) setTimeout(() => mountCaptcha(mode, attempt + 1), 150);
+        return;
+    }
+
+    // Navigating login -> signup rebuilds the form, orphaning the old widget.
+    if (turnstileWidgetId !== null) {
+        try { window.turnstile.remove(turnstileWidgetId); } catch (err) { /* already gone */ }
+        turnstileWidgetId = null;
+    }
+    holder.innerHTML = '';
+
+    turnstileWidgetId = window.turnstile.render(holder, {
+        sitekey: captchaSiteKey(),
+        theme: 'light',
+    });
+}
+
+function captchaToken(mode) {
+    if (!captchaAppliesTo(mode) || turnstileWidgetId === null) return undefined;
+    try {
+        return window.turnstile.getResponse(turnstileWidgetId) || undefined;
+    } catch (err) {
+        return undefined;
+    }
+}
+
+// Tokens are single use. Every failed attempt has to hand the widget back a
+// fresh one, or the retry is refused for a reason the customer cannot see.
+function resetCaptcha() {
+    if (turnstileWidgetId === null || typeof window.turnstile === 'undefined') return;
+    try { window.turnstile.reset(turnstileWidgetId); } catch (err) { /* nothing to reset */ }
+}
+
+// One Gmail inbox, one account.
+//
+// Gmail ignores dots in the local part and everything after a `+`, so
+// `l.o.gan@gmail.com`, `logan+x@gmail.com` and `logan@gmail.com` are all the
+// same mailbox. That is precisely how the August bot run produced a stream of
+// "unique" addresses that still received mail, and it is the standard way to
+// farm an endless supply of free trials. Folding an address back to its
+// canonical form means the second attempt collides with the existing account
+// and Supabase refuses it.
+//
+// Applied on the way in to signup, login and password recovery alike, so the
+// same inbox always resolves to the same account however the address is typed.
+//
+// Deliberately limited to Gmail's own domains. Most providers treat dots as
+// significant, and stripping them elsewhere would merge two unrelated people.
+function canonicalEmail(email) {
+    if (!email) return email;
+
+    const at = email.lastIndexOf('@');
+    if (at === -1) return email;
+
+    let local = email.slice(0, at);
+    const domain = email.slice(at + 1);
+    if (domain !== 'gmail.com' && domain !== 'googlemail.com') return email;
+
+    const plus = local.indexOf('+');
+    if (plus !== -1) local = local.slice(0, plus);
+    local = local.split('.').join('');
+
+    // An address that was nothing but dots and tags. Leave it exactly as typed
+    // and let Supabase reject it, rather than inventing an empty local part.
+    if (!local) return email;
+
+    return local + '@gmail.com';
+}
+
 function authAttachEvents() {
     const form = document.getElementById('auth-form');
     if (!form) return;
@@ -13241,6 +13838,9 @@ function authAttachEvents() {
     const isSignup = hash.startsWith('#/signup');
     const isForgot = hash.startsWith('#/forgot-password');
     const isReset = hash.startsWith('#/reset-password');
+
+    const captchaMode = isReset ? 'reset' : 'auth';
+    mountCaptcha(captchaMode);
 
     // Auto-fill email if they came from Stripe Checkout or password reset link
     const hashQuery = hash.includes('?') ? hash.split('?')[1] : '';
@@ -13265,23 +13865,36 @@ function authAttachEvents() {
         
         const emailEl = document.getElementById('auth-email');
         const rawEmail = emailEl ? emailEl.value : null;
-        const email = rawEmail ? rawEmail.trim().toLowerCase() : null;
-        
+        const email = rawEmail ? canonicalEmail(rawEmail.trim().toLowerCase()) : null;
+
         const passwordEl = document.getElementById('auth-password');
         const password = passwordEl ? passwordEl.value : null;
-        
+
         const btn = form.querySelector('button[type="submit"]');
         const originalText = btn.innerText;
+
+        // Turnstile usually solves itself in the background, but it can still be
+        // working when somebody submits quickly. Supabase would answer with a
+        // raw "captcha protection: request disallowed", so say something useful
+        // instead and leave the form exactly as it was.
+        const token = captchaToken(captchaMode);
+        if (captchaAppliesTo(captchaMode) && !token) {
+            showToast("Still checking you're human. Give it a second and try again.", 'error');
+            return;
+        }
+
         btn.innerText = "Processing...";
         btn.style.opacity = '0.8';
-        
+
         if (isForgot) {
             if (email) {
                 window.db.auth.resetPasswordForEmail(email, {
-                    redirectTo: window.location.origin + window.location.pathname + '#/reset-password'
+                    redirectTo: window.location.origin + window.location.pathname + '#/reset-password',
+                    captchaToken: token
                 }).then(({ error }) => {
                     btn.innerText = originalText;
                     btn.style.opacity = '1';
+                    resetCaptcha();
                     if (error) {
                         showToast("We couldn't send that reset email: " + error.message, 'error');
                     } else {
@@ -13311,12 +13924,13 @@ function authAttachEvents() {
             window.db.auth.signUp({
                 email: email,
                 password: password,
-                options: { data: { name: name } }
+                options: { data: { name: name }, captchaToken: token }
             }).then(async ({ data: signUpData, error: signUpError }) => {
                 if (signUpError) {
                     showToast("Sign up failed: " + signUpError.message, 'error');
                     btn.innerText = originalText;
                     btn.style.opacity = '1';
+                    resetCaptcha();
                     return;
                 }
 
@@ -13354,12 +13968,14 @@ function authAttachEvents() {
             // Real Supabase Login
             window.db.auth.signInWithPassword({
                 email: email,
-                password: password
+                password: password,
+                options: { captchaToken: token }
             }).then(async ({ data, error }) => {
                 if (error) {
                     showToast("Login failed: " + error.message, 'error');
                     btn.innerText = originalText;
                     btn.style.opacity = '1';
+                    resetCaptcha();
                 } else {
                     // Drop whoever was on this device before doing anything else.
                     // This used to only *overwrite* on a successful cloud read, and
@@ -13541,7 +14157,11 @@ function renderRoadmap() {
                                 <h4 style="margin: 0; color: var(--color-black); font-size: 1.2rem;">Week ${w.weekNumber} <span style="font-size: 0.9rem; font-weight: normal; color: var(--color-text-muted); ml-2">— Month ${w.monthIndex}</span></h4>
                                 <p style="font-weight: 500; color: var(--color-primary-dark); margin: 0.5rem 0 0 0;">Focus: ${w.winCondition}</p>
                             </div>
-                            ${w.applied ? '<span style="background: #D1FAE5; color: #065F46; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600;">COMPLETED</span>' : ''}
+                            <div style="display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0;">
+                                ${w.regeneratedAt ? '<span style="background: var(--color-secondary-light); color: var(--color-secondary-dark); border: 1px solid rgba(242, 194, 29, 0.4); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600;">REWRITTEN</span>' : ''}
+                                ${w.applied ? '<span style="background: #D1FAE5; color: #065F46; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600;">COMPLETED</span>' : ''}
+                                ${(!w.applied && canRegenerateWeek()) ? `<button type="button" class="btn btn-ghost btn-sm btn-roadmap-redo" data-plan-id="${w.id}">Redo this week</button>` : ''}
+                            </div>
                         </div>
                         
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
@@ -13595,6 +14215,14 @@ function roadmapAttachEvents() {
                     container.querySelector('div').style.color = 'inherit';
                 }
             }
+        });
+    });
+
+    // Redo one week (Pro). The dashboard button opens the same modal with no
+    // week chosen; here the user has pointed at one, so it opens on that week.
+    document.querySelectorAll('.btn-roadmap-redo').forEach(btn => {
+        btn.addEventListener('click', () => {
+            showWeekRegenModal(btn.getAttribute('data-plan-id'));
         });
     });
 }

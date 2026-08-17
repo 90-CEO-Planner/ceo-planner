@@ -12,6 +12,8 @@ $files = @(
     "js\components\tooltip.js",
     "js\components\toast.js",
     "js\components\chatWidget.js",
+    # After toast.js and aiService.js, both of which it calls at click time.
+    "js\components\weekRegen.js",
     "js\screens\welcome.js",
     "js\screens\wizard.js",
     "js\screens\dashboard.js",

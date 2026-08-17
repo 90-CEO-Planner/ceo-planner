@@ -15,6 +15,18 @@ window.CEO_CHECKOUT_ANNUAL = 'https://buy.stripe.com/28E8wO92l6QP1mM3Fw18c09';
 // Existing customers whose card failed manage themselves here
 window.CEO_BILLING_PORTAL = 'https://billing.stripe.com/p/login/eVq3cucex8YXc1q0tk18c00';
 
+// Cloudflare Turnstile site key, for the bot protection on the auth forms.
+// Public by design — the matching secret key lives in Supabase, which is what
+// actually verifies the token.
+//
+// Set 17 Aug 2026, together with the matching secret in Supabase
+// (Authentication -> Attack Protection). The two must stay switched on
+// together: clearing this while the Supabase secret is still saved makes
+// Supabase reject every signup AND every login for a missing captcha token, so
+// never blank it as a quick "turn the captcha off" — clear the Supabase side
+// first.
+window.CEO_TURNSTILE_SITE_KEY = '0x4AAAAAAESsYq8ysZijiBEz';
+
 // Pro tier checkout. Deliberately null: Pro is being built and has no price in
 // Stripe yet, so the locked-feature modal explains the feature and stops there
 // rather than selling something that cannot be delivered. Set this to the Pro

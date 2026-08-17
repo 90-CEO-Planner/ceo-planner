@@ -19,7 +19,7 @@
     <!-- CSS -->
     <link rel="stylesheet" href="./css/variables.css?v=16">
     <link rel="stylesheet" href="./css/styles.css?v=16">
-    <link rel="stylesheet" href="./css/components.css?v=24">
+    <link rel="stylesheet" href="./css/components.css?v=25">
 </head>
 <body>
     <div id="app-container">
@@ -52,8 +52,14 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
+    <!-- Cloudflare Turnstile (bot protection on the auth forms).
+         render=explicit because this is a single page app: the auth screen is
+         rebuilt on every hash change, and Turnstile's automatic scanner only
+         runs once at page load. js/screens/auth.js mounts the widget itself. -->
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
+
     <!-- Main App Logic -->
-    <script src="./js/bundle.js?v=69" defer></script>
+    <script src="./js/bundle.js?v=72" defer></script>
     
     <script>
       if ('serviceWorker' in navigator) {

@@ -59,6 +59,11 @@ At the start of your work week, head to the **Weekly Plan** tab to align your sh
     - **Follow-ups:** Nurturing existing leads.
 4. **The Daily 3 Breakdown:** Once saved, the engine automatically extracts and breaks down your weekly priorities into smaller "Daily 3" action steps on your dashboard.
 
+**When one week stops being realistic:**
+**Regenerate Plan** on the dashboard rebuilds every week you have not started yet. It is the right tool when the whole quarter has moved, and a heavy one when only a single week has.
+
+On Pro there is a second option: **Redo one week**, on the dashboard and on each week's card in your 90-Day Roadmap. Pick the week, say what changed if you want to, and your coach writes that week again on its own. The other eleven stay exactly as they are, and so does everything you have already lived through — a week you have applied on the Weekly Plan page is never rewritten, on either plan. You see the new week before anything is saved, so if you prefer the one you had, keep it. Weeks that have been rewritten are marked on the roadmap.
+
 ---
 
 ## 4. Daily Execution

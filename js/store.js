@@ -1612,6 +1612,66 @@ export function applyGeneratedPlan(plan) {
     saveStore(store);
 }
 
+// Which weeks of the roadmap can be rewritten one at a time?
+//
+// Only generated weeks that have not been applied yet. An applied week is one
+// the user pushed into their Weekly Planner and lived through, and the rule the
+// whole plan runs on — set in batch 2.2 and honoured by applyGeneratedPlan
+// above — is that nothing the user has actually lived through is ever rewritten
+// by the app. A week they wrote themselves is not ours to rewrite either.
+//
+// Returned in week order, because every caller shows them in a list.
+export function getRegenerableWeeks() {
+    const store = getStore();
+    return (store.weeklyPlans || [])
+        .filter(p => p.generated && !p.applied && p.weekNumber != null)
+        .sort((a, b) => a.weekNumber - b.weekNumber);
+}
+
+// Swap one generated week for a freshly written one, leaving the other eleven
+// exactly as they are.
+//
+// Matched on `id` rather than on week number: the store has held two rows with
+// the same weekNumber before (an applied one and a generated one), and matching
+// on the number would overwrite whichever came first — which could be the
+// applied week this feature promises not to touch.
+//
+// `week` is the shape regenerateOneWeek() returns. Refuses anything that isn't
+// an unapplied generated week, and returns true only if a row was actually
+// replaced, so the caller never reports success over a no-op.
+export function replaceGeneratedWeek(planId, week) {
+    if (!week || !week.weeklyFocus) return false;
+
+    const store = getStore();
+    const idx = (store.weeklyPlans || []).findIndex(p => String(p.id) === String(planId));
+    if (idx === -1) return false;
+
+    const existing = store.weeklyPlans[idx];
+    if (!existing.generated || existing.applied) return false;
+
+    // The id and the week's place in the quarter are kept. Everything the model
+    // wrote is replaced. `regeneratedAt` is what the roadmap reads to mark the
+    // week as rewritten, and it is also the honest answer to "did this work?"
+    // when a user asks later why a week looks different from the plan they
+    // remember.
+    store.weeklyPlans[idx] = {
+        ...existing,
+        winCondition: week.weeklyFocus,
+        topActions: week.topPriorities,
+        visibilityAction: week.visibilityAction,
+        revenueAction: week.revenueAction,
+        followUps: week.followUpAction,
+        daily3: week.dailyThree,
+        successCheck: week.successCheck,
+        generated: true,
+        applied: false,
+        regeneratedAt: new Date().toISOString()
+    };
+
+    saveStore(store);
+    return true;
+}
+
 export function addNote(note) {
     const store = getStore();
     note.id = Date.now().toString();

@@ -3,7 +3,8 @@ import { renderNav } from '../components/nav.js';
 import { renderTooltip } from '../components/tooltip.js';
 import { generate90DayActionPlan } from '../aiService.js';
 import { showToast, showConfirm, rerenderScreen } from '../components/toast.js';
-import { proTeaser, proLock } from '../components/proGate.js';
+import { proTeaser, proLock, canRegenerateWeek } from '../components/proGate.js';
+import { showWeekRegenModal } from '../components/weekRegen.js';
 import { canUseLiveAI, getCachedLive, daily3Fingerprint, advisorFingerprint, hydrateDaily3, hydrateAdvisorPulses, liveAINote } from '../liveAI.js';
 
 export function renderDashboard() {
@@ -136,7 +137,12 @@ export function renderDashboard() {
                             Regenerate Plan
                         </button>
                     </div>
-                    ${proLock('week-regen', 'Redo one week')}
+                    ${canRegenerateWeek() ? `
+                        <button class="btn btn-outline btn-sm btn-redo-week" style="display: flex; align-items: center; gap: 0.4rem;">
+                            <span class="pro-badge">PRO</span>
+                            Redo one week
+                        </button>
+                    ` : proLock('week-regen', 'Redo one week')}
                     <button class="btn btn-primary btn-sm btn-open-quick-sale" style="display: flex; align-items: center; gap: 0.25rem;">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                         Log a Sale
@@ -1059,6 +1065,14 @@ function dashboardAttachEvents() {
                 scoreDetailsEl.textContent = 'Please plan your week to start tracking';
             }
         }
+    }
+
+    // Redo one week (Pro). The button only exists for accounts that can use it —
+    // base accounts get the lock beside it instead, which opens the Pro modal
+    // through the delegated handler in proGate.js rather than through this one.
+    const btnRedoWeek = document.querySelector('.btn-redo-week');
+    if (btnRedoWeek) {
+        btnRedoWeek.addEventListener('click', () => showWeekRegenModal());
     }
 
     // Regenerate Plan Logic

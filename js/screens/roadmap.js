@@ -2,6 +2,8 @@
 import { renderNav } from '../components/nav.js';
 import { getStore, saveStore } from '../store.js';
 import { renderTooltip } from '../components/tooltip.js';
+import { canRegenerateWeek } from '../components/proGate.js';
+import { showWeekRegenModal } from '../components/weekRegen.js';
 
 export function renderRoadmap() {
     window.setScreenModule({ attachEvents: roadmapAttachEvents });
@@ -125,7 +127,11 @@ export function renderRoadmap() {
                                 <h4 style="margin: 0; color: var(--color-black); font-size: 1.2rem;">Week ${w.weekNumber} <span style="font-size: 0.9rem; font-weight: normal; color: var(--color-text-muted); ml-2">— Month ${w.monthIndex}</span></h4>
                                 <p style="font-weight: 500; color: var(--color-primary-dark); margin: 0.5rem 0 0 0;">Focus: ${w.winCondition}</p>
                             </div>
-                            ${w.applied ? '<span style="background: #D1FAE5; color: #065F46; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600;">COMPLETED</span>' : ''}
+                            <div style="display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0;">
+                                ${w.regeneratedAt ? '<span style="background: var(--color-secondary-light); color: var(--color-secondary-dark); border: 1px solid rgba(242, 194, 29, 0.4); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600;">REWRITTEN</span>' : ''}
+                                ${w.applied ? '<span style="background: #D1FAE5; color: #065F46; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600;">COMPLETED</span>' : ''}
+                                ${(!w.applied && canRegenerateWeek()) ? `<button type="button" class="btn btn-ghost btn-sm btn-roadmap-redo" data-plan-id="${w.id}">Redo this week</button>` : ''}
+                            </div>
                         </div>
                         
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
@@ -179,6 +185,14 @@ function roadmapAttachEvents() {
                     container.querySelector('div').style.color = 'inherit';
                 }
             }
+        });
+    });
+
+    // Redo one week (Pro). The dashboard button opens the same modal with no
+    // week chosen; here the user has pointed at one, so it opens on that week.
+    document.querySelectorAll('.btn-roadmap-redo').forEach(btn => {
+        btn.addEventListener('click', () => {
+            showWeekRegenModal(btn.getAttribute('data-plan-id'));
         });
     });
 }

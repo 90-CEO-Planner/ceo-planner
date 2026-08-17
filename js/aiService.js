@@ -237,7 +237,15 @@ You MUST return ONLY a raw JSON strictly following this schema with no markdown 
     }
 }
 
-export async function generate90DayActionPlan() {
+// The block of real user context a planner opens with: who they are, what they
+// sell, what they promised themselves this quarter.
+//
+// Extracted because there are two planners now — the 90-day one below and the
+// single-week one after it — and they have to see the same picture. A week
+// rewritten against a thinner context than the quarter it belongs to reads as
+// though a different app wrote it, which is exactly what "redo one week" must
+// never feel like.
+function buildPlanningContext() {
     const store = getStore();
 
     const ceoName = store.profile?.name || "CEO";
@@ -264,11 +272,7 @@ export async function generate90DayActionPlan() {
         salesRequired = Math.ceil(revenueGoal / avgOfferPrice);
     }
 
-    const systemPrompt = `You are an elite strategic planner for solo entrepreneurs. You build calibrated, realistic 90-day action plans — not generic advice. You think like a Chief of Staff: ruthless about scope, honest about constraints, specific about weekly cadence.
-
-You are planning for ${ceoName}, founder of ${businessName}.
-
-REAL CONTEXT (use this and only this):
+    const block = `REAL CONTEXT (use this and only this):
 - Business stage: ${stage}
 - Business model: ${businessModel}
 - #1 Bottleneck right now: ${bottleneck}
@@ -282,7 +286,19 @@ REAL CONTEXT (use this and only this):
 - Implied number of sales required this quarter: ${salesRequired}
 - Quarterly Lead Goal: ${leadGoal}
 - Currency: ${currency}
-- CEO Commitment statement: "${statement}"
+- CEO Commitment statement: "${statement}"`;
+
+    return { store, ceoName, businessName, currency, salesRequired, block };
+}
+
+export async function generate90DayActionPlan() {
+    const { ceoName, businessName, salesRequired, block } = buildPlanningContext();
+
+    const systemPrompt = `You are an elite strategic planner for solo entrepreneurs. You build calibrated, realistic 90-day action plans — not generic advice. You think like a Chief of Staff: ruthless about scope, honest about constraints, specific about weekly cadence.
+
+You are planning for ${ceoName}, founder of ${businessName}.
+
+${block}
 
 RULES (apply all of them):
 1. Calibrate targets honestly. If the math is unrealistic given stage and bottleneck, note it in the plan and propose a stretch vs. realistic split. Never inflate.
@@ -360,6 +376,151 @@ CRITICAL: Return ONLY the JSON object above. No explanation, no preamble, no cod
         return parsedPlan;
     } catch (error) {
         console.error("Failed to generate 90-Day Action Plan:", error);
+        return null;
+    }
+}
+
+// Rewrite a single week of the roadmap, leaving the other eleven alone.
+//
+// The whole-quarter regenerator above is the blunt instrument: it answers "the
+// plan is wrong", and the price is that every week you had not started yet is
+// replaced. This answers the much more common thing — one week stopped being
+// realistic, because a launch slipped or a client landed or you were ill — and
+// it is the reason the Pro copy says "keep the rest".
+//
+// `targetWeek` is the stored weekly plan being replaced, not a week number, so
+// the model can be shown what it is rewriting. `note` is the user's own sentence
+// about what changed; it is optional, and it is the only part of the prompt the
+// quarter planner never sees.
+//
+// Returns a week object in the same shape `applyGeneratedPlan` writes, or null.
+// The caller decides what to do with null — this never half-writes a week.
+export async function regenerateOneWeek(targetWeek, note) {
+    if (!targetWeek || targetWeek.weekNumber == null) {
+        console.error('regenerateOneWeek called without a target week');
+        return null;
+    }
+
+    const { store, ceoName, businessName, block } = buildPlanningContext();
+    const weekNumber = targetWeek.weekNumber;
+    const monthIndex = targetWeek.monthIndex || Math.ceil(weekNumber / 4);
+
+    const themes = store.monthlyThemes || {};
+    const theme = themes['month' + monthIndex] || 'Unknown';
+
+    // The weeks either side, so the rewrite lands in a sequence rather than in
+    // isolation. Focus lines only: the full text of two more weeks would triple
+    // the prompt for very little the model can act on.
+    const plans = store.weeklyPlans || [];
+    const neighbour = (n) => {
+        const w = plans.find(p => p.weekNumber === n && p.id !== targetWeek.id);
+        return w ? `Week ${n}: ${w.winCondition || 'no focus set'}` : `Week ${n}: not planned`;
+    };
+    const before = weekNumber > 1 ? neighbour(weekNumber - 1) : 'Week 0: the quarter has not started yet';
+    const after = weekNumber < 12 ? neighbour(weekNumber + 1) : 'Week 13: the quarter is over';
+
+    // Where the quarter actually stands. Without this the model rewrites week
+    // nine as though it were week one, which is the failure the whole-quarter
+    // planner was already criticised for internally.
+    const insights = getRevenueInsights();
+    const currency = store.settings?.currency || '$';
+    const weeksElapsed = getWeeksElapsed(store) || 1;
+
+    const changeNote = (note && note.trim())
+        ? `WHAT CHANGED (the user's own words, treat this as the most important instruction after the context above):\n"${note.trim().slice(0, 500)}"`
+        : 'WHAT CHANGED: the user did not say. Assume the week simply needs a fresher, sharper version of the same intent.';
+
+    const systemPrompt = `You are an elite strategic planner for solo entrepreneurs, acting as Chief of Staff to ${ceoName}, founder of ${businessName}.
+
+You are NOT rebuilding their quarter. You are rewriting exactly ONE week of an existing 90-day plan. Every other week stays as it is, so your week has to fit between the two around it.
+
+${block}
+
+THE QUARTER SO FAR:
+- Plan summary: ${store.planSummary || 'Not recorded.'}
+- Theme for month ${monthIndex}: ${theme}
+- Week being rewritten: ${weekNumber} of 12
+- Weeks elapsed in the quarter: ${weeksElapsed}
+- Revenue logged so far: ${currency}${(insights.totalRevenue || 0).toLocaleString()} against a goal of ${currency}${(insights.goal || 0).toLocaleString()}
+
+THE WEEK AS IT STANDS (this is what you are replacing):
+- Focus: ${targetWeek.winCondition || 'None'}
+- Top 3: ${(targetWeek.topActions || []).join(' | ') || 'None'}
+- Visibility: ${targetWeek.visibilityAction || 'None'}
+- Revenue: ${targetWeek.revenueAction || 'None'}
+- Follow-up: ${targetWeek.followUps || 'None'}
+
+THE WEEKS EITHER SIDE (do not duplicate their work, do not contradict them):
+- ${before}
+- ${after}
+
+${changeNote}
+
+RULES (apply all of them):
+1. Return ONE week, numbered ${weekNumber}, in month ${monthIndex}. Never renumber it.
+2. It must still serve the 90-Day Outcome and the theme for month ${monthIndex}. A rewritten week is a different route to the same place, not a different place.
+3. Keep the week's shape: a Top 3, ONE visibility action, ONE revenue action, ONE follow-up action. Visibility and revenue are non-negotiable.
+4. Write a genuinely different week. If what comes back is the old week reworded, you have failed — the user asked for this because the old one stopped working.
+5. Respect where the quarter actually is. Week ${weekNumber} of 12 with ${currency}${(insights.totalRevenue || 0).toLocaleString()} logged is not week one; do not send them back to foundations they have already built, and do not set a target the remaining weeks cannot carry.
+6. Tie every action to their #1 bottleneck or their 90-Day Outcome. Generic tasks ("post on social media") are forbidden.
+7. Match intensity to their stage. A tired founder is reading this on their phone. Warm, direct, specific, no hype, no jargon.
+8. Keep each topPriorities entry under 70 characters. They render in single-line inputs and anything longer is cut off mid-sentence. One action per entry, no "Task:"/"Execution:" labels, no semicolons joining two actions.
+9. The successCheck must be realistic for their stage and tied to completing this week's actions, not to a lag metric they cannot control.
+10. Never recommend tools they did not mention. Never assume budget or team.
+11. Output JSON only. No markdown, no code fences, no prose before or after.
+
+OUTPUT FORMAT (return exactly this JSON shape, one object, not an array):
+{
+  "weekNumber": ${weekNumber},
+  "monthIndex": ${monthIndex},
+  "weeklyFocus": "One sentence focus for the week, tied to the monthly theme.",
+  "topPriorities": [
+    "[One specific action, max 70 characters]",
+    "[One specific action, max 70 characters]",
+    "[One specific action, max 70 characters]"
+  ],
+  "visibilityAction": "ONE specific visibility task this week (audience-facing, no sale).",
+  "revenueAction": "ONE specific revenue task this week (a direct invitation to buy).",
+  "followUpAction": "ONE specific follow-up task this week (nurture an existing lead).",
+  "dailyThree": ["Mon-Tue micro task", "Wed-Thu micro task", "Fri micro task"],
+  "successCheck": "How they will know this week worked (a measurable outcome).",
+  "whatChanged": "One short sentence, addressed to the user, saying how this week now differs from the one it replaced."
+}
+
+CRITICAL: Return ONLY the JSON object above. No explanation, no preamble, no code fences.`;
+
+    try {
+        // One week is a twelfth of the work the quarter planner does, so the
+        // ceiling is a twelfth of the size. Same reasoning as there: it exists
+        // to stop a runaway, not to shape the answer.
+        const data = await window.invokeChat(
+            [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: `Rewrite week ${weekNumber} now. Return only the JSON object, no prose, no markdown fences.` }
+            ],
+            { json: true, maxTokens: 1200 }
+        );
+
+        let content = data.choices[0].message.content;
+        content = content.replace(/^```json/gi, '').replace(/```$/g, '').trim();
+        const week = JSON.parse(content);
+
+        // Shape check before anything is written. A week missing its triplet
+        // would render as "undefined" on the roadmap and the Weekly Planner,
+        // and the user would have spent a regeneration to get it.
+        if (!week || !week.weeklyFocus || !Array.isArray(week.topPriorities) || week.topPriorities.length === 0
+            || !week.visibilityAction || !week.revenueAction) {
+            throw new Error('Invalid week shape returned from AI.');
+        }
+
+        // The model is told twice not to renumber, but the store is what has to
+        // be right — a week that came back as week 3 would overwrite week 3.
+        week.weekNumber = weekNumber;
+        week.monthIndex = monthIndex;
+
+        return week;
+    } catch (error) {
+        console.error(`Failed to regenerate week ${weekNumber}:`, error);
         return null;
     }
 }
