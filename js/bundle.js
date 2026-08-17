@@ -3305,6 +3305,34 @@ function getAiAllowanceToday() {
     }
 }
 
+// Ask the server where today's allowance stands, without spending one.
+//
+// The warning is fed by the numbers that ride back on every AI call, which is
+// perfect for warning — you are always mid-request when you approach a limit —
+// and useless for the Account page, which is the one screen you open *without*
+// making a call. It showed the allowance and no usage until something else
+// happened to spend one.
+//
+// `get_ai_quota_status()` takes no parameter and resolves auth.uid() itself,
+// which is why the browser is allowed to call it at all. Returns null on any
+// failure: this decorates a line of text and must never break the screen.
+async function fetchAiAllowance() {
+    try {
+        const { data, error } = await window.db.rpc('get_ai_quota_status');
+        if (error) {
+            console.warn('Could not read AI allowance:', error.message);
+            return null;
+        }
+        const row = Array.isArray(data) ? data[0] : data;
+        if (!row || !Number.isFinite(row.quota)) return null;
+        recordAiAllowance(row);
+        return row;
+    } catch (err) {
+        console.warn('Could not read AI allowance:', err.message);
+        return null;
+    }
+}
+
 // Forget today's figures. Called wherever the account changes on this browser —
 // sign-out, login, signup — because a usage count belongs to one person. NOT
 // called on quarter reset: this is a daily counter and has nothing to do with
@@ -10967,30 +10995,18 @@ function settingsAttachEvents() {
 // on Pro the planning surfaces spend them too.
 function baseFeatures() {
     return [
-        'Your 90-day roadmap and quarterly targets',
-        'Weekly planning and the Daily 3',
-        'Revenue, leads and conversion tracking',
-        'The Friday Review and your Monday draft',
-        `The AI coach, ${aiDailyAllowance()} requests a day${usedTodaySuffix()}`,
-        'CSV export of everything you log',
-        'Executive reports on demand'
+        { text: 'Your 90-day roadmap and quarterly targets' },
+        { text: 'Weekly planning and the Daily 3' },
+        { text: 'Revenue, leads and conversion tracking' },
+        { text: 'The Friday Review and your Monday draft' },
+        // The plan list says what the plan includes. How much of it you have
+        // used today is a different question and gets its own card below —
+        // appending a running count here made a feature list double as a meter
+        // and read like an afterthought.
+        { text: `The AI coach, ${aiDailyAllowance()} requests a day` },
+        { text: 'CSV export of everything you log' },
+        { text: 'Executive reports on demand' }
     ];
-}
-
-// "— 12 used today", when we know.
-//
-// This is the one place a running count belongs. A counter on the dashboard
-// would teach people to ration a tool they are paying to use, and most accounts
-// never come near the limit; here the reader is already thinking about plans, so
-// the same number is context rather than pressure.
-//
-// Silent when there is no reading for today. `getAiAllowanceToday()` returning
-// null means "nothing asked yet since midnight UTC", which is not the same as
-// zero — printing "0 used today" would be inventing a fact.
-function usedTodaySuffix() {
-    const today = getAiAllowanceToday();
-    if (!today || !Number.isFinite(today.used)) return '';
-    return ` — ${today.used} used today`;
 }
 
 const TICK_SVG = `<svg class="plan-feature-mark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
@@ -11009,6 +11025,7 @@ function renderAccount() {
     </div>
 
     ${renderPlanCard()}
+    ${renderAiUsageCard()}
     ${renderConnectionsCard()}
     ${renderBillingCard()}
     ${renderLoginCard()}
@@ -11042,7 +11059,7 @@ function renderPlanCard() {
     }
 
     const baseRows = baseFeatures().map(f => `
-        <div class="plan-feature-row">${TICK_SVG}<span>${f}</span></div>
+        <div class="plan-feature-row"${f.id ? ` id="${f.id}"` : ''}>${TICK_SVG}<span>${f.text}</span></div>
     `).join('');
 
     // Three states per row, and the third one matters: a Pro or trial account
@@ -11203,6 +11220,98 @@ function connectFormHtml() {
 
     <button type="button" id="btn-stripe-connect" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Connect Stripe</button>
     `;
+}
+
+// AI usage. Its own card, in the same shape as Billing and Connected accounts,
+// because "how much have I used today" is a thing you come here to look at —
+// not a detail to be appended to a line in the plan list.
+//
+// This is still the ONLY place in the app that shows a running count. A counter
+// on the dashboard would teach people to ration a tool they are paying to use,
+// and most accounts never come near the limit. Here the reader has chosen to
+// look.
+function renderAiUsageCard() {
+    // Rendered from whatever the browser already knows so the card is never
+    // blank, then corrected by the server in attachEvents. Usually there is no
+    // local reading yet, which is the whole reason the lookup exists.
+    const known = getAiAllowanceToday();
+    const quota = known && Number.isFinite(known.quota) ? known.quota : aiDailyAllowance();
+    const showPro = !isProUser();
+
+    return `
+    <div class="card mb-6">
+        <h3 class="mb-4" style="display: flex; align-items: center; gap: 0.5rem; color: var(--color-black);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.8L20 10.7l-4.9 3.6L16.4 20 12 16.8 7.6 20l1.3-5.7L4 10.7l6.1-1.9z"></path></svg>
+            AI usage
+        </h3>
+
+        <!-- flex-wrap plus nowrap on the figure: at 375px the label was squeezing
+             "96 of 120" onto two lines, breaking the number itself in half. The
+             label drops below instead. -->
+        <div style="display: flex; align-items: baseline; gap: 0.5rem; margin-bottom: 0.75rem; flex-wrap: wrap;">
+            <span id="ai-usage-figure" style="font-size: 2rem; font-weight: 700; color: var(--color-black); line-height: 1.1; white-space: nowrap;">— of ${quota}</span>
+            <span style="color: var(--color-text-muted); font-size: 0.9rem;">requests used today</span>
+        </div>
+
+        <div class="progress-container" style="height: 6px; background: var(--color-bg-light); border-radius: var(--radius-full); overflow: hidden;">
+            <div id="ai-usage-bar" class="progress-bar" style="height: 100%; width: 0%; background: var(--color-primary); transition: width var(--transition-fast);"></div>
+        </div>
+
+        <p id="ai-usage-note" style="color: var(--color-text-muted); font-size: 0.875rem; margin-top: 0.75rem; margin-bottom: 1.25rem;">
+            Checking…
+        </p>
+
+        <p style="color: var(--color-text-muted); font-size: 0.8rem; line-height: 1.6; margin: 0;">
+            A request is one message to your coach, one regenerated 90-day plan, one
+            executive report, or one refreshed set of planning suggestions. Your
+            allowance resets at midnight UTC.
+        </p>
+
+        ${showPro ? `
+        <p style="font-size: 0.8rem; line-height: 1.6; margin: 0.75rem 0 0 0;">
+            Pro comes with ${AI_DAILY_LIMITS.pro} requests a day.
+            <a href="#/account" data-pro-feature="ai-allowance" style="color: var(--color-primary-dark); font-weight: 600;">See what's in Pro</a>
+        </p>
+        ` : ''}
+    </div>
+    `;
+}
+
+// Fill the card in once the server has answered. Kept separate from render so
+// the same painting runs on load and on any later refresh.
+function paintAiUsage(allowance) {
+    const figure = document.getElementById('ai-usage-figure');
+    const bar = document.getElementById('ai-usage-bar');
+    const note = document.getElementById('ai-usage-note');
+    if (!figure || !bar || !note) return;
+
+    // The lookup failed. Say so plainly rather than showing a zero that would be
+    // indistinguishable from "you have used nothing today".
+    if (!allowance || !Number.isFinite(allowance.quota) || !Number.isFinite(allowance.used)) {
+        figure.textContent = `— of ${aiDailyAllowance()}`;
+        note.textContent = "Couldn't check today's usage just now. Your allowance is unaffected.";
+        return;
+    }
+
+    const { used, quota } = allowance;
+    const left = Math.max(0, quota - used);
+    const percent = Math.min(100, Math.round((used / quota) * 100));
+
+    figure.textContent = `${used} of ${quota}`;
+    bar.style.width = `${percent}%`;
+
+    // The same thresholds the warning uses, so the colour here and the toast
+    // never disagree about whether somebody is running low.
+    if (used >= quota) {
+        bar.style.background = '#B42318';
+        note.textContent = 'You have used today\'s allowance. It resets at midnight UTC.';
+    } else if (percent >= 80) {
+        bar.style.background = '#F2C21D';
+        note.textContent = `${left} left today. Resets at midnight UTC.`;
+    } else {
+        bar.style.background = 'var(--color-primary)';
+        note.textContent = `${left} left today. Resets at midnight UTC.`;
+    }
 }
 
 function renderBillingCard() {
@@ -11514,6 +11623,15 @@ async function paintStripeConnection() {
 
 function accountAttachEvents() {
     paintStripeConnection();
+
+    // Fill in the AI usage card from the server. This is the only way the page
+    // can know: the figures otherwise ride back on AI calls, and Account is the
+    // one screen you open *without* making one.
+    //
+    // The quota shown comes from the server rather than AI_DAILY_LIMITS, so the
+    // number on screen is the one that will actually be enforced even if the two
+    // copies of the limits ever drift.
+    fetchAiAllowance().then(paintAiUsage);
 
     // Fill in the email from the live session rather than from the store, so it
     // is the address they actually sign in with and not a stale copy.

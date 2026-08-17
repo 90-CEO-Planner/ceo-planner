@@ -107,6 +107,28 @@ alter table public.ai_usage enable row level security;
 --
 -- A trial resolves to the 'pro' tier for feature purposes but keeps the trial
 -- rate. That is the batch 8 rule: a trial grants Pro features, never Pro spend.
+--
+-- One place that decides what a plan's daily limit is, so consume_ai_quota and
+-- get_ai_quota_status below cannot drift into disagreeing about the same
+-- account — the app would then show one number while the server enforced another.
+create or replace function public.ai_daily_limit(
+  p_status text,
+  p_tier text,
+  p_trial_limit integer default 30,
+  p_paid_limit integer default 120,
+  p_pro_limit integer default 300
+)
+returns integer
+language sql
+immutable
+as $$
+  select case
+    when p_status = 'active' and p_tier = 'pro' then p_pro_limit
+    when p_status = 'active' then p_paid_limit
+    else p_trial_limit
+  end;
+$$;
+
 create or replace function public.consume_ai_quota(
   p_user_id uuid,
   p_trial_limit integer default 30,
@@ -148,11 +170,7 @@ begin
     v_tier := 'pro';
   end if;
 
-  v_limit := case
-    when v_status = 'active' and v_tier = 'pro' then p_pro_limit
-    when v_status = 'active' then p_paid_limit
-    else p_trial_limit
-  end;
+  v_limit := public.ai_daily_limit(v_status, v_tier, p_trial_limit, p_paid_limit, p_pro_limit);
 
   -- Atomic increment. The WHERE on the conflict branch means a user already at
   -- the limit updates no row, so nothing is returned and v_used stays null.
@@ -176,6 +194,55 @@ begin
 end;
 $$;
 
+-- Read today's usage WITHOUT spending a request.
+--
+-- consume_ai_quota reports usage as a side effect of a call, which covers the
+-- "you're nearly out" warning perfectly and does nothing for the Account page —
+-- the one screen you open *without* making an AI call. This is the read-only half.
+--
+-- SECURITY: it takes NO PARAMETER and resolves auth.uid() itself. That is the
+-- whole reason it can be granted to `authenticated`, unlike consume_ai_quota,
+-- which takes a user id and is therefore service-role only. With a parameter,
+-- anyone holding the public anon key could read somebody else's usage.
+-- **Do not add one.**
+create or replace function public.get_ai_quota_status()
+returns table (used integer, quota integer, tier text)
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_status text;
+  v_tier text;
+  v_used integer;
+begin
+  -- Not signed in: no rows rather than an error. The caller reads an empty
+  -- result as "don't know", which is exactly what it is.
+  if v_uid is null then
+    return;
+  end if;
+
+  select p.subscription_status, coalesce(p.plan_tier, 'base')
+  into v_status, v_tier
+  from public.profiles p
+  where p.id = v_uid;
+
+  if not found then
+    return;
+  end if;
+
+  if v_status = 'trialing' then
+    v_tier := 'pro';
+  end if;
+
+  select u.calls into v_used
+  from public.ai_usage u
+  where u.user_id = v_uid and u.day = (timezone('utc', now()))::date;
+
+  return query select coalesce(v_used, 0), public.ai_daily_limit(v_status, v_tier), v_tier;
+end;
+$$;
+
 -- IMPORTANT: Postgres grants EXECUTE on new functions to PUBLIC by default, and
 -- Supabase then exposes them at /rest/v1/rpc/<name> to anyone holding the public
 -- anon key. Without these revokes a stranger could call consume_ai_quota with
@@ -184,6 +251,14 @@ $$;
 -- service role, so nobody else needs execute rights.
 revoke all on function public.consume_ai_quota(uuid, integer, integer, integer) from public, anon, authenticated;
 grant execute on function public.consume_ai_quota(uuid, integer, integer, integer) to service_role;
+
+revoke all on function public.ai_daily_limit(text, text, integer, integer, integer) from public, anon, authenticated;
+grant execute on function public.ai_daily_limit(text, text, integer, integer, integer) to service_role;
+
+-- The one AI function the browser may call: it reads only the caller's own row
+-- and spends nothing. Still revoked from anon — a signed-in session is required.
+revoke all on function public.get_ai_quota_status() from public, anon;
+grant execute on function public.get_ai_quota_status() to authenticated;
 
 revoke all on function public.has_active_access(uuid) from public, anon, authenticated;
 grant execute on function public.has_active_access(uuid) to service_role;

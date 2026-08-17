@@ -227,6 +227,34 @@ export function getAiAllowanceToday() {
     }
 }
 
+// Ask the server where today's allowance stands, without spending one.
+//
+// The warning is fed by the numbers that ride back on every AI call, which is
+// perfect for warning — you are always mid-request when you approach a limit —
+// and useless for the Account page, which is the one screen you open *without*
+// making a call. It showed the allowance and no usage until something else
+// happened to spend one.
+//
+// `get_ai_quota_status()` takes no parameter and resolves auth.uid() itself,
+// which is why the browser is allowed to call it at all. Returns null on any
+// failure: this decorates a line of text and must never break the screen.
+export async function fetchAiAllowance() {
+    try {
+        const { data, error } = await window.db.rpc('get_ai_quota_status');
+        if (error) {
+            console.warn('Could not read AI allowance:', error.message);
+            return null;
+        }
+        const row = Array.isArray(data) ? data[0] : data;
+        if (!row || !Number.isFinite(row.quota)) return null;
+        recordAiAllowance(row);
+        return row;
+    } catch (err) {
+        console.warn('Could not read AI allowance:', err.message);
+        return null;
+    }
+}
+
 // Forget today's figures. Called wherever the account changes on this browser —
 // sign-out, login, signup — because a usage count belongs to one person. NOT
 // called on quarter reset: this is a daily counter and has nothing to do with
