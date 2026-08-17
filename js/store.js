@@ -716,9 +716,21 @@ export function getPipelineInsights() {
 // a claim the data does not support.
 export function getFunnelInsights() {
     const store = getStore();
-    const leads = store.leads?.entries || [];
-    const metrics = store.metrics || [];
-    const contacts = store.contacts || [];
+    return summariseFunnel(store.leads?.entries, store.metrics, store.contacts);
+}
+
+// The funnel maths itself, over whichever three lists it is handed.
+//
+// Split out from getFunnelInsights so an ARCHIVED quarter can be counted by the
+// identical rules (see getQuarterHistory). A second implementation for history
+// would have been the fourth opinion this function exists to prevent — and the
+// disagreement would have been invisible, because the two datasets are never on
+// screen at the same moment except on the comparison screen, where it would
+// look like the business changed rather than like the code did.
+export function summariseFunnel(leadEntries, metricEntries, contactList) {
+    const leads = leadEntries || [];
+    const metrics = metricEntries || [];
+    const contacts = contactList || [];
 
     const snapshotTraffic = metrics.reduce((s, m) => s + (parseFloat(m.traffic) || 0), 0);
     const snapshotCalls = metrics.reduce((s, m) => s + (parseFloat(m.calls) || 0), 0);
@@ -1118,6 +1130,323 @@ export function getRevenueInsights() {
         quarterEntryCount: quarterEntries.length,
         entries: entries.slice().sort((a, b) => new Date(b.date) - new Date(a.date)) // newest first
     };
+}
+
+// ---------------------------------------------------------------------------
+// Quarter history (Pro item 3)
+// ---------------------------------------------------------------------------
+//
+// Every quarter the user has finished, plus the one in progress, described in
+// one shape so they can be put side by side.
+//
+// Two rules run through all of this:
+//
+// 1. The CURRENT quarter's figures are read from getRevenueInsights() and
+//    getFunnelInsights(), never recalculated here. If this screen worked out its
+//    own total for the quarter in progress, it would eventually disagree with
+//    the Revenue screen about the same 90 days, and the user would have no way
+//    to tell which number was the real one.
+// 2. An ARCHIVED quarter is counted by those same functions' rules, via
+//    summariseFunnel and the helpers below, rather than by a second set written
+//    for history. Same maths, different dataset.
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+// The revenue entries that belong to a quarter, on the rule getRevenueInsights
+// uses for the live one: anything dated before the quarter began is money that
+// arrived, but not money that quarter earned. Back-entered history counted in
+// full would make a quarter look like it beat one it never touched.
+function entriesInQuarter(entries, startISO) {
+    const list = entries || [];
+    const start = startISO ? new Date(startISO) : null;
+    if (!start || !Number.isFinite(start.getTime())) return list;
+    return list.filter(e => new Date(e.date).getTime() >= start.getTime());
+}
+
+function sumAmounts(entries) {
+    return (entries || []).reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
+}
+
+// Biggest key in a { name: amount } map, or 'None'. Same answer the topSource /
+// topOffer reducers in getRevenueInsights give, so a past quarter's top channel
+// is picked the way the live one's is.
+function topKeyOf(totals) {
+    const keys = Object.keys(totals);
+    if (keys.length === 0) return 'None';
+    return keys.reduce((a, b) => (totals[a] > totals[b] ? a : b));
+}
+
+function totalsBy(entries, field, fallback) {
+    const totals = {};
+    (entries || []).forEach(e => {
+        const key = e[field] || fallback;
+        totals[key] = (totals[key] || 0) + (parseFloat(e.amount) || 0);
+    });
+    return totals;
+}
+
+// "16 May – 14 Aug 2026", or "16 May 2026 – in progress" for the live one.
+function quarterRangeLabel(startISO, endISO) {
+    const opts = { day: 'numeric', month: 'short' };
+    const start = startISO ? new Date(startISO) : null;
+    const end = endISO ? new Date(endISO) : null;
+    const startOk = start && Number.isFinite(start.getTime());
+    const endOk = end && Number.isFinite(end.getTime());
+
+    if (!startOk && !endOk) return 'Dates not recorded';
+    if (!startOk) return `Ended ${end.toLocaleDateString(undefined, { ...opts, year: 'numeric' })}`;
+
+    const startText = start.toLocaleDateString(undefined, {
+        ...opts,
+        // Drop the year off the start when both ends share one — "16 May – 14
+        // Aug 2026" rather than the same year printed twice.
+        year: endOk && end.getFullYear() === start.getFullYear() ? undefined : 'numeric'
+    });
+    if (!endOk) return `${start.toLocaleDateString(undefined, { ...opts, year: 'numeric' })} – in progress`;
+    return `${startText} – ${end.toLocaleDateString(undefined, { ...opts, year: 'numeric' })}`;
+}
+
+// What a quarter had earned by day N of it. This is the only honest way to
+// compare a quarter five weeks in against one that ran the full ninety days —
+// the alternative is telling someone they are 60% down on last quarter when
+// what they actually are is five weeks into this one.
+function revenueByDay(entries, startISO, days) {
+    const start = startISO ? new Date(startISO) : null;
+    if (!start || !Number.isFinite(start.getTime())) return null;
+    const cutoff = start.getTime() + days * MS_PER_DAY;
+    return sumAmounts((entries || []).filter(e => {
+        const t = new Date(e.date).getTime();
+        return Number.isFinite(t) && t >= start.getTime() && t < cutoff;
+    }));
+}
+
+// A change between two quarters. `percent` is null rather than 0 when there is
+// nothing to divide by: going from nothing to £2,000 is not a 100% rise, and
+// printing one would be inventing a baseline that never existed.
+function changeBetween(now, before) {
+    const delta = now - before;
+    return {
+        delta,
+        percent: before > 0 ? (delta / before) * 100 : null,
+        direction: delta > 0 ? 'up' : (delta < 0 ? 'down' : 'level')
+    };
+}
+
+// One archived quarter, summarised. `previous` is the archive entry before it,
+// needed only to work out how many Friday Reviews belong to this quarter.
+function summariseArchivedQuarter(quarter, ordinal, previous) {
+    const startISO = quarter.quarterStartDate || '';
+    const endISO = quarter.dateArchived || '';
+    const allEntries = quarter.revenueEntries || [];
+    const quarterEntries = entriesInQuarter(allEntries, startISO);
+    const revenue = sumAmounts(quarterEntries);
+    const goal = parseFloat(quarter.revenueGoal) || 0;
+    const funnel = summariseFunnel(quarter.leadEntries, quarter.metrics, quarter.contacts);
+
+    // ⚠️ reviewsCount in the archive is store.reviews.length AT THE TIME, and
+    // reviews are deliberately never cleared on reset — so it is a running
+    // total, not this quarter's count. Differencing consecutive archives is what
+    // turns it back into "reviews done in these ninety days". plansCount needs
+    // no such correction: weeklyPlans IS cleared each quarter, and the archived
+    // array is the quarter's own.
+    const reviewsBefore = previous ? (previous.reviewsCount || 0) : 0;
+    const reviewsCount = Math.max(0, (quarter.reviewsCount || 0) - reviewsBefore);
+
+    return {
+        ordinal,
+        id: endISO || `quarter-${ordinal}`,
+        isCurrent: false,
+        startDate: startISO,
+        endDate: endISO,
+        label: `Quarter ${ordinal}`,
+        rangeLabel: quarterRangeLabel(startISO, endISO),
+        focus: quarter.goals?.focus || '',
+        outcome: quarter.goals?.outcome || '',
+        revenue,
+        goal,
+        progressPercent: goal > 0 ? (revenue / goal) * 100 : null,
+        salesCount: quarterEntries.length,
+        // Money logged against dates before this quarter opened. Excluded from
+        // the figures above for the reason in entriesInQuarter, and reported so
+        // a quarter never looks like it lost something.
+        revenueBeforeQuarter: sumAmounts(allEntries) - revenue,
+        topSource: topKeyOf(totalsBy(quarterEntries, 'source', 'Other')),
+        topOffer: topKeyOf(totalsBy(quarterEntries, 'offer', 'General')),
+        leads: funnel.totalLeads,
+        calls: funnel.totalCalls,
+        closes: funnel.totalCloses,
+        callCloseRate: funnel.callCloseRate,
+        contactLeads: funnel.contactLeads,
+        reviewsCount,
+        plansCount: (quarter.weeklyPlans || []).length,
+        reflection: quarter.reflection || null,
+        // Kept for the same-point comparison, which needs the raw dated rows.
+        entries: allEntries
+    };
+}
+
+// Every quarter, oldest first, with the one in progress last.
+//
+// Returns { quarters, current, previous, hasHistory, years }. Each quarter
+// carries `change`, its movement against the quarter before it, so a screen
+// renders the comparison rather than working it out.
+export function getQuarterHistory() {
+    const store = getStore();
+
+    // pastQuarters is appended to, so it is already chronological. Sorted
+    // anyway: a store restored from a sync, or hand-edited, is not guaranteed
+    // to be, and the ordinals and every delta below depend on the order.
+    const archived = (store.pastQuarters || []).slice().sort((a, b) => {
+        const at = new Date(a.dateArchived || a.quarterStartDate || 0).getTime();
+        const bt = new Date(b.dateArchived || b.quarterStartDate || 0).getTime();
+        return (Number.isFinite(at) ? at : 0) - (Number.isFinite(bt) ? bt : 0);
+    });
+
+    const quarters = archived.map((q, i) => summariseArchivedQuarter(q, i + 1, archived[i - 1]));
+
+    // The quarter in progress. Every figure here is READ from the two functions
+    // the rest of the app reads from, so this row and the Revenue screen can
+    // never disagree about the ninety days the user is actually living in.
+    const insights = getRevenueInsights();
+    const funnel = getFunnelInsights();
+    const lastArchived = archived[archived.length - 1];
+    const daysElapsed = store.quarterStartDate
+        ? Math.max(0, Math.floor((Date.now() - new Date(store.quarterStartDate).getTime()) / MS_PER_DAY))
+        : null;
+
+    const current = {
+        ordinal: quarters.length + 1,
+        id: 'current',
+        isCurrent: true,
+        startDate: store.quarterStartDate || '',
+        endDate: '',
+        label: 'This quarter',
+        rangeLabel: quarterRangeLabel(store.quarterStartDate || '', ''),
+        focus: store.goals?.focus || '',
+        outcome: store.goals?.outcome || '',
+        revenue: insights.totalRevenue,
+        goal: insights.goal,
+        // Worked out from the same two figures the Revenue screen shows, not
+        // read off insights.progressPercent — that one is clamped to 100 for a
+        // progress bar's benefit, and a quarter that beat its goal by half
+        // deserves to say so when it is being compared with another.
+        progressPercent: insights.goal > 0 ? (insights.totalRevenue / insights.goal) * 100 : null,
+        salesCount: insights.quarterEntryCount,
+        revenueBeforeQuarter: insights.revenueBeforeQuarter,
+        topSource: insights.topSource,
+        topOffer: insights.topOffer,
+        leads: funnel.totalLeads,
+        calls: funnel.totalCalls,
+        closes: funnel.totalCloses,
+        callCloseRate: funnel.callCloseRate,
+        contactLeads: funnel.contactLeads,
+        // Same differencing as the archived rows, for the same reason.
+        reviewsCount: Math.max(0, (store.reviews || []).length - (lastArchived ? (lastArchived.reviewsCount || 0) : 0)),
+        plansCount: (store.weeklyPlans || []).length,
+        reflection: null,
+        entries: insights.entries,
+        weeksElapsed: insights.weeksElapsed,
+        weeksRemaining: insights.weeksRemaining,
+        daysElapsed,
+        momentum: insights.momentum,
+        projectedRevenue: insights.projectedRevenue
+    };
+
+    quarters.push(current);
+
+    // Movement against the quarter before. Attached to each row rather than
+    // computed in the screen, so the table and any card built later cannot
+    // arrive at two different arrows for the same pair.
+    quarters.forEach((q, i) => {
+        const before = quarters[i - 1];
+        q.change = before ? {
+            revenue: changeBetween(q.revenue, before.revenue),
+            leads: changeBetween(q.leads, before.leads),
+            closes: changeBetween(q.closes, before.closes),
+            comparedWith: before.label
+        } : null;
+    });
+
+    // This quarter against the last one AT THE SAME POINT. Only offered when
+    // the previous quarter has a start date to measure from and this one has
+    // actually started — an unanswerable comparison is left null rather than
+    // guessed at, and the screen says so.
+    let samePoint = null;
+    const previous = quarters.length > 1 ? quarters[quarters.length - 2] : null;
+    if (previous && daysElapsed !== null && previous.startDate) {
+        const previousThen = revenueByDay(previous.entries, previous.startDate, daysElapsed + 1);
+        if (previousThen !== null) {
+            samePoint = {
+                daysElapsed,
+                weeksElapsed: current.weeksElapsed || Math.max(1, Math.ceil((daysElapsed || 1) / 7)),
+                previousLabel: previous.label,
+                previousRevenue: previousThen,
+                previousFinal: previous.revenue,
+                currentRevenue: current.revenue,
+                ...changeBetween(current.revenue, previousThen)
+            };
+        }
+    }
+
+    return {
+        // Newest first is how they are read, so hand them back that way.
+        quarters: quarters.slice().reverse(),
+        current,
+        previous,
+        samePoint,
+        hasHistory: archived.length > 0,
+        archivedCount: archived.length,
+        years: getYearTotals(store, quarters)
+    };
+}
+
+// Revenue by calendar year.
+//
+// Counted from the DATE ON EACH SALE, not by which quarter it was archived
+// with. A year total answers "what did this business earn in 2026", and a sale
+// entered before a 90-day window opened is still money that arrived that year —
+// so unlike the quarter columns, nothing is excluded here. The two therefore do
+// not always add up, which is why the screen says what this counts.
+//
+// Deduplicated by id: an imported Stripe sale dated inside an archived quarter
+// appears in the live merged list as well, and counting it twice would inflate
+// the only figure on the screen someone might quote to an accountant.
+function getYearTotals(store, quarters) {
+    const seen = new Set();
+    const years = new Map();
+
+    const add = (entry) => {
+        if (entry.id) {
+            if (seen.has(entry.id)) return;
+            seen.add(entry.id);
+        }
+        const d = new Date(entry.date);
+        if (!Number.isFinite(d.getTime())) return;
+        const year = d.getFullYear();
+        if (!years.has(year)) years.set(year, { year, revenue: 0, salesCount: 0, quartersFinished: 0 });
+        const row = years.get(year);
+        row.revenue += parseFloat(entry.amount) || 0;
+        row.salesCount += 1;
+    };
+
+    (store.pastQuarters || []).forEach(q => (q.revenueEntries || []).forEach(add));
+    // The live list, imports merged in by getRevenueInsights.
+    (quarters[quarters.length - 1]?.entries || []).forEach(add);
+
+    quarters.forEach(q => {
+        if (q.isCurrent || !q.endDate) return;
+        const end = new Date(q.endDate);
+        if (!Number.isFinite(end.getTime())) return;
+        // Creates the row if the year has none. A quarter that earned nothing
+        // still happened, and dropping the year would make it look like the
+        // business did not exist that year.
+        if (!years.has(end.getFullYear())) {
+            years.set(end.getFullYear(), { year: end.getFullYear(), revenue: 0, salesCount: 0, quartersFinished: 0 });
+        }
+        years.get(end.getFullYear()).quartersFinished += 1;
+    });
+
+    return Array.from(years.values()).sort((a, b) => b.year - a.year);
 }
 
 export function addWeeklyPlan(plan) {

@@ -2,6 +2,8 @@
 import { renderNav } from '../components/nav.js';
 import { getStore, saveStore, addWeeklyPlan, updateWeeklyPlan, getLocalDateString } from '../store.js';
 import { showToast } from '../components/toast.js';
+import { proTeaser } from '../components/proGate.js';
+import { canUseLiveAI, getCachedLive, planSuggestionsFingerprint, hydratePlanSuggestions, liveAINote, escapeText } from '../liveAI.js';
 
 export function renderPlanner() {
     window.setScreenModule({ attachEvents: plannerAttachEvents });
@@ -42,6 +44,16 @@ export function renderPlanner() {
 
     const prompts = getSmartPrompts(store.profile?.strategyMode);
 
+    // Pro accounts get suggestions written about this business. The cache is read
+    // here, during render, so somebody coming back to this screen sees the live
+    // version straight away rather than watching the keyword one be replaced.
+    // On a miss the keyword version is painted and attachEvents fetches.
+    const cachedSuggestions = canUseLiveAI()
+        ? getCachedLive('plan-suggestions', planSuggestionsFingerprint(store))
+        : null;
+    window._liveAIPlanNeedsFetch = canUseLiveAI() && !cachedSuggestions;
+    const suggestions = cachedSuggestions || generatePlanSuggestions(store);
+
     return `
         ${renderNav()}
         <div class="main-content dashboard-layout">
@@ -75,18 +87,17 @@ export function renderPlanner() {
                 </div>
                 <p style="font-size: 0.875rem; color: var(--color-text-muted); margin-bottom: 0.75rem;">Generated based on your <strong>monthly focus</strong>, priorities, and recent activity to move your business forward.</p>
                 <div style="background: var(--color-bg-light); padding: 1rem; border-radius: var(--radius-sm); font-size: 0.95rem; color: var(--color-secondary-dark);">
-                    <ul style="margin: 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 0.75rem;">
-                        ${generatePlanSuggestions(store).map((s, index) => `
-                        <li style="display: flex; gap: 0.75rem; align-items: flex-start; background: #fff; padding: 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--color-border); box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
-                            <div style="flex-grow: 1; line-height: 1.4;">
-                                <strong style="color: var(--color-primary-dark);">${s.type}:</strong> ${s.action}
-                            </div>
-                            <button type="button" class="btn btn-outline apply-suggestion-btn" data-type="${s.type.toLowerCase()}" data-action="${s.action}" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; flex-shrink: 0;">Apply</button>
-                        </li>
-                        `).join('')}
+                    <ul id="plan-suggestions-list" style="margin: 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 0.75rem;">
+                        ${suggestions.map(suggestionItemHtml).join('')}
                     </ul>
                 </div>
                 <p style="font-size: 0.8rem; color: var(--color-text-muted); margin-top: 0.75rem; text-align: center;">Steal these ideas or write your own below!</p>
+                ${liveAINote('Written for your business from your goals, stage and numbers.')}
+                ${proTeaser(
+                    'live-ai',
+                    'Suggestions written about your business',
+                    'These follow set patterns today. Pro writes them from your goals, stage and numbers.'
+                )}
             </div>
 
             <form id="planner-form" class="card" data-plan-id="${activePlan ? activePlan.id : ''}" data-gen-id="${nextGeneratedPlan ? nextGeneratedPlan.id : ''}">
@@ -129,11 +140,101 @@ export function renderPlanner() {
     `;
 }
 
+// One suggestion row. Shared by the first render and by the live swap, so the
+// two can never drift into looking like different features.
+//
+// Everything is escaped, including the keyword suggestions, which do not need it
+// — uniform escaping is the only version of this that stays correct once model
+// output starts flowing through the same function.
+function suggestionItemHtml(s) {
+    return `
+        <li style="display: flex; gap: 0.75rem; align-items: flex-start; background: #fff; padding: 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--color-border); box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+            <div style="flex-grow: 1; line-height: 1.4;">
+                <strong style="color: var(--color-primary-dark);">${escapeText(s.type)}:</strong> ${escapeText(s.action)}
+            </div>
+            <button type="button" class="btn btn-outline apply-suggestion-btn" data-type="${escapeText(String(s.type || '').toLowerCase())}" data-action="${escapeText(s.action)}" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; flex-shrink: 0;">Apply</button>
+        </li>
+    `;
+}
+
 function plannerAttachEvents() {
     // Nav
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
     document.getElementById('nav-planner')?.classList.add('active');
 
+    bindApplySuggestionButtons();
+
+    // Pro only, and only when the render did not already have a cached answer.
+    // Replacing the list throws away its buttons, so they are rebound here.
+    hydratePlanSuggestions(suggestions => {
+        const list = document.getElementById('plan-suggestions-list');
+        if (!list) return;
+        list.innerHTML = suggestions.map(suggestionItemHtml).join('');
+        bindApplySuggestionButtons();
+    });
+
+    const form = document.getElementById('planner-form');
+    if (form) {
+        form.addEventListener('submit', (e) => {
+            e.preventDefault();
+
+            const p1 = document.getElementById('pa-1').value;
+            const p2 = document.getElementById('pa-2').value;
+            const p3 = document.getElementById('pa-3').value;
+
+            const plan = {
+                winCondition: document.getElementById('plan-win').value,
+                topActions: [p1, p2, p3],
+                revenueAction: document.getElementById('plan-revenue').value,
+                visibilityAction: document.getElementById('plan-visibility').value,
+                followUps: document.getElementById('plan-followup').value,
+            };
+
+            const planId = form.getAttribute('data-plan-id');
+            const genId = form.getAttribute('data-gen-id');
+
+            if (planId && planId !== '') {
+                // Update date so it extends the 6-day active window if they edit it
+                plan.date = new Date().toISOString();
+                updateWeeklyPlan(planId, plan);
+                showToast('Weekly plan updated');
+            } else if (genId && genId !== '') {
+                // We are applying a generated plan
+                plan.applied = true;
+                plan.date = new Date().toISOString(); // Ensure it becomes active NOW
+                updateWeeklyPlan(genId, plan);
+
+                // Move it to the end of the array so dashboard picks it up as the latest active plan
+                const storeStateForMove = getStore();
+                if (storeStateForMove) {
+                   const idx = storeStateForMove.weeklyPlans.findIndex(p => String(p.id) === String(genId));
+                   if (idx !== -1) {
+                       const p = storeStateForMove.weeklyPlans.splice(idx, 1)[0];
+                       storeStateForMove.weeklyPlans.push(p);
+                       saveStore(storeStateForMove);
+                   }
+                }
+                showToast('Weekly plan applied. Have a great week, CEO.');
+            } else {
+                addWeeklyPlan(plan);
+                showToast('Weekly plan saved. Have a great week, CEO.');
+            }
+
+            // Clear today's daily log so the dashboard regenerates the Daily 3 based on the new plan
+            const storeState = getStore();
+            if (storeState && storeState.dailyLogs) {
+                const todayStr = getLocalDateString();
+                delete storeState.dailyLogs[todayStr];
+                saveStore(storeState);
+            }
+
+            // Show success and redirect
+            window.location.hash = '#/dashboard';
+        });
+    }
+}
+
+function bindApplySuggestionButtons() {
     // Handle 'Apply' buttons for AI Suggestions
     document.querySelectorAll('.apply-suggestion-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -191,66 +292,6 @@ function plannerAttachEvents() {
             }
         });
     });
-
-    const form = document.getElementById('planner-form');
-    if (form) {
-        form.addEventListener('submit', (e) => {
-            e.preventDefault();
-
-            const p1 = document.getElementById('pa-1').value;
-            const p2 = document.getElementById('pa-2').value;
-            const p3 = document.getElementById('pa-3').value;
-
-            const plan = {
-                winCondition: document.getElementById('plan-win').value,
-                topActions: [p1, p2, p3],
-                revenueAction: document.getElementById('plan-revenue').value,
-                visibilityAction: document.getElementById('plan-visibility').value,
-                followUps: document.getElementById('plan-followup').value,
-            };
-
-            const planId = form.getAttribute('data-plan-id');
-            const genId = form.getAttribute('data-gen-id');
-            
-            if (planId && planId !== '') {
-                // Update date so it extends the 6-day active window if they edit it
-                plan.date = new Date().toISOString();
-                updateWeeklyPlan(planId, plan);
-                showToast('Weekly plan updated');
-            } else if (genId && genId !== '') {
-                // We are applying a generated plan
-                plan.applied = true;
-                plan.date = new Date().toISOString(); // Ensure it becomes active NOW
-                updateWeeklyPlan(genId, plan);
-                
-                // Move it to the end of the array so dashboard picks it up as the latest active plan
-                const storeStateForMove = getStore();
-                if (storeStateForMove) {
-                   const idx = storeStateForMove.weeklyPlans.findIndex(p => String(p.id) === String(genId));
-                   if (idx !== -1) {
-                       const p = storeStateForMove.weeklyPlans.splice(idx, 1)[0];
-                       storeStateForMove.weeklyPlans.push(p);
-                       saveStore(storeStateForMove);
-                   }
-                }
-                showToast('Weekly plan applied. Have a great week, CEO.');
-            } else {
-                addWeeklyPlan(plan);
-                showToast('Weekly plan saved. Have a great week, CEO.');
-            }
-
-            // Clear today's daily log so the dashboard regenerates the Daily 3 based on the new plan
-            const storeState = getStore();
-            if (storeState && storeState.dailyLogs) {
-                const todayStr = getLocalDateString();
-                delete storeState.dailyLogs[todayStr];
-                saveStore(storeState);
-            }
-
-            // Show success and redirect
-            window.location.hash = '#/dashboard';
-        });
-    }
 }
 
 function getSuggestedFocus(mode) {

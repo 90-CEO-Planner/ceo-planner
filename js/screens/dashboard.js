@@ -4,6 +4,7 @@ import { renderTooltip } from '../components/tooltip.js';
 import { generate90DayActionPlan } from '../aiService.js';
 import { showToast, showConfirm, rerenderScreen } from '../components/toast.js';
 import { proTeaser, proLock } from '../components/proGate.js';
+import { canUseLiveAI, getCachedLive, daily3Fingerprint, advisorFingerprint, hydrateDaily3, hydrateAdvisorPulses, liveAINote } from '../liveAI.js';
 
 export function renderDashboard() {
     window.setScreenModule({ attachEvents: dashboardAttachEvents });
@@ -80,6 +81,42 @@ export function renderDashboard() {
         return ''; // Don't render dashboard while redirecting
     }
     // ---------------------------------
+
+    // The Quiet Advisor, worked out once rather than once per card. This used to
+    // be called separately inside each of the two pulse blocks below, which ran
+    // the whole engine twice per render and meant the two cards could in
+    // principle disagree about the same store.
+    //
+    // The deterministic engine keeps its job: it decides WHICH situation the
+    // founder is in and what colour that is. On Pro the words are then rewritten
+    // about her actual business — see liveAI.js — but the diagnosis and the
+    // colour stay arithmetic, so a red alert always means the numbers said so.
+    const advisorPulses = getQuietAdvisorPulses(store, revInsights, leadToSaleConversion, activePlan);
+
+    if (canUseLiveAI()) {
+        const advisorRequest = {
+            dateStr: getLocalDateString(),
+            revenue: advisorPulses.revenue ? advisorPulses.revenue.title : null,
+            pipeline: advisorPulses.pipeline ? advisorPulses.pipeline.title : null
+        };
+        const cachedPulses = getCachedLive(
+            'advisor-pulses',
+            advisorFingerprint(advisorRequest.dateStr, advisorRequest.revenue, advisorRequest.pipeline)
+        );
+
+        if (cachedPulses) {
+            // Straight into the markup, so a returning visitor never sees the
+            // generic line flick over to the personal one.
+            ['revenue', 'pipeline'].forEach(key => {
+                const live = cachedPulses[key];
+                if (advisorPulses[key] && live && typeof live.message === 'string') {
+                    advisorPulses[key].message = live.message.trim();
+                }
+            });
+        } else if (advisorRequest.revenue || advisorRequest.pipeline) {
+            window._liveAIAdvisor = advisorRequest;
+        }
+    }
 
     let html = `
         ${renderNav()}
@@ -168,13 +205,13 @@ export function renderDashboard() {
                     
                     <!-- Quiet Advisor Pulse: Revenue -->
                     ${(() => {
-                        const pulse = getQuietAdvisorPulses(store, revInsights, leadToSaleConversion, activePlan).revenue;
+                        const pulse = advisorPulses.revenue;
                         if (!pulse || sessionStorage.getItem('dismissPulse_revenue') === 'true') return '';
                         return `
                         <div style="margin-top: 0.75rem; background: #F8FAFC; border-left: 3px solid ${pulse.color}; padding: 0.75rem; border-radius: 4px; display: flex; justify-content: space-between; align-items:flex-start;">
                             <div>
                                 <span style="font-size: 0.7rem; text-transform: uppercase; font-weight: 700; color: ${pulse.color}; letter-spacing: 0.05em; margin-bottom: 0.15rem; display: block;">${pulse.title}</span>
-                                <p style="font-size: 0.8rem; color: var(--color-text-main); margin: 0; line-height: 1.3;">${pulse.message}</p>
+                                <p id="pulse-revenue-message" style="font-size: 0.8rem; color: var(--color-text-main); margin: 0; line-height: 1.3;">${pulse.message}</p>
                             </div>
                             <button class="btn-dismiss-pulse" data-pulse-id="revenue" style="background: none; border: none; color: var(--color-text-muted); font-size: 1rem; cursor: pointer; line-height: 1; padding: 0 0 0 0.5rem;">&times;</button>
                         </div>
@@ -224,13 +261,13 @@ export function renderDashboard() {
                     
                     <!-- Quiet Advisor Pulse: Pipeline -->
                     ${(() => {
-                        const pulse = getQuietAdvisorPulses(store, revInsights, leadToSaleConversion, activePlan).pipeline;
+                        const pulse = advisorPulses.pipeline;
                         if (!pulse || sessionStorage.getItem('dismissPulse_pipeline') === 'true') return '';
                         return `
                         <div style="margin-top: 0.75rem; background: #F8FAFC; border-left: 3px solid ${pulse.color}; padding: 0.75rem; border-radius: 4px; display: flex; justify-content: space-between; align-items:flex-start;">
                             <div>
                                 <span style="font-size: 0.7rem; text-transform: uppercase; font-weight: 700; color: ${pulse.color}; letter-spacing: 0.05em; margin-bottom: 0.15rem; display: block;">${pulse.title}</span>
-                                <p style="font-size: 0.8rem; color: var(--color-text-main); margin: 0; line-height: 1.3;">${pulse.message}</p>
+                                <p id="pulse-pipeline-message" style="font-size: 0.8rem; color: var(--color-text-main); margin: 0; line-height: 1.3;">${pulse.message}</p>
                             </div>
                             <button class="btn-dismiss-pulse" data-pulse-id="pipeline" style="background: none; border: none; color: var(--color-text-muted); font-size: 1rem; cursor: pointer; line-height: 1; padding: 0 0 0 0.5rem;">&times;</button>
                         </div>
@@ -499,17 +536,28 @@ export function renderDashboard() {
         const builtFrom = store.dailyLogSources ? store.dailyLogSources[todayStrDash] : undefined;
         const isStale = Boolean(todaysLog) && builtFrom !== planKey;
 
-        if (!todaysLog || isStale) {
-            const plannedDaily3 = Array.isArray(activePlan.daily3)
-                ? activePlan.daily3.map(t => (t || '').trim()).filter(Boolean)
-                : [];
+        const plannedDaily3 = Array.isArray(activePlan.daily3)
+            ? activePlan.daily3.map(t => (t || '').trim()).filter(Boolean)
+            : [];
+        const currentPriorities = [0, 1, 2].map(i => (activePlan.topActions || g.priorities)[i] || '');
 
+        // The keyword templates only ever run when the week's plan has no daily3
+        // of its own — i.e. when she wrote her own Monday plan rather than
+        // applying a generated week. That is the one case Pro replaces.
+        const usingKeywordEngine = plannedDaily3.length === 0;
+        const liveFingerprint = daily3Fingerprint(todayStrDash, planKey, currentPriorities);
+        const cachedDaily3 = (usingKeywordEngine && canUseLiveAI())
+            ? getCachedLive('daily-3', liveFingerprint)
+            : null;
+
+        if (!todaysLog || isStale) {
             let generatedTasks;
             if (plannedDaily3.length > 0) {
                 generatedTasks = plannedDaily3.slice(0, 3);
+            } else if (cachedDaily3) {
+                generatedTasks = cachedDaily3;
             } else {
-                const currentPriorities = activePlan.topActions || g.priorities;
-                generatedTasks = generateDaily3([0, 1, 2].map(i => currentPriorities[i] || ''), activePlan);
+                generatedTasks = generateDaily3(currentPriorities, activePlan);
             }
 
             // Anything already ticked that survived the rewrite keeps its tick.
@@ -521,6 +569,30 @@ export function renderDashboard() {
             todaysLog = generatedTasks.map(t => ({ text: t, done: Boolean(doneByText[t]) }));
             // Saved in attachEvents, along with the plan it was built from.
             window._tempGeneratedTodaysLog = { tasks: todaysLog, source: planKey };
+        }
+
+        // Ask for a live Daily 3 when there is no cached answer yet.
+        //
+        // Deliberately outside the block above, which only runs when the log is
+        // being rebuilt. A call that failed earlier today left a keyword log in
+        // place, and without this the app would not try again until tomorrow,
+        // because a log now exists and is not stale. The daily budget is what
+        // stops that retry becoming a loop.
+        //
+        // Skipped once anything has been ticked: swapping a task she has already
+        // done would lose real work. hydrateDaily3 checks that again at the point
+        // the answer actually lands.
+        if (usingKeywordEngine && canUseLiveAI() && !cachedDaily3 && !todaysLog.some(t => t.done)) {
+            window._liveAIDaily3 = {
+                dateStr: todayStrDash,
+                planKey,
+                priorities: currentPriorities,
+                winCondition: activePlan.winCondition || '',
+                revenueAction: activePlan.revenueAction || '',
+                visibilityAction: activePlan.visibilityAction || '',
+                followUps: activePlan.followUps || '',
+                dayName: new Date().toLocaleDateString('en-US', { weekday: 'long' })
+            };
         }
 
         todaysLog.forEach((taskObj, i) => {
@@ -542,9 +614,10 @@ export function renderDashboard() {
                          <h3 style="margin: 0;">The Daily 3</h3>
                      </div>
                      <p style="font-size: 0.9rem; color: var(--color-text-muted); margin-bottom: 1rem;">Move the needle today based on your top priorities.</p>
-                     <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+                     <div id="daily-3-list" style="display: flex; flex-direction: column; gap: 0.75rem;">
                          ${dailyTasksHtml}
                      </div>
+                     ${activePlan ? liveAINote('Broken down from this week\'s plan for your business.') : ''}
                      ${proTeaser(
                          'live-ai',
                          'Suggestions written about your business',
@@ -917,6 +990,12 @@ function dashboardAttachEvents() {
     // Nav active state
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
     document.getElementById('nav-dashboard')?.classList.add('active');
+
+    // Pro only, and only when render found no cached answer. Both are fire and
+    // forget: they must never delay the screen, and a failure leaves exactly the
+    // dashboard that was already on screen.
+    hydrateDaily3();
+    hydrateAdvisorPulses();
 
     // CEO Focus Score calculation
     const store = getStore();

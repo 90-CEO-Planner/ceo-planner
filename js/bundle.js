@@ -114,6 +114,20 @@ The app functions as your objective Board of Directors, providing dynamic insigh
 - **AI Executive Report:** From the Revenue tab, click **AI Executive Report**. The system will scan your entire pipeline, calculate your conversion bottlenecks, and generate a brutally honest strategic briefing telling you exactly what to fix in your funnel. You can instantly download this report as a text file.
 - **Notepad / Chat:** Visit the Notepad tab or use the floating Executive AI Coach bubble to chat directly with your Executive AI Coach regarding your business bottlenecks.
 
+**Where the suggestions come from:**
+Four places in the app suggest things for you to do: the AI Planning Assistant on the Weekly Plan page, the breakdown of your Daily 3 on the dashboard, the small nudges beside your Revenue and Pipeline figures, and the CEO vs Busy Work filter in the Notepad.
+
+On the base plan these follow built-in patterns. They are sensible starting points, but they work from keywords in what you have written rather than from your situation, so they can read a little generic.
+
+On Pro the same four are written by your coach from your real context: your stage, your niche, your ideal client, your #1 bottleneck, your 90-day focus, where you are against your revenue goal and what you actually planned for this week. If the coach cannot be reached, or you have used your AI allowance for the day, they quietly fall back to the built-in versions rather than failing — so there is always something there.
+
+Two things stay fixed on both plans. The **colour and the heading** of a dashboard nudge are always worked out from your numbers, never written by the AI, so a red Pace Alert always means the maths says so. And your Daily 3 is never rewritten once you have ticked something off that day.
+
+**Your daily AI allowance:**
+Every plan includes a set number of AI requests a day: 30 on the free trial, 120 on the base plan, 300 on Pro. One request is one request whether it is a message to the coach, a regenerated 90-day plan, an executive report, or a refreshed suggestion on Pro. The count resets at midnight UTC.
+
+You will get a quiet heads-up once you have used about eighty percent of the day's allowance, so you can plan the rest of your day rather than being stopped mid-conversation. The **Account** page shows your allowance and how much of it you have used today.
+
 ---
 
 ## 8. Managing Your Data
@@ -458,9 +472,24 @@ window.reconcileAuthState = async function reconcileAuthState() {
 // somebody to sign in is the last thing this does, not the first: every route
 // to a fresh token is tried before the request is given up on.
 //
+// `options` is passed straight through to the function body alongside the
+// messages. All of it is optional, and omitting it behaves exactly as before:
+//
+//   feature    a Pro feature key, e.g. 'live-ai'. The function refuses the
+//              request unless the account really is on Pro. Leave it off for
+//              anything every plan gets, like the chat coach itself.
+//   json       true to make OpenAI guarantee valid JSON. Set this on every
+//              caller that runs JSON.parse on the answer.
+//   maxTokens  a ceiling on the reply length. Clamped server side.
+//   background true for a call the user did not ask for. Kept on the client —
+//              it only decides whether an allowance warning may interrupt.
+//
 // Returns the OpenAI response body, or throws an Error whose message is safe to
 // show the customer.
-window.invokeChat = async function invokeChat(messages) {
+window.invokeChat = async function invokeChat(messages, options = {}) {
+    // `background` is ours, not the function's. Stripping it here means the
+    // server contract stays exactly the three fields it documents.
+    const { background = false, ...serverOptions } = options;
     let token = await getAccessToken();
     if (!token) {
         throw new Error('Your session has expired. Please sign in again to use the AI coach.');
@@ -475,7 +504,7 @@ window.invokeChat = async function invokeChat(messages) {
         // Passing the token explicitly rather than trusting the SDK to attach
         // it, so this can never fall back to the anon key behind our backs.
         const { data, error } = await window.db.functions.invoke('chat', {
-            body: { messages },
+            body: { messages, ...serverOptions },
             headers: { Authorization: `Bearer ${token}` },
         });
 
@@ -483,6 +512,16 @@ window.invokeChat = async function invokeChat(messages) {
             if (data && data.error) {
                 throw new Error(data.error.message || data.error);
             }
+
+            // Every successful call reports where today's allowance stands, so
+            // this is the one place that has to notice. Recording is silent;
+            // warning is not, which is why it is limited to requests the user
+            // actually made.
+            if (data && data.ceo_allowance) {
+                recordAiAllowance(data.ceo_allowance);
+                if (!background) warnIfAllowanceLow(data.ceo_allowance);
+            }
+
             return data;
         }
 
@@ -1245,9 +1284,21 @@ function getPipelineInsights() {
 // a claim the data does not support.
 function getFunnelInsights() {
     const store = getStore();
-    const leads = store.leads?.entries || [];
-    const metrics = store.metrics || [];
-    const contacts = store.contacts || [];
+    return summariseFunnel(store.leads?.entries, store.metrics, store.contacts);
+}
+
+// The funnel maths itself, over whichever three lists it is handed.
+//
+// Split out from getFunnelInsights so an ARCHIVED quarter can be counted by the
+// identical rules (see getQuarterHistory). A second implementation for history
+// would have been the fourth opinion this function exists to prevent — and the
+// disagreement would have been invisible, because the two datasets are never on
+// screen at the same moment except on the comparison screen, where it would
+// look like the business changed rather than like the code did.
+function summariseFunnel(leadEntries, metricEntries, contactList) {
+    const leads = leadEntries || [];
+    const metrics = metricEntries || [];
+    const contacts = contactList || [];
 
     const snapshotTraffic = metrics.reduce((s, m) => s + (parseFloat(m.traffic) || 0), 0);
     const snapshotCalls = metrics.reduce((s, m) => s + (parseFloat(m.calls) || 0), 0);
@@ -1647,6 +1698,323 @@ function getRevenueInsights() {
         quarterEntryCount: quarterEntries.length,
         entries: entries.slice().sort((a, b) => new Date(b.date) - new Date(a.date)) // newest first
     };
+}
+
+// ---------------------------------------------------------------------------
+// Quarter history (Pro item 3)
+// ---------------------------------------------------------------------------
+//
+// Every quarter the user has finished, plus the one in progress, described in
+// one shape so they can be put side by side.
+//
+// Two rules run through all of this:
+//
+// 1. The CURRENT quarter's figures are read from getRevenueInsights() and
+//    getFunnelInsights(), never recalculated here. If this screen worked out its
+//    own total for the quarter in progress, it would eventually disagree with
+//    the Revenue screen about the same 90 days, and the user would have no way
+//    to tell which number was the real one.
+// 2. An ARCHIVED quarter is counted by those same functions' rules, via
+//    summariseFunnel and the helpers below, rather than by a second set written
+//    for history. Same maths, different dataset.
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+// The revenue entries that belong to a quarter, on the rule getRevenueInsights
+// uses for the live one: anything dated before the quarter began is money that
+// arrived, but not money that quarter earned. Back-entered history counted in
+// full would make a quarter look like it beat one it never touched.
+function entriesInQuarter(entries, startISO) {
+    const list = entries || [];
+    const start = startISO ? new Date(startISO) : null;
+    if (!start || !Number.isFinite(start.getTime())) return list;
+    return list.filter(e => new Date(e.date).getTime() >= start.getTime());
+}
+
+function sumAmounts(entries) {
+    return (entries || []).reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
+}
+
+// Biggest key in a { name: amount } map, or 'None'. Same answer the topSource /
+// topOffer reducers in getRevenueInsights give, so a past quarter's top channel
+// is picked the way the live one's is.
+function topKeyOf(totals) {
+    const keys = Object.keys(totals);
+    if (keys.length === 0) return 'None';
+    return keys.reduce((a, b) => (totals[a] > totals[b] ? a : b));
+}
+
+function totalsBy(entries, field, fallback) {
+    const totals = {};
+    (entries || []).forEach(e => {
+        const key = e[field] || fallback;
+        totals[key] = (totals[key] || 0) + (parseFloat(e.amount) || 0);
+    });
+    return totals;
+}
+
+// "16 May – 14 Aug 2026", or "16 May 2026 – in progress" for the live one.
+function quarterRangeLabel(startISO, endISO) {
+    const opts = { day: 'numeric', month: 'short' };
+    const start = startISO ? new Date(startISO) : null;
+    const end = endISO ? new Date(endISO) : null;
+    const startOk = start && Number.isFinite(start.getTime());
+    const endOk = end && Number.isFinite(end.getTime());
+
+    if (!startOk && !endOk) return 'Dates not recorded';
+    if (!startOk) return `Ended ${end.toLocaleDateString(undefined, { ...opts, year: 'numeric' })}`;
+
+    const startText = start.toLocaleDateString(undefined, {
+        ...opts,
+        // Drop the year off the start when both ends share one — "16 May – 14
+        // Aug 2026" rather than the same year printed twice.
+        year: endOk && end.getFullYear() === start.getFullYear() ? undefined : 'numeric'
+    });
+    if (!endOk) return `${start.toLocaleDateString(undefined, { ...opts, year: 'numeric' })} – in progress`;
+    return `${startText} – ${end.toLocaleDateString(undefined, { ...opts, year: 'numeric' })}`;
+}
+
+// What a quarter had earned by day N of it. This is the only honest way to
+// compare a quarter five weeks in against one that ran the full ninety days —
+// the alternative is telling someone they are 60% down on last quarter when
+// what they actually are is five weeks into this one.
+function revenueByDay(entries, startISO, days) {
+    const start = startISO ? new Date(startISO) : null;
+    if (!start || !Number.isFinite(start.getTime())) return null;
+    const cutoff = start.getTime() + days * MS_PER_DAY;
+    return sumAmounts((entries || []).filter(e => {
+        const t = new Date(e.date).getTime();
+        return Number.isFinite(t) && t >= start.getTime() && t < cutoff;
+    }));
+}
+
+// A change between two quarters. `percent` is null rather than 0 when there is
+// nothing to divide by: going from nothing to £2,000 is not a 100% rise, and
+// printing one would be inventing a baseline that never existed.
+function changeBetween(now, before) {
+    const delta = now - before;
+    return {
+        delta,
+        percent: before > 0 ? (delta / before) * 100 : null,
+        direction: delta > 0 ? 'up' : (delta < 0 ? 'down' : 'level')
+    };
+}
+
+// One archived quarter, summarised. `previous` is the archive entry before it,
+// needed only to work out how many Friday Reviews belong to this quarter.
+function summariseArchivedQuarter(quarter, ordinal, previous) {
+    const startISO = quarter.quarterStartDate || '';
+    const endISO = quarter.dateArchived || '';
+    const allEntries = quarter.revenueEntries || [];
+    const quarterEntries = entriesInQuarter(allEntries, startISO);
+    const revenue = sumAmounts(quarterEntries);
+    const goal = parseFloat(quarter.revenueGoal) || 0;
+    const funnel = summariseFunnel(quarter.leadEntries, quarter.metrics, quarter.contacts);
+
+    // ⚠️ reviewsCount in the archive is store.reviews.length AT THE TIME, and
+    // reviews are deliberately never cleared on reset — so it is a running
+    // total, not this quarter's count. Differencing consecutive archives is what
+    // turns it back into "reviews done in these ninety days". plansCount needs
+    // no such correction: weeklyPlans IS cleared each quarter, and the archived
+    // array is the quarter's own.
+    const reviewsBefore = previous ? (previous.reviewsCount || 0) : 0;
+    const reviewsCount = Math.max(0, (quarter.reviewsCount || 0) - reviewsBefore);
+
+    return {
+        ordinal,
+        id: endISO || `quarter-${ordinal}`,
+        isCurrent: false,
+        startDate: startISO,
+        endDate: endISO,
+        label: `Quarter ${ordinal}`,
+        rangeLabel: quarterRangeLabel(startISO, endISO),
+        focus: quarter.goals?.focus || '',
+        outcome: quarter.goals?.outcome || '',
+        revenue,
+        goal,
+        progressPercent: goal > 0 ? (revenue / goal) * 100 : null,
+        salesCount: quarterEntries.length,
+        // Money logged against dates before this quarter opened. Excluded from
+        // the figures above for the reason in entriesInQuarter, and reported so
+        // a quarter never looks like it lost something.
+        revenueBeforeQuarter: sumAmounts(allEntries) - revenue,
+        topSource: topKeyOf(totalsBy(quarterEntries, 'source', 'Other')),
+        topOffer: topKeyOf(totalsBy(quarterEntries, 'offer', 'General')),
+        leads: funnel.totalLeads,
+        calls: funnel.totalCalls,
+        closes: funnel.totalCloses,
+        callCloseRate: funnel.callCloseRate,
+        contactLeads: funnel.contactLeads,
+        reviewsCount,
+        plansCount: (quarter.weeklyPlans || []).length,
+        reflection: quarter.reflection || null,
+        // Kept for the same-point comparison, which needs the raw dated rows.
+        entries: allEntries
+    };
+}
+
+// Every quarter, oldest first, with the one in progress last.
+//
+// Returns { quarters, current, previous, hasHistory, years }. Each quarter
+// carries `change`, its movement against the quarter before it, so a screen
+// renders the comparison rather than working it out.
+function getQuarterHistory() {
+    const store = getStore();
+
+    // pastQuarters is appended to, so it is already chronological. Sorted
+    // anyway: a store restored from a sync, or hand-edited, is not guaranteed
+    // to be, and the ordinals and every delta below depend on the order.
+    const archived = (store.pastQuarters || []).slice().sort((a, b) => {
+        const at = new Date(a.dateArchived || a.quarterStartDate || 0).getTime();
+        const bt = new Date(b.dateArchived || b.quarterStartDate || 0).getTime();
+        return (Number.isFinite(at) ? at : 0) - (Number.isFinite(bt) ? bt : 0);
+    });
+
+    const quarters = archived.map((q, i) => summariseArchivedQuarter(q, i + 1, archived[i - 1]));
+
+    // The quarter in progress. Every figure here is READ from the two functions
+    // the rest of the app reads from, so this row and the Revenue screen can
+    // never disagree about the ninety days the user is actually living in.
+    const insights = getRevenueInsights();
+    const funnel = getFunnelInsights();
+    const lastArchived = archived[archived.length - 1];
+    const daysElapsed = store.quarterStartDate
+        ? Math.max(0, Math.floor((Date.now() - new Date(store.quarterStartDate).getTime()) / MS_PER_DAY))
+        : null;
+
+    const current = {
+        ordinal: quarters.length + 1,
+        id: 'current',
+        isCurrent: true,
+        startDate: store.quarterStartDate || '',
+        endDate: '',
+        label: 'This quarter',
+        rangeLabel: quarterRangeLabel(store.quarterStartDate || '', ''),
+        focus: store.goals?.focus || '',
+        outcome: store.goals?.outcome || '',
+        revenue: insights.totalRevenue,
+        goal: insights.goal,
+        // Worked out from the same two figures the Revenue screen shows, not
+        // read off insights.progressPercent — that one is clamped to 100 for a
+        // progress bar's benefit, and a quarter that beat its goal by half
+        // deserves to say so when it is being compared with another.
+        progressPercent: insights.goal > 0 ? (insights.totalRevenue / insights.goal) * 100 : null,
+        salesCount: insights.quarterEntryCount,
+        revenueBeforeQuarter: insights.revenueBeforeQuarter,
+        topSource: insights.topSource,
+        topOffer: insights.topOffer,
+        leads: funnel.totalLeads,
+        calls: funnel.totalCalls,
+        closes: funnel.totalCloses,
+        callCloseRate: funnel.callCloseRate,
+        contactLeads: funnel.contactLeads,
+        // Same differencing as the archived rows, for the same reason.
+        reviewsCount: Math.max(0, (store.reviews || []).length - (lastArchived ? (lastArchived.reviewsCount || 0) : 0)),
+        plansCount: (store.weeklyPlans || []).length,
+        reflection: null,
+        entries: insights.entries,
+        weeksElapsed: insights.weeksElapsed,
+        weeksRemaining: insights.weeksRemaining,
+        daysElapsed,
+        momentum: insights.momentum,
+        projectedRevenue: insights.projectedRevenue
+    };
+
+    quarters.push(current);
+
+    // Movement against the quarter before. Attached to each row rather than
+    // computed in the screen, so the table and any card built later cannot
+    // arrive at two different arrows for the same pair.
+    quarters.forEach((q, i) => {
+        const before = quarters[i - 1];
+        q.change = before ? {
+            revenue: changeBetween(q.revenue, before.revenue),
+            leads: changeBetween(q.leads, before.leads),
+            closes: changeBetween(q.closes, before.closes),
+            comparedWith: before.label
+        } : null;
+    });
+
+    // This quarter against the last one AT THE SAME POINT. Only offered when
+    // the previous quarter has a start date to measure from and this one has
+    // actually started — an unanswerable comparison is left null rather than
+    // guessed at, and the screen says so.
+    let samePoint = null;
+    const previous = quarters.length > 1 ? quarters[quarters.length - 2] : null;
+    if (previous && daysElapsed !== null && previous.startDate) {
+        const previousThen = revenueByDay(previous.entries, previous.startDate, daysElapsed + 1);
+        if (previousThen !== null) {
+            samePoint = {
+                daysElapsed,
+                weeksElapsed: current.weeksElapsed || Math.max(1, Math.ceil((daysElapsed || 1) / 7)),
+                previousLabel: previous.label,
+                previousRevenue: previousThen,
+                previousFinal: previous.revenue,
+                currentRevenue: current.revenue,
+                ...changeBetween(current.revenue, previousThen)
+            };
+        }
+    }
+
+    return {
+        // Newest first is how they are read, so hand them back that way.
+        quarters: quarters.slice().reverse(),
+        current,
+        previous,
+        samePoint,
+        hasHistory: archived.length > 0,
+        archivedCount: archived.length,
+        years: getYearTotals(store, quarters)
+    };
+}
+
+// Revenue by calendar year.
+//
+// Counted from the DATE ON EACH SALE, not by which quarter it was archived
+// with. A year total answers "what did this business earn in 2026", and a sale
+// entered before a 90-day window opened is still money that arrived that year —
+// so unlike the quarter columns, nothing is excluded here. The two therefore do
+// not always add up, which is why the screen says what this counts.
+//
+// Deduplicated by id: an imported Stripe sale dated inside an archived quarter
+// appears in the live merged list as well, and counting it twice would inflate
+// the only figure on the screen someone might quote to an accountant.
+function getYearTotals(store, quarters) {
+    const seen = new Set();
+    const years = new Map();
+
+    const add = (entry) => {
+        if (entry.id) {
+            if (seen.has(entry.id)) return;
+            seen.add(entry.id);
+        }
+        const d = new Date(entry.date);
+        if (!Number.isFinite(d.getTime())) return;
+        const year = d.getFullYear();
+        if (!years.has(year)) years.set(year, { year, revenue: 0, salesCount: 0, quartersFinished: 0 });
+        const row = years.get(year);
+        row.revenue += parseFloat(entry.amount) || 0;
+        row.salesCount += 1;
+    };
+
+    (store.pastQuarters || []).forEach(q => (q.revenueEntries || []).forEach(add));
+    // The live list, imports merged in by getRevenueInsights.
+    (quarters[quarters.length - 1]?.entries || []).forEach(add);
+
+    quarters.forEach(q => {
+        if (q.isCurrent || !q.endDate) return;
+        const end = new Date(q.endDate);
+        if (!Number.isFinite(end.getTime())) return;
+        // Creates the row if the year has none. A quarter that earned nothing
+        // still happened, and dropping the year would make it look like the
+        // business did not exist that year.
+        if (!years.has(end.getFullYear())) {
+            years.set(end.getFullYear(), { year: end.getFullYear(), revenue: 0, salesCount: 0, quartersFinished: 0 });
+        }
+        years.get(end.getFullYear()).quartersFinished += 1;
+    });
+
+    return Array.from(years.values()).sort((a, b) => b.year - a.year);
 }
 
 function addWeeklyPlan(plan) {
@@ -2559,7 +2927,15 @@ You MUST return ONLY a raw JSON strictly following this schema with no markdown 
 }`;
 
     try {
-        const data = await window.invokeChat([{ role: 'user', content: prompt }]);
+        // json: true makes OpenAI return a parseable object rather than prose
+        // that happens to look like one. The fence-stripping below is kept as a
+        // belt-and-braces measure: JSON mode is skipped server side if no
+        // message mentions JSON, and a future edit to this prompt could quietly
+        // remove the word.
+        const data = await window.invokeChat(
+            [{ role: 'user', content: prompt }],
+            { json: true, maxTokens: 800 }
+        );
 
         let content = data.choices[0].message.content;
         content = content.replace(/^```json/g, '').replace(/```$/g, '').trim();
@@ -2668,10 +3044,18 @@ OUTPUT FORMAT (return exactly this JSON shape):
 CRITICAL: Return ONLY the JSON object above. No explanation, no preamble, no code fences.`;
 
     try {
-        const data = await window.invokeChat([
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: 'Generate my 90-day action plan now. Return only the JSON object, no prose, no markdown fences.' }
-        ]);
+        // A 12-week plan with a setup checklist and red flags is the longest
+        // answer the app ever asks for, so the ceiling is generous. It exists to
+        // stop a runaway, not to shape the output — a plan cut off mid-JSON
+        // fails the shape check below and returns null, which is worse than
+        // costing a few more tokens.
+        const data = await window.invokeChat(
+            [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: 'Generate my 90-day action plan now. Return only the JSON object, no prose, no markdown fences.' }
+            ],
+            { json: true, maxTokens: 8000 }
+        );
 
         let content = data.choices[0].message.content;
         content = content.replace(/^```json/gi, '').replace(/```$/g, '').trim();
@@ -2738,14 +3122,28 @@ const PRO_FEATURES = {
         blurb: 'Named contacts instead of a running count. Move each one through lead, call booked, proposal sent, won or lost, set a follow-up date, and see at a glance who has gone quiet on you.'
     },
     'history': {
-        shipped: false,
+        // Shipped 16 Aug 2026. Lives at #/history, reached from Wins & Progress
+        // — where the teaser for it used to sit — and from the Quarter Reset
+        // screen, which is the moment history gets made.
+        shipped: true,
         title: 'Your year, quarter by quarter',
         blurb: 'Every quarter you finish is archived rather than cleared. This is where you see them side by side, so you can tell whether this quarter is genuinely better than the last one or it just feels that way.'
     },
     'live-ai': {
-        shipped: false,
+        // Shipped 17 Aug 2026. All four keyword engines now have a live half:
+        // the planning assistant, the Daily 3 breakdown, the Quiet Advisor
+        // pulses and the CEO vs Busy Work filter. The keyword versions stay as
+        // the base tier and as the fallback — see js/liveAI.js.
+        shipped: true,
         title: 'Planning that thinks about your business',
         blurb: 'The suggestions here are currently pattern rules, which is why they can feel a little generic. Pro sends your actual numbers, offer and stage to the coach, so what comes back is written about your business rather than about businesses in general.'
+    },
+    'ai-allowance': {
+        // Real today — the limits have existed since batch 1.1 and became
+        // per-tier with Pro item 4. Nothing to build, so it ships as true.
+        shipped: true,
+        title: 'More AI to work with',
+        blurb: 'Every plan includes the coach. Base is 120 requests a day, Pro is 300. It matters more on Pro than it sounds: Pro also writes your planning suggestions and your Daily 3 with the coach, so the bigger allowance is what keeps that going all day instead of stopping by lunchtime.'
     },
     'coach-memory': {
         shipped: false,
@@ -2781,6 +3179,7 @@ const PRO_FEATURES = {
             'A named lead pipeline with follow-up dates',
             'Quarter-over-quarter history and a year view',
             'AI planning written from your real numbers',
+            '300 AI requests a day instead of 120',
             'A coach that remembers your conversations',
             'Weekly digest by email',
             'Branded PDF reports',
@@ -2796,6 +3195,10 @@ const PRO_FEATURE_KEYS = [
     'lead-pipeline',
     'history',
     'live-ai',
+    // Sits directly under live-ai on purpose: it is the reason the allowance
+    // matters. Read on its own it is a number; read after "planning written by
+    // the coach" it is the thing that keeps that working.
+    'ai-allowance',
     'coach-memory',
     'week-regen',
     'email-digest',
@@ -2835,6 +3238,119 @@ function isProUser() {
     return getPlanTier() === 'pro';
 }
 
+// How many AI requests a day each plan gets.
+//
+// ⚠️ These MUST match the defaults in `consume_ai_quota` (supabase/setup.sql
+// and migration 20260816_ai_quota_pro_tier.sql). The server is what actually
+// enforces them; this copy exists only so the app can say the number out loud
+// on the plan card. **Change one and you must change the other**, or the app
+// will promise an allowance the database does not honour.
+const AI_DAILY_LIMITS = { trial: 30, base: 120, pro: 300 };
+
+// What THIS account gets per day.
+//
+// Written as the real number for the person reading it rather than as a
+// headline. A trial resolves to the Pro feature set but deliberately keeps the
+// trial rate, so quoting the Pro figure to a trial user would be a promise the
+// server refuses at request 31.
+function aiDailyAllowance() {
+    if (localStorage.getItem('ceo_sub_status') === 'trialing') return AI_DAILY_LIMITS.trial;
+    return isProUser() ? AI_DAILY_LIMITS.pro : AI_DAILY_LIMITS.base;
+}
+
+// --- Where today's allowance actually stands ---------------------------------
+//
+// The chat function reports `used` and `quota` on every successful call, so the
+// app knows where it stands without asking. No polling, no extra endpoint: the
+// numbers arrive as a side effect of work already being done.
+//
+// Keyed on the **UTC** date because that is what the server counter resets on.
+// Using the local date would show a stale figure, or a fresh one that isn't,
+// for anybody outside GMT — and being wrong about a limit is worse than being
+// silent about it.
+const ALLOWANCE_KEY = 'ceo_ai_allowance';
+const ALLOWANCE_WARNED_KEY = 'ceo_ai_allowance_warned';
+
+// Warn once the day is 80% spent. Early enough to change plans, late enough
+// that it isn't nagging somebody who was never going to run out.
+const ALLOWANCE_WARN_AT = 0.8;
+
+function utcDay() {
+    return new Date().toISOString().slice(0, 10);
+}
+
+function recordAiAllowance(allowance) {
+    if (!allowance || !Number.isFinite(allowance.quota) || allowance.quota <= 0) return;
+    try {
+        localStorage.setItem(ALLOWANCE_KEY, JSON.stringify({
+            day: utcDay(),
+            used: allowance.used,
+            quota: allowance.quota
+        }));
+    } catch (err) {
+        // Storage full. The warning simply won't fire; nothing else breaks.
+    }
+}
+
+// Today's figures, or null when nothing has been recorded today. Null is a real
+// answer and must not be shown as "0 used" — it means "we haven't asked yet",
+// which is different, and on the Account card it reads very differently.
+function getAiAllowanceToday() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(ALLOWANCE_KEY) || 'null');
+        if (!raw || raw.day !== utcDay()) return null;
+        return { used: raw.used, quota: raw.quota };
+    } catch (err) {
+        return null;
+    }
+}
+
+// Forget today's figures. Called wherever the account changes on this browser —
+// sign-out, login, signup — because a usage count belongs to one person. NOT
+// called on quarter reset: this is a daily counter and has nothing to do with
+// which 90 days you are in.
+function clearAiAllowance() {
+    try {
+        localStorage.removeItem(ALLOWANCE_KEY);
+        localStorage.removeItem(ALLOWANCE_WARNED_KEY);
+    } catch (err) {
+        /* nothing worth reporting */
+    }
+}
+
+// Say something once a day, when they are close and it is still useful to know.
+//
+// Only ever called for requests the user actually made. The live planning
+// surfaces spend quota on page load, and a toast appearing unprompted to say
+// "you have used 80% of your AI" would alarm somebody who has not done
+// anything — see the `background` flag in invokeChat.
+function warnIfAllowanceLow(allowance) {
+    if (!allowance || !Number.isFinite(allowance.quota) || allowance.quota <= 0) return;
+    if (allowance.used / allowance.quota < ALLOWANCE_WARN_AT) return;
+    if (allowance.used >= allowance.quota) return; // The 429 says it better.
+
+    try {
+        if (localStorage.getItem(ALLOWANCE_WARNED_KEY) === utcDay()) return;
+        localStorage.setItem(ALLOWANCE_WARNED_KEY, utcDay());
+    } catch (err) {
+        return; // Can't remember having warned, so don't risk warning repeatedly.
+    }
+
+    const left = allowance.quota - allowance.used;
+    const requests = left === 1 ? 'request' : 'requests';
+    const base = `${left} AI ${requests} left today. It resets at midnight UTC.`;
+
+    // The upgrade line is only fair because they are genuinely close to the
+    // limit and Pro genuinely fixes it. Saying it at 20% would be a nag.
+    const message = isProUser()
+        ? base
+        : `${base} Pro comes with ${AI_DAILY_LIMITS.pro} a day — see Account.`;
+
+    // toast.js is concatenated after this file in the bundle. The call happens
+    // at runtime rather than at load, so it resolves, but guard it anyway.
+    if (typeof showToast === 'function') showToast(message, 'info', 7000);
+}
+
 // True while the account is inside the app-managed 14-day trial, which is the
 // only state where someone has Pro without paying for it.
 function isProTrial() {
@@ -2858,6 +3374,13 @@ function trialDaysLeft() {
 // pointing at a locked screen — the exact shape of the canConnectStripe bug.
 function canUseLeadPipeline() {
     return isProUser() && isFeatureLive('lead-pipeline');
+}
+
+// Can this account open the quarter history screen? Same single-answer rule as
+// canUseLeadPipeline above, asked by the screen's own guard, the card on Wins &
+// Progress and the link on Quarter Reset.
+function canUseHistory() {
+    return isProUser() && isFeatureLive('history');
 }
 
 // A small "PRO" chip, for sitting next to a heading or a label.
@@ -3067,6 +3590,661 @@ function initProGate() {
 }
 
 
+// --- js\liveAI.js ---
+// liveAI.js
+//
+// Pro item 4. The four places the app says "AI" but means "keyword map" are:
+//
+//   AI Planning Assistant   js/screens/weeklyPlanner.js  generatePlanSuggestions()
+//   The Daily 3 breakdown   js/screens/dashboard.js      breakdownTask()
+//   Quiet Advisor pulses    js/screens/dashboard.js      getQuietAdvisorPulses()
+//   CEO vs Busy Work        js/screens/coach.js          the decision filter
+//
+// This file is the Pro half of all four. The keyword engines stay exactly where
+// they are and remain the base tier — that is the honest free/Pro line, and it
+// is also the fallback whenever a call fails, is refused, or would cost more
+// than the day's budget allows. Nothing here ever leaves a screen worse off
+// than it was before the feature existed.
+//
+// Three rules shape everything below.
+//
+// 1. RENDER IS SYNCHRONOUS. Screens return HTML strings, so a model call cannot
+//    happen during render. Every surface paints its keyword version first and
+//    the live version replaces it a moment later, in attachEvents. A cache hit
+//    is read synchronously during render, so the common case has no flash.
+//
+// 2. THESE CALLS ARE UNASKED FOR. The user did not press a button, so a failure
+//    must be silent. No toast, no error text, no spinner that outlives its
+//    welcome — just the keyword version they would have had anyway. The one
+//    exception is the idea filter, which the user does press a button for.
+//
+// 3. AUTOMATIC SPEND NEEDS ITS OWN CEILING. consume_ai_quota is the real limit
+//    and it is per tier, but a feature that fires without being asked should
+//    not be able to eat somebody's whole daily allowance before they have typed
+//    a word to the coach. The budget below is a courtesy cap on top of it.
+
+// Imports are one line each on purpose: build_bundle.ps1 strips them with a
+// per-line regex, so a multi-line import leaves its closing brace behind and
+// the bundle stops parsing. Same reason the file uses `export function`
+// throughout rather than `export default` or a multi-line export block.
+
+// Can this account use live AI? One answer, asked by all four screens.
+//
+// Same shape as canUseLeadPipeline() and canUseHistory() in proGate.js, and for
+// the same reason: two copies of this rule would eventually disagree, and the
+// failure mode is a screen promising personalised output and then quietly
+// rendering the keyword version.
+function canUseLiveAI() {
+    return isProUser() && isFeatureLive('live-ai');
+}
+
+// --- Escaping ---------------------------------------------------------------
+//
+// Model output goes into innerHTML in a couple of places, so it is escaped on
+// the way in. Named escapeText rather than escapeHtml on purpose: fridayReview.js
+// already has a near-identical escapeHtml(), and the bundle flattens every file
+// into one scope, so a second function of that name would silently replace it
+// for the whole app. When something next touches both files, merge them into one
+// shared helper and delete this note.
+function escapeText(value) {
+    return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+// --- The daily budget for unasked-for calls ---------------------------------
+//
+// Trial accounts get a smaller one. A trial resolves to Pro for features but
+// keeps the 30/day trial rate server side (batch 8), so without this a quiet
+// morning of page loads could spend the allowance the coach needs later.
+//
+// Keyed on the local date while the server quota resets at midnight UTC. They
+// drift by a few hours for anyone outside GMT, which is harmless: this is a
+// courtesy cap, not the ceiling that protects the bill.
+const BUDGET_KEY = 'ceo_liveai_budget';
+
+function automaticCallBudget() {
+    return isProTrial() ? 6 : 12;
+}
+
+function readBudget() {
+    const today = getLocalDateString();
+    try {
+        const raw = JSON.parse(localStorage.getItem(BUDGET_KEY) || '{}');
+        if (raw.day !== today) return { day: today, calls: 0, stopped: false };
+        return { day: today, calls: raw.calls || 0, stopped: raw.stopped === true };
+    } catch (err) {
+        return { day: today, calls: 0, stopped: false };
+    }
+}
+
+function writeBudget(budget) {
+    try {
+        localStorage.setItem(BUDGET_KEY, JSON.stringify(budget));
+    } catch (err) {
+        // A full localStorage means the cap stops being enforced across reloads.
+        // The server quota still holds, so this is worth a warning and nothing more.
+        console.warn('Could not record live AI budget:', err.message);
+    }
+}
+
+function budgetAllows() {
+    const budget = readBudget();
+    if (budget.stopped) return false;
+    return budget.calls < automaticCallBudget();
+}
+
+function spendBudget() {
+    const budget = readBudget();
+    budget.calls += 1;
+    writeBudget(budget);
+}
+
+// Stop trying for the rest of the day. Called when the server says the account
+// is out of allowance or the feature is not on their plan — both are answers
+// that will not change before midnight, so asking again on every page load
+// would burn requests to be told the same thing.
+function stopForToday(reason) {
+    const budget = readBudget();
+    budget.stopped = true;
+    writeBudget(budget);
+    console.info(`Live AI paused until tomorrow: ${reason}`);
+}
+
+// --- The cache --------------------------------------------------------------
+//
+// Without this, every dashboard render is a model call. The fingerprint is
+// built from the inputs that would change the answer, so a fresh answer is
+// fetched when the user's situation changes and not when they navigate.
+//
+// Held in localStorage rather than in the planner store on purpose. The store is
+// one JSON document written wholesale to Supabase on every save, so parking
+// regenerable derived text in it would sync it to the server forever. Same rule
+// the Stripe import follows.
+const CACHE_KEY = 'ceo_liveai_cache';
+
+// How long an answer stays good even if nothing about the inputs changed.
+const CACHE_TTL_MS = {
+    'plan-suggestions': 7 * 24 * 60 * 60 * 1000,
+    'daily-3': 24 * 60 * 60 * 1000,
+    'advisor-pulses': 24 * 60 * 60 * 1000
+};
+
+function readCache() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(CACHE_KEY) || '{}');
+        return raw && typeof raw === 'object' ? raw : {};
+    } catch (err) {
+        return {};
+    }
+}
+
+// A 32-bit hash of the inputs. Collisions are possible in principle and would
+// show one stale suggestion until the TTL expires — cheap enough that a real
+// hash is not worth the code.
+function liveAIFingerprint(parts) {
+    const seed = (parts || []).map(p => String(p == null ? '' : p)).join('|');
+    let hash = 0;
+    for (let i = 0; i < seed.length; i++) {
+        hash = ((hash << 5) - hash + seed.charCodeAt(i)) | 0;
+    }
+    return String(hash);
+}
+
+function getCachedLive(surface, fingerprint) {
+    const entry = readCache()[surface];
+    if (!entry || entry.fp !== fingerprint) return null;
+    const ttl = CACHE_TTL_MS[surface] || 0;
+    if (ttl && Date.now() - (entry.at || 0) > ttl) return null;
+    return entry.data;
+}
+
+function putCachedLive(surface, fingerprint, data) {
+    try {
+        const cache = readCache();
+        cache[surface] = { fp: fingerprint, at: Date.now(), data };
+        localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+    } catch (err) {
+        console.warn('Could not cache live AI result:', err.message);
+    }
+}
+
+// Called when a quarter is reset or the user signs out, so the next account or
+// the next quarter does not inherit somebody else's suggestions.
+function clearLiveAICache() {
+    try {
+        localStorage.removeItem(CACHE_KEY);
+        localStorage.removeItem(BUDGET_KEY);
+    } catch (err) {
+        /* nothing worth reporting */
+    }
+}
+
+// --- The business brief -----------------------------------------------------
+//
+// The compact context every live call is given. Deliberately not the coach's
+// full system prompt, which is ~11KB now that the whole user guide is injected
+// into it — that is fine for a chat the user started, and wasteful several
+// times a day for three short suggestions.
+//
+// Every number here is read from getRevenueInsights() and getFunnelInsights()
+// rather than recalculated. Those already own the quarter-scoping and the
+// close-rate rules, and a second copy of that arithmetic would eventually tell
+// the model something the screen disagrees with.
+function businessBrief() {
+    const store = getStore();
+    const rev = getRevenueInsights();
+    const funnel = getFunnelInsights();
+
+    const currency = store.settings?.currency || '$';
+    const goals = store.goals || {};
+    const profile = store.profile || {};
+
+    const quarterStartMonth = Math.floor(new Date().getMonth() / 3) * 3;
+    const monthInQuarter = new Date().getMonth() - quarterStartMonth + 1;
+    const milestone = goals.milestones?.[`month${monthInQuarter}`] || 'Not set';
+
+    const weeksElapsed = getWeeksElapsed(store) || 1;
+
+    const priorities = (goals.priorities || []).filter(p => String(p || '').trim() !== '');
+
+    const recentSales = (rev.entries || [])
+        .slice()
+        .sort((a, b) => new Date(b.date) - new Date(a.date))
+        .slice(0, 3)
+        .map(e => `${currency}${e.amount} for "${e.offer || 'unnamed offer'}" via ${e.source || 'unknown source'}`)
+        .join('; ') || 'nothing logged yet';
+
+    // "Not recorded yet" rather than a number, so the model tells them to log
+    // their closes instead of reasoning about a rate that does not exist. Same
+    // reasoning as the coach's system prompt.
+    const closeRate = funnel.callCloseRate === null
+        ? 'not recorded yet'
+        : `${funnel.callCloseRate.toFixed(1)}% (${funnel.totalCloses} of ${funnel.totalCalls} calls)`;
+
+    return [
+        `Founder: ${profile.name || 'the founder'} of ${profile.businessName || 'their business'}`,
+        `Business model: ${profile.businessModel || 'unknown'}`,
+        `Industry / niche: ${profile.industryNiche || 'unknown'}`,
+        `Ideal client: ${profile.targetAudience || 'unknown'}`,
+        `Business stage: ${profile.stage || 'unknown'}`,
+        `Strategy mode this quarter: ${profile.strategyMode || 'unknown'}`,
+        `Their #1 bottleneck: ${profile.bottleneck || 'unknown'}`,
+        `90-day focus: ${goals.focus || 'not set'}`,
+        `90-day outcome they want: ${goals.outcome || 'not set'}`,
+        `This month's milestone: ${milestone}`,
+        `Top 3 priorities: ${priorities.join(' | ') || 'none set'}`,
+        `Currency: ${currency}`,
+        `Quarterly revenue goal: ${currency}${(rev.goal || 0).toLocaleString()}`,
+        `Revenue so far this quarter: ${currency}${(rev.totalRevenue || 0).toLocaleString()} (${(rev.progressPercent || 0).toFixed(0)}% of goal)`,
+        `Week ${weeksElapsed} of 12`,
+        `Average offer price: ${currency}${store.revenue?.averageOfferPrice || 0}`,
+        `Call close rate: ${closeRate}`,
+        `Three most recent sales: ${recentSales}`
+    ].join('\n');
+}
+
+// The house style every live surface is written in. Kept in one place so the
+// four of them sound like the same app, and so the tone rules learned the hard
+// way in batch 7 are stated once rather than four times.
+const VOICE_RULES = `
+Write like a sharp, warm operator talking to one tired founder on her phone.
+
+- Be specific to THIS business. Never write advice that would fit any business.
+- Never invent facts. If something is unknown, work with what you have.
+- Never recommend a tool, platform or budget they have not mentioned.
+- No hype, no emojis, no exclamation marks, no "crush it" language.
+- Calibrate to their stage. Someone just starting out has no past clients, no
+  email list and no testimonials, so do not tell them to use any of those.
+- Early in a quarter, having nothing logged yet is normal, not a failure.
+`.trim();
+
+// --- The one place a live call is made --------------------------------------
+//
+// Returns the parsed object, or null. Null always means "use the keyword
+// version" — a refusal, an outage, a budget stop and a malformed answer are all
+// the same thing as far as a screen is concerned.
+async function askLive(surface, systemPrompt, userPrompt, maxTokens) {
+    if (!canUseLiveAI()) return null;
+    if (!budgetAllows()) return null;
+
+    spendBudget();
+
+    try {
+        const data = await window.invokeChat(
+            [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt }
+            ],
+            // background: the user did not ask for this one, so it must never
+            // raise an allowance warning. A toast appearing on page load saying
+            // "you've used 80% of your AI" would alarm somebody who has just
+            // opened the dashboard and done nothing.
+            { feature: 'live-ai', json: true, maxTokens, background: true }
+        );
+
+        const content = data?.choices?.[0]?.message?.content;
+        if (!content) return null;
+
+        return JSON.parse(String(content).replace(/^```json/gi, '').replace(/```$/g, '').trim());
+    } catch (err) {
+        // The message is the safe customer-facing string readFunctionError built.
+        // Two of them mean there is no point asking again today.
+        const message = String(err && err.message || '');
+        if (/allowance for today/i.test(message)) {
+            stopForToday('daily AI allowance reached');
+        } else if (/part of Pro/i.test(message)) {
+            stopForToday('the server says this plan does not include live AI');
+        } else {
+            console.warn(`Live AI (${surface}) fell back to the built-in suggestions:`, message);
+        }
+        return null;
+    }
+}
+
+// ============================================================================
+// Surface 1 — the AI Planning Assistant (weeklyPlanner.js)
+// ============================================================================
+
+function planSuggestionsFingerprint(store) {
+    const goals = store.goals || {};
+    const quarterStartMonth = Math.floor(new Date().getMonth() / 3) * 3;
+    const monthInQuarter = new Date().getMonth() - quarterStartMonth + 1;
+    return liveAIFingerprint([
+        'plan',
+        goals.focus,
+        goals.milestones?.[`month${monthInQuarter}`],
+        (goals.priorities || []).join('~'),
+        store.profile?.strategyMode,
+        store.profile?.bottleneck
+    ]);
+}
+
+// Six suggestions in the same shape the keyword engine returns: three general
+// actions, then one each of Revenue, Visibility and Follow-up. Matching the
+// shape means the Apply buttons, which route by type, need no changes.
+async function fetchPlanSuggestions() {
+    const system = `You are a chief of staff planning one week for a solo founder.
+
+${VOICE_RULES}
+
+Return JSON in exactly this shape and nothing else:
+{"suggestions":[
+  {"type":"Action","action":"..."},
+  {"type":"Action","action":"..."},
+  {"type":"Action","action":"..."},
+  {"type":"Revenue","action":"..."},
+  {"type":"Visibility","action":"..."},
+  {"type":"Follow-up","action":"..."}
+]}
+
+Rules for the six entries:
+- Exactly six, in that order and with those exact type values.
+- Each action is one sentence, under 140 characters, starting with a verb.
+- The three "Action" entries move their Top 3 priorities and this month's
+  milestone forward. Say what to do, not what to think about.
+- "Revenue" is a direct invitation to buy, aimed at someone who already knows them.
+- "Visibility" is audience-facing with no sale in it.
+- "Follow-up" nurtures someone who has already shown interest.
+- Every entry must be doable inside one week alongside running the business.`;
+
+    const user = `Here is the founder's real situation:\n\n${businessBrief()}\n\nWrite this week's six suggestions as JSON.`;
+
+    const result = await askLive('plan-suggestions', system, user, 700);
+    if (!result || !Array.isArray(result.suggestions)) return null;
+
+    const cleaned = result.suggestions
+        .filter(s => s && typeof s.action === 'string' && s.action.trim() !== '')
+        .map(s => ({ type: String(s.type || 'Action').trim(), action: s.action.trim() }));
+
+    return cleaned.length >= 3 ? cleaned.slice(0, 6) : null;
+}
+
+// ============================================================================
+// Surface 2 — the Daily 3 breakdown (dashboard.js)
+// ============================================================================
+
+function daily3Fingerprint(dateStr, planKey, priorities) {
+    return liveAIFingerprint(['daily3', dateStr, planKey, (priorities || []).join('~')]);
+}
+
+// Only ever called when the week's plan has no `daily3` of its own — that is,
+// when the founder wrote her own Monday plan rather than applying a generated
+// week. When the plan already carries three real actions the dashboard uses
+// those, and always did; this replaces the keyword templates that ran otherwise.
+async function fetchDaily3(context) {
+    const system = `You are turning a founder's weekly plan into three things she can finish today.
+
+${VOICE_RULES}
+
+Return JSON in exactly this shape and nothing else:
+{"tasks":["...","...","..."]}
+
+Rules:
+- Exactly three tasks.
+- Each is one sentence under 90 characters, starting with a verb.
+- Each must be finishable today, in under ninety minutes, by one person.
+- Together they must move THIS week's stated actions forward — do not invent a
+  new direction, and do not restate her priority back to her as a task.
+- At least one must directly involve another human being: a message, a call, a
+  post, a pitch. A week of solo admin is how founders stall.`;
+
+    const user = `Her week:
+- What would make this week a win: ${context.winCondition || 'not stated'}
+- Top 3 actions this week: ${(context.priorities || []).filter(Boolean).join(' | ') || 'not stated'}
+- Revenue action this week: ${context.revenueAction || 'not stated'}
+- Visibility action this week: ${context.visibilityAction || 'not stated'}
+- Follow-up action this week: ${context.followUps || 'not stated'}
+- Today is ${context.dayName}.
+
+Her business:
+
+${businessBrief()}
+
+Write today's three tasks as JSON.`;
+
+    const result = await askLive('daily-3', system, user, 300);
+    if (!result || !Array.isArray(result.tasks)) return null;
+
+    const tasks = result.tasks
+        .filter(t => typeof t === 'string' && t.trim() !== '')
+        .map(t => t.trim());
+
+    return tasks.length === 3 ? tasks : null;
+}
+
+// ============================================================================
+// Surface 3 — the Quiet Advisor pulses (dashboard.js)
+// ============================================================================
+
+function advisorFingerprint(dateStr, revenueState, pipelineState) {
+    return liveAIFingerprint(['advisor', dateStr, revenueState, pipelineState]);
+}
+
+// The deterministic engine still decides WHICH state the founder is in — First
+// Move, Pace Alert, Momentum, Conversion Drop — and keeps its colour. The model
+// only rewrites the sentence.
+//
+// That split matters. The state is arithmetic and must stay honest: a red Pace
+// Alert has to mean the numbers say so, not that the model felt gloomy. What
+// was wrong with these pulses was never the diagnosis, it was that the words
+// were one hardcoded line telling every founder to contact the three loyal past
+// clients she may not have.
+async function fetchAdvisorPulses(states) {
+    const system = `You are writing two very short nudges on a founder's dashboard.
+
+${VOICE_RULES}
+
+Return JSON in exactly this shape and nothing else:
+{"revenue":{"title":"...","message":"..."},"pipeline":{"title":"...","message":"..."}}
+
+Rules:
+- Keep each title to the exact words you are given. Do not rename the situation.
+- Each message is one or two sentences, under 30 words, and ends with one
+  concrete thing to do today that suits this business and this stage.
+- Do not repeat the numbers back to her — they are on the screen directly above.
+- If you are given no pipeline situation, set "pipeline" to null.`;
+
+    const user = `Revenue situation: ${states.revenue || 'none'}
+Pipeline situation: ${states.pipeline || 'none'}
+
+Her business:
+
+${businessBrief()}
+
+Write the two nudges as JSON.`;
+
+    const result = await askLive('advisor-pulses', system, user, 300);
+    if (!result || typeof result !== 'object') return null;
+    return result;
+}
+
+// ============================================================================
+// Surface 4 — CEO vs Busy Work (coach.js)
+// ============================================================================
+//
+// The only one of the four the user actually presses a button for, so it does
+// not draw on the automatic budget and it is allowed to say when it failed.
+
+async function fetchIdeaVerdict(idea) {
+    if (!canUseLiveAI()) return null;
+
+    const system = `You are a blunt but fair chief of staff testing whether a new idea deserves a founder's next ninety days.
+
+${VOICE_RULES}
+
+Return JSON in exactly this shape and nothing else:
+{"verdict":"Strategic","explanation":"..."}
+
+Rules:
+- "verdict" is exactly one of: "Strategic", "Worth testing", "Busy work".
+- "Strategic" means it moves the stated 90-day outcome or clears the #1
+  bottleneck. "Worth testing" means it might, cheaply, but is unproven for them.
+  "Busy work" means it is a tangent, however enjoyable.
+- "explanation" is two or three sentences. Say WHY, naming the specific goal,
+  bottleneck or number it does or does not touch.
+- If it is busy work, say what it would cost her and what to do instead.
+- Judge the idea on their actual situation, never on whether it is a good idea
+  in general.`;
+
+    const user = `The idea she is considering:\n"${String(idea || '').slice(0, 800)}"\n\nHer business:\n\n${businessBrief()}\n\nReturn your verdict as JSON.`;
+
+    // Deliberately bypasses budgetAllows(): she asked for this one. The server
+    // quota is still the ceiling.
+    try {
+        const data = await window.invokeChat(
+            [
+                { role: 'system', content: system },
+                { role: 'user', content: user }
+            ],
+            { feature: 'live-ai', json: true, maxTokens: 300 }
+        );
+
+        const content = data?.choices?.[0]?.message?.content;
+        if (!content) return null;
+
+        const parsed = JSON.parse(String(content).replace(/^```json/gi, '').replace(/```$/g, '').trim());
+        if (!parsed || typeof parsed.explanation !== 'string') return null;
+
+        const allowed = ['Strategic', 'Worth testing', 'Busy work'];
+        const verdict = allowed.find(v => v.toLowerCase() === String(parsed.verdict || '').toLowerCase());
+        if (!verdict) return null;
+
+        return { verdict, explanation: parsed.explanation.trim() };
+    } catch (err) {
+        console.warn('Live idea verdict failed, falling back to the built-in filter:', err.message);
+        return null;
+    }
+}
+
+// ============================================================================
+// Shared bits the screens render
+// ============================================================================
+
+// The line that marks a card as written for this business rather than picked
+// from a list. Only shown to accounts that actually have the feature, so on a
+// base plan the proTeaser for 'live-ai' occupies the same spot instead — one or
+// the other, never both, because proTeaser returns '' exactly when this returns
+// something.
+function liveAINote(text) {
+    if (!canUseLiveAI()) return '';
+    return `
+        <p class="live-ai-note">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.8L20 10.7l-4.9 3.6L16.4 20 12 16.8 7.6 20l1.3-5.7L4 10.7l6.1-1.9z"></path></svg>
+            <span>${escapeText(text)}</span>
+        </p>
+    `;
+}
+
+// Marks a container as waiting for its live version. Used to fade the keyword
+// text very slightly while the call is in flight, so the swap reads as an
+// update rather than as the screen glitching.
+function markLivePending(el) {
+    if (el) el.classList.add('live-ai-pending');
+}
+
+function clearLivePending(el) {
+    if (el) el.classList.remove('live-ai-pending');
+}
+
+// ============================================================================
+// Hydration — called from each screen's attachEvents
+// ============================================================================
+//
+// Each screen reads the cache during its own render, so a returning visitor
+// sees the live version immediately with no flash of the keyword one. These
+// functions therefore only ever handle a cache MISS: the screen stashes a
+// request on `window` when it wants one, exactly the way the dashboard already
+// stashes _tempGeneratedTodaysLog, and stays silent when it does not.
+
+// The Daily 3.
+//
+// The tick rule is the important part: if anything has been ticked today, the
+// swap is abandoned. Replacing a task somebody has already done, because a
+// network call finished late, would lose real work and would look like the app
+// forgetting. A fresh answer simply waits for tomorrow.
+async function hydrateDaily3() {
+    const request = window._liveAIDaily3;
+    if (!request) return;
+    delete window._liveAIDaily3;
+
+    if (!canUseLiveAI() || !budgetAllows()) return;
+
+    const container = document.getElementById('daily-3-list');
+    markLivePending(container);
+    const tasks = await fetchDaily3(request);
+    clearLivePending(container);
+    if (!tasks) return;
+
+    putCachedLive('daily-3', daily3Fingerprint(request.dateStr, request.planKey, request.priorities), tasks);
+    applyDaily3(tasks, request);
+}
+
+function applyDaily3(tasks, request) {
+    const store = getStore();
+    const existing = store.dailyLogs?.[request.dateStr] || [];
+
+    if (existing.some(t => t && t.done)) return;
+    if (existing.length === tasks.length && existing.every((t, i) => t.text === tasks[i])) return;
+
+    updateDailyLog(request.dateStr, tasks.map(text => ({ text, done: false })), request.planKey);
+
+    tasks.forEach((text, i) => {
+        const label = document.querySelector(`#daily-task-${i}`)?.parentElement?.querySelector('span');
+        if (label) label.textContent = text;
+    });
+}
+
+// The Quiet Advisor pulses. The colour and the choice of situation stay exactly
+// as the deterministic engine set them; only the words change.
+async function hydrateAdvisorPulses() {
+    const request = window._liveAIAdvisor;
+    if (!request) return;
+    delete window._liveAIAdvisor;
+
+    if (!canUseLiveAI() || !budgetAllows()) return;
+    if (!request.revenue && !request.pipeline) return;
+
+    const pulses = await fetchAdvisorPulses(request);
+    if (!pulses) return;
+
+    putCachedLive('advisor-pulses', advisorFingerprint(request.dateStr, request.revenue, request.pipeline), pulses);
+    applyAdvisorPulses(pulses);
+}
+
+// Writing a pulse message into the page. Exported because the render path uses
+// it too, on the load after a cached answer already exists.
+function applyAdvisorPulses(pulses) {
+    ['revenue', 'pipeline'].forEach(key => {
+        const pulse = pulses && pulses[key];
+        if (!pulse || typeof pulse.message !== 'string') return;
+        const messageEl = document.getElementById(`pulse-${key}-message`);
+        if (messageEl) messageEl.textContent = pulse.message.trim();
+    });
+}
+
+// The AI Planning Assistant. `rebuild` is passed in by weeklyPlanner so this
+// file never has to know what one of its list items looks like.
+async function hydratePlanSuggestions(rebuild) {
+    if (!window._liveAIPlanNeedsFetch) return;
+    delete window._liveAIPlanNeedsFetch;
+
+    if (!canUseLiveAI() || !budgetAllows()) return;
+
+    const container = document.getElementById('plan-suggestions-list');
+    markLivePending(container);
+    const suggestions = await fetchPlanSuggestions();
+    clearLivePending(container);
+    if (!suggestions) return;
+
+    putCachedLive('plan-suggestions', planSuggestionsFingerprint(getStore()), suggestions);
+    rebuild(suggestions);
+}
+
+
 // --- js\components\nav.js ---
 // nav.js
 
@@ -3086,6 +4264,10 @@ async function signOutAndClear() {
     localStorage.removeItem('ceo_trial_ends_at');
     localStorage.removeItem('ceo_plan_tier');
     localStorage.removeItem('ceoPlanner_store');
+    // Suggestions written about one business must not greet the next person to
+    // sign in on this browser, and neither must their AI usage count.
+    clearLiveAICache();
+    clearAiAllowance();
     window.location.hash = '#/login';
     window.location.reload();
 }
@@ -4312,6 +5494,42 @@ function renderDashboard() {
     }
     // ---------------------------------
 
+    // The Quiet Advisor, worked out once rather than once per card. This used to
+    // be called separately inside each of the two pulse blocks below, which ran
+    // the whole engine twice per render and meant the two cards could in
+    // principle disagree about the same store.
+    //
+    // The deterministic engine keeps its job: it decides WHICH situation the
+    // founder is in and what colour that is. On Pro the words are then rewritten
+    // about her actual business — see liveAI.js — but the diagnosis and the
+    // colour stay arithmetic, so a red alert always means the numbers said so.
+    const advisorPulses = getQuietAdvisorPulses(store, revInsights, leadToSaleConversion, activePlan);
+
+    if (canUseLiveAI()) {
+        const advisorRequest = {
+            dateStr: getLocalDateString(),
+            revenue: advisorPulses.revenue ? advisorPulses.revenue.title : null,
+            pipeline: advisorPulses.pipeline ? advisorPulses.pipeline.title : null
+        };
+        const cachedPulses = getCachedLive(
+            'advisor-pulses',
+            advisorFingerprint(advisorRequest.dateStr, advisorRequest.revenue, advisorRequest.pipeline)
+        );
+
+        if (cachedPulses) {
+            // Straight into the markup, so a returning visitor never sees the
+            // generic line flick over to the personal one.
+            ['revenue', 'pipeline'].forEach(key => {
+                const live = cachedPulses[key];
+                if (advisorPulses[key] && live && typeof live.message === 'string') {
+                    advisorPulses[key].message = live.message.trim();
+                }
+            });
+        } else if (advisorRequest.revenue || advisorRequest.pipeline) {
+            window._liveAIAdvisor = advisorRequest;
+        }
+    }
+
     let html = `
         ${renderNav()}
         ${setupBannerHtml}
@@ -4399,13 +5617,13 @@ function renderDashboard() {
                     
                     <!-- Quiet Advisor Pulse: Revenue -->
                     ${(() => {
-                        const pulse = getQuietAdvisorPulses(store, revInsights, leadToSaleConversion, activePlan).revenue;
+                        const pulse = advisorPulses.revenue;
                         if (!pulse || sessionStorage.getItem('dismissPulse_revenue') === 'true') return '';
                         return `
                         <div style="margin-top: 0.75rem; background: #F8FAFC; border-left: 3px solid ${pulse.color}; padding: 0.75rem; border-radius: 4px; display: flex; justify-content: space-between; align-items:flex-start;">
                             <div>
                                 <span style="font-size: 0.7rem; text-transform: uppercase; font-weight: 700; color: ${pulse.color}; letter-spacing: 0.05em; margin-bottom: 0.15rem; display: block;">${pulse.title}</span>
-                                <p style="font-size: 0.8rem; color: var(--color-text-main); margin: 0; line-height: 1.3;">${pulse.message}</p>
+                                <p id="pulse-revenue-message" style="font-size: 0.8rem; color: var(--color-text-main); margin: 0; line-height: 1.3;">${pulse.message}</p>
                             </div>
                             <button class="btn-dismiss-pulse" data-pulse-id="revenue" style="background: none; border: none; color: var(--color-text-muted); font-size: 1rem; cursor: pointer; line-height: 1; padding: 0 0 0 0.5rem;">&times;</button>
                         </div>
@@ -4455,13 +5673,13 @@ function renderDashboard() {
                     
                     <!-- Quiet Advisor Pulse: Pipeline -->
                     ${(() => {
-                        const pulse = getQuietAdvisorPulses(store, revInsights, leadToSaleConversion, activePlan).pipeline;
+                        const pulse = advisorPulses.pipeline;
                         if (!pulse || sessionStorage.getItem('dismissPulse_pipeline') === 'true') return '';
                         return `
                         <div style="margin-top: 0.75rem; background: #F8FAFC; border-left: 3px solid ${pulse.color}; padding: 0.75rem; border-radius: 4px; display: flex; justify-content: space-between; align-items:flex-start;">
                             <div>
                                 <span style="font-size: 0.7rem; text-transform: uppercase; font-weight: 700; color: ${pulse.color}; letter-spacing: 0.05em; margin-bottom: 0.15rem; display: block;">${pulse.title}</span>
-                                <p style="font-size: 0.8rem; color: var(--color-text-main); margin: 0; line-height: 1.3;">${pulse.message}</p>
+                                <p id="pulse-pipeline-message" style="font-size: 0.8rem; color: var(--color-text-main); margin: 0; line-height: 1.3;">${pulse.message}</p>
                             </div>
                             <button class="btn-dismiss-pulse" data-pulse-id="pipeline" style="background: none; border: none; color: var(--color-text-muted); font-size: 1rem; cursor: pointer; line-height: 1; padding: 0 0 0 0.5rem;">&times;</button>
                         </div>
@@ -4730,17 +5948,28 @@ function renderDashboard() {
         const builtFrom = store.dailyLogSources ? store.dailyLogSources[todayStrDash] : undefined;
         const isStale = Boolean(todaysLog) && builtFrom !== planKey;
 
-        if (!todaysLog || isStale) {
-            const plannedDaily3 = Array.isArray(activePlan.daily3)
-                ? activePlan.daily3.map(t => (t || '').trim()).filter(Boolean)
-                : [];
+        const plannedDaily3 = Array.isArray(activePlan.daily3)
+            ? activePlan.daily3.map(t => (t || '').trim()).filter(Boolean)
+            : [];
+        const currentPriorities = [0, 1, 2].map(i => (activePlan.topActions || g.priorities)[i] || '');
 
+        // The keyword templates only ever run when the week's plan has no daily3
+        // of its own — i.e. when she wrote her own Monday plan rather than
+        // applying a generated week. That is the one case Pro replaces.
+        const usingKeywordEngine = plannedDaily3.length === 0;
+        const liveFingerprint = daily3Fingerprint(todayStrDash, planKey, currentPriorities);
+        const cachedDaily3 = (usingKeywordEngine && canUseLiveAI())
+            ? getCachedLive('daily-3', liveFingerprint)
+            : null;
+
+        if (!todaysLog || isStale) {
             let generatedTasks;
             if (plannedDaily3.length > 0) {
                 generatedTasks = plannedDaily3.slice(0, 3);
+            } else if (cachedDaily3) {
+                generatedTasks = cachedDaily3;
             } else {
-                const currentPriorities = activePlan.topActions || g.priorities;
-                generatedTasks = generateDaily3([0, 1, 2].map(i => currentPriorities[i] || ''), activePlan);
+                generatedTasks = generateDaily3(currentPriorities, activePlan);
             }
 
             // Anything already ticked that survived the rewrite keeps its tick.
@@ -4752,6 +5981,30 @@ function renderDashboard() {
             todaysLog = generatedTasks.map(t => ({ text: t, done: Boolean(doneByText[t]) }));
             // Saved in attachEvents, along with the plan it was built from.
             window._tempGeneratedTodaysLog = { tasks: todaysLog, source: planKey };
+        }
+
+        // Ask for a live Daily 3 when there is no cached answer yet.
+        //
+        // Deliberately outside the block above, which only runs when the log is
+        // being rebuilt. A call that failed earlier today left a keyword log in
+        // place, and without this the app would not try again until tomorrow,
+        // because a log now exists and is not stale. The daily budget is what
+        // stops that retry becoming a loop.
+        //
+        // Skipped once anything has been ticked: swapping a task she has already
+        // done would lose real work. hydrateDaily3 checks that again at the point
+        // the answer actually lands.
+        if (usingKeywordEngine && canUseLiveAI() && !cachedDaily3 && !todaysLog.some(t => t.done)) {
+            window._liveAIDaily3 = {
+                dateStr: todayStrDash,
+                planKey,
+                priorities: currentPriorities,
+                winCondition: activePlan.winCondition || '',
+                revenueAction: activePlan.revenueAction || '',
+                visibilityAction: activePlan.visibilityAction || '',
+                followUps: activePlan.followUps || '',
+                dayName: new Date().toLocaleDateString('en-US', { weekday: 'long' })
+            };
         }
 
         todaysLog.forEach((taskObj, i) => {
@@ -4773,9 +6026,10 @@ function renderDashboard() {
                          <h3 style="margin: 0;">The Daily 3</h3>
                      </div>
                      <p style="font-size: 0.9rem; color: var(--color-text-muted); margin-bottom: 1rem;">Move the needle today based on your top priorities.</p>
-                     <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+                     <div id="daily-3-list" style="display: flex; flex-direction: column; gap: 0.75rem;">
                          ${dailyTasksHtml}
                      </div>
+                     ${activePlan ? liveAINote('Broken down from this week\'s plan for your business.') : ''}
                      ${proTeaser(
                          'live-ai',
                          'Suggestions written about your business',
@@ -5149,6 +6403,12 @@ function dashboardAttachEvents() {
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
     document.getElementById('nav-dashboard')?.classList.add('active');
 
+    // Pro only, and only when render found no cached answer. Both are fire and
+    // forget: they must never delay the screen, and a failure leaves exactly the
+    // dashboard that was already on screen.
+    hydrateDaily3();
+    hydrateAdvisorPulses();
+
     // CEO Focus Score calculation
     const store = getStore();
     const validPlans = store.weeklyPlans.filter(p => !p.generated || p.applied);
@@ -5456,6 +6716,16 @@ function renderPlanner() {
 
     const prompts = getSmartPrompts(store.profile?.strategyMode);
 
+    // Pro accounts get suggestions written about this business. The cache is read
+    // here, during render, so somebody coming back to this screen sees the live
+    // version straight away rather than watching the keyword one be replaced.
+    // On a miss the keyword version is painted and attachEvents fetches.
+    const cachedSuggestions = canUseLiveAI()
+        ? getCachedLive('plan-suggestions', planSuggestionsFingerprint(store))
+        : null;
+    window._liveAIPlanNeedsFetch = canUseLiveAI() && !cachedSuggestions;
+    const suggestions = cachedSuggestions || generatePlanSuggestions(store);
+
     return `
         ${renderNav()}
         <div class="main-content dashboard-layout">
@@ -5489,18 +6759,17 @@ function renderPlanner() {
                 </div>
                 <p style="font-size: 0.875rem; color: var(--color-text-muted); margin-bottom: 0.75rem;">Generated based on your <strong>monthly focus</strong>, priorities, and recent activity to move your business forward.</p>
                 <div style="background: var(--color-bg-light); padding: 1rem; border-radius: var(--radius-sm); font-size: 0.95rem; color: var(--color-secondary-dark);">
-                    <ul style="margin: 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 0.75rem;">
-                        ${generatePlanSuggestions(store).map((s, index) => `
-                        <li style="display: flex; gap: 0.75rem; align-items: flex-start; background: #fff; padding: 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--color-border); box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
-                            <div style="flex-grow: 1; line-height: 1.4;">
-                                <strong style="color: var(--color-primary-dark);">${s.type}:</strong> ${s.action}
-                            </div>
-                            <button type="button" class="btn btn-outline apply-suggestion-btn" data-type="${s.type.toLowerCase()}" data-action="${s.action}" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; flex-shrink: 0;">Apply</button>
-                        </li>
-                        `).join('')}
+                    <ul id="plan-suggestions-list" style="margin: 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 0.75rem;">
+                        ${suggestions.map(suggestionItemHtml).join('')}
                     </ul>
                 </div>
                 <p style="font-size: 0.8rem; color: var(--color-text-muted); margin-top: 0.75rem; text-align: center;">Steal these ideas or write your own below!</p>
+                ${liveAINote('Written for your business from your goals, stage and numbers.')}
+                ${proTeaser(
+                    'live-ai',
+                    'Suggestions written about your business',
+                    'These follow set patterns today. Pro writes them from your goals, stage and numbers.'
+                )}
             </div>
 
             <form id="planner-form" class="card" data-plan-id="${activePlan ? activePlan.id : ''}" data-gen-id="${nextGeneratedPlan ? nextGeneratedPlan.id : ''}">
@@ -5543,11 +6812,101 @@ function renderPlanner() {
     `;
 }
 
+// One suggestion row. Shared by the first render and by the live swap, so the
+// two can never drift into looking like different features.
+//
+// Everything is escaped, including the keyword suggestions, which do not need it
+// — uniform escaping is the only version of this that stays correct once model
+// output starts flowing through the same function.
+function suggestionItemHtml(s) {
+    return `
+        <li style="display: flex; gap: 0.75rem; align-items: flex-start; background: #fff; padding: 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--color-border); box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+            <div style="flex-grow: 1; line-height: 1.4;">
+                <strong style="color: var(--color-primary-dark);">${escapeText(s.type)}:</strong> ${escapeText(s.action)}
+            </div>
+            <button type="button" class="btn btn-outline apply-suggestion-btn" data-type="${escapeText(String(s.type || '').toLowerCase())}" data-action="${escapeText(s.action)}" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; flex-shrink: 0;">Apply</button>
+        </li>
+    `;
+}
+
 function plannerAttachEvents() {
     // Nav
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
     document.getElementById('nav-planner')?.classList.add('active');
 
+    bindApplySuggestionButtons();
+
+    // Pro only, and only when the render did not already have a cached answer.
+    // Replacing the list throws away its buttons, so they are rebound here.
+    hydratePlanSuggestions(suggestions => {
+        const list = document.getElementById('plan-suggestions-list');
+        if (!list) return;
+        list.innerHTML = suggestions.map(suggestionItemHtml).join('');
+        bindApplySuggestionButtons();
+    });
+
+    const form = document.getElementById('planner-form');
+    if (form) {
+        form.addEventListener('submit', (e) => {
+            e.preventDefault();
+
+            const p1 = document.getElementById('pa-1').value;
+            const p2 = document.getElementById('pa-2').value;
+            const p3 = document.getElementById('pa-3').value;
+
+            const plan = {
+                winCondition: document.getElementById('plan-win').value,
+                topActions: [p1, p2, p3],
+                revenueAction: document.getElementById('plan-revenue').value,
+                visibilityAction: document.getElementById('plan-visibility').value,
+                followUps: document.getElementById('plan-followup').value,
+            };
+
+            const planId = form.getAttribute('data-plan-id');
+            const genId = form.getAttribute('data-gen-id');
+
+            if (planId && planId !== '') {
+                // Update date so it extends the 6-day active window if they edit it
+                plan.date = new Date().toISOString();
+                updateWeeklyPlan(planId, plan);
+                showToast('Weekly plan updated');
+            } else if (genId && genId !== '') {
+                // We are applying a generated plan
+                plan.applied = true;
+                plan.date = new Date().toISOString(); // Ensure it becomes active NOW
+                updateWeeklyPlan(genId, plan);
+
+                // Move it to the end of the array so dashboard picks it up as the latest active plan
+                const storeStateForMove = getStore();
+                if (storeStateForMove) {
+                   const idx = storeStateForMove.weeklyPlans.findIndex(p => String(p.id) === String(genId));
+                   if (idx !== -1) {
+                       const p = storeStateForMove.weeklyPlans.splice(idx, 1)[0];
+                       storeStateForMove.weeklyPlans.push(p);
+                       saveStore(storeStateForMove);
+                   }
+                }
+                showToast('Weekly plan applied. Have a great week, CEO.');
+            } else {
+                addWeeklyPlan(plan);
+                showToast('Weekly plan saved. Have a great week, CEO.');
+            }
+
+            // Clear today's daily log so the dashboard regenerates the Daily 3 based on the new plan
+            const storeState = getStore();
+            if (storeState && storeState.dailyLogs) {
+                const todayStr = getLocalDateString();
+                delete storeState.dailyLogs[todayStr];
+                saveStore(storeState);
+            }
+
+            // Show success and redirect
+            window.location.hash = '#/dashboard';
+        });
+    }
+}
+
+function bindApplySuggestionButtons() {
     // Handle 'Apply' buttons for AI Suggestions
     document.querySelectorAll('.apply-suggestion-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -5605,66 +6964,6 @@ function plannerAttachEvents() {
             }
         });
     });
-
-    const form = document.getElementById('planner-form');
-    if (form) {
-        form.addEventListener('submit', (e) => {
-            e.preventDefault();
-
-            const p1 = document.getElementById('pa-1').value;
-            const p2 = document.getElementById('pa-2').value;
-            const p3 = document.getElementById('pa-3').value;
-
-            const plan = {
-                winCondition: document.getElementById('plan-win').value,
-                topActions: [p1, p2, p3],
-                revenueAction: document.getElementById('plan-revenue').value,
-                visibilityAction: document.getElementById('plan-visibility').value,
-                followUps: document.getElementById('plan-followup').value,
-            };
-
-            const planId = form.getAttribute('data-plan-id');
-            const genId = form.getAttribute('data-gen-id');
-            
-            if (planId && planId !== '') {
-                // Update date so it extends the 6-day active window if they edit it
-                plan.date = new Date().toISOString();
-                updateWeeklyPlan(planId, plan);
-                showToast('Weekly plan updated');
-            } else if (genId && genId !== '') {
-                // We are applying a generated plan
-                plan.applied = true;
-                plan.date = new Date().toISOString(); // Ensure it becomes active NOW
-                updateWeeklyPlan(genId, plan);
-                
-                // Move it to the end of the array so dashboard picks it up as the latest active plan
-                const storeStateForMove = getStore();
-                if (storeStateForMove) {
-                   const idx = storeStateForMove.weeklyPlans.findIndex(p => String(p.id) === String(genId));
-                   if (idx !== -1) {
-                       const p = storeStateForMove.weeklyPlans.splice(idx, 1)[0];
-                       storeStateForMove.weeklyPlans.push(p);
-                       saveStore(storeStateForMove);
-                   }
-                }
-                showToast('Weekly plan applied. Have a great week, CEO.');
-            } else {
-                addWeeklyPlan(plan);
-                showToast('Weekly plan saved. Have a great week, CEO.');
-            }
-
-            // Clear today's daily log so the dashboard regenerates the Daily 3 based on the new plan
-            const storeState = getStore();
-            if (storeState && storeState.dailyLogs) {
-                const todayStr = getLocalDateString();
-                delete storeState.dailyLogs[todayStr];
-                saveStore(storeState);
-            }
-
-            // Show success and redirect
-            window.location.hash = '#/dashboard';
-        });
-    }
 }
 
 function getSuggestedFocus(mode) {
@@ -8549,11 +9848,17 @@ function renderProgress() {
                 </div>
             </div>
 
-            ${proTeaser(
-                'history',
-                'See if this quarter beat the last one',
-                'Everything here resets each quarter. Pro keeps them and shows them side by side.'
-            )}
+            ${canUseHistory()
+                // Same shape as the pipeline card on Revenue: once the account
+                // has the feature, proTeaser deletes itself, and leaving the
+                // hole would take away the only way into the screen it was
+                // advertising. A live summary and a way in takes its place.
+                ? renderHistorySummary(store)
+                : proTeaser(
+                    'history',
+                    'See if this quarter beat the last one',
+                    'Everything here resets each quarter. Pro keeps them and shows them side by side.'
+                )}
 
             <!-- CEO Insight Engine -->
             <div class="card mb-6" style="border-top: 4px solid var(--color-primary);">
@@ -8708,6 +10013,41 @@ function renderProgress() {
     `;
 }
 
+// The way into the history screen, for accounts that have it.
+//
+// Every figure is read from getQuarterHistory, which is also what the history
+// screen renders — so this card and that screen cannot end up quoting different
+// numbers for the same two quarters.
+function renderHistorySummary(store) {
+    const currency = store.settings?.currency || '$';
+    const history = getQuarterHistory();
+    const sp = history.samePoint;
+
+    let body;
+    if (sp) {
+        const weeks = sp.weeksElapsed;
+        const level = sp.delta === 0;
+        const ahead = sp.delta > 0;
+        body = level
+            ? `${weeks === 1 ? 'One week' : `${weeks} weeks`} in, you are level with where you were at this point in ${sp.previousLabel}.`
+            : `${weeks === 1 ? 'One week' : `${weeks} weeks`} in, you are
+               <strong style="color: ${ahead ? 'var(--color-secondary-dark)' : '#B42318'};">${currency}${formatAmount(Math.abs(sp.delta))} ${ahead ? 'ahead of' : 'behind'}</strong>
+               where you were at this point in ${sp.previousLabel}.`;
+    } else if (history.hasHistory) {
+        body = `${history.archivedCount} finished ${history.archivedCount === 1 ? 'quarter is' : 'quarters are'} kept here, with everything you wrote on the way out of ${history.archivedCount === 1 ? 'it' : 'them'}.`;
+    } else {
+        body = `Your first quarter is still running. Finish it with a Quarter Reset and all of it is kept here instead of cleared, ready for the next one to be measured against.`;
+    }
+
+    return `
+        <div class="card mb-6" style="padding: 1.25rem; border-left: 3px solid var(--color-primary);">
+            <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('history', 'Quarter history')}</p>
+            <p style="font-size: 0.9rem; color: var(--color-text-main); margin: 0 0 0.75rem 0; line-height: 1.5;">${body}</p>
+            <a href="#/history" class="btn btn-outline btn-sm" style="width: 100%; text-align: center;">Open quarter history</a>
+        </div>
+    `;
+}
+
 // Logic Rules Engine
 function generateInsights(store) {
     const reviews = store.reviews || [];
@@ -8790,6 +10130,372 @@ function progressAttachEvents() {
             }, 500);
         });
     }
+}
+
+
+// --- js\screens\history.js ---
+// history.js — quarter-over-quarter and the year view (Pro item 3)
+//
+// The one screen in the app that looks further back than ninety days. Every
+// figure on it comes from getQuarterHistory() in store.js, which reads the
+// live quarter from getRevenueInsights / getFunnelInsights and counts the
+// archived ones with the same rules. Nothing here does arithmetic on the
+// store: a history screen with its own maths would eventually tell the user
+// that a quarter she is still living in earned two different amounts.
+//
+// One line, not wrapped — build_bundle.ps1 strips imports with a single-line
+// regex, so a multi-line import survives into the bundle and breaks it.
+
+// Goals, reflections and channel names are free text the user typed and all of
+// it lands in card bodies here. Deliberately not called escapeHtml or
+// escapeField: the bundle flattens every file into one scope and both of those
+// names are already taken elsewhere, so a third definition would silently win
+// or silently lose depending on file order.
+function escapeHistoryText(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+// The app's success green, the one the "what worked really well" label and the
+// success toast already use. Deliberately not --color-secondary-dark, which is
+// the gold used for the Won stage: at this size on a white card it reads as a
+// warning rather than as good news, and these are the numbers on the page most
+// likely to be read at a glance.
+const UP_COLOUR = '#027A48';
+const DOWN_COLOUR = '#B42318';
+
+// A movement, as a small coloured chip. `change` is the object store.js built,
+// so the arrow the table shows and the arrow any future card shows come from
+// the same comparison.
+//
+// A null percent prints as no percentage at all rather than as 100%. Going from
+// nothing to two thousand is not a hundred per cent rise; there was no baseline
+// to rise from, and inventing one is the kind of number a user quotes back to
+// herself later.
+function changeChip(change, prefix = '') {
+    if (!change) return `<span class="history-change history-change-none">First quarter</span>`;
+    if (change.direction === 'level') return `<span class="history-change history-change-none">No change</span>`;
+
+    const up = change.direction === 'up';
+    const arrow = up ? '▲' : '▼';
+    const size = Math.abs(change.delta);
+    const amount = prefix ? `${prefix}${formatAmount(size)}` : formatAmount(Math.round(size));
+    const percent = change.percent === null ? '' : ` (${Math.abs(Math.round(change.percent))}%)`;
+
+    return `<span class="history-change" style="color: ${up ? UP_COLOUR : DOWN_COLOUR};">${arrow} ${amount}${percent}</span>`;
+}
+
+function percentText(value) {
+    return value === null || value === undefined ? '—' : `${Math.round(value)}%`;
+}
+
+// The headline: this quarter against the last one at the same point in its life.
+//
+// Comparing a quarter five weeks in against ninety finished days is the one
+// thing this screen could easily get wrong, and it would get it wrong in the
+// most discouraging direction possible — telling someone doing fine that she is
+// sixty per cent down. So the comparison is against where the previous quarter
+// stood on its own day 35, and the finished total is given separately as the
+// thing still to beat.
+function renderSamePoint(history, currency) {
+    const sp = history.samePoint;
+    if (!sp) return '';
+
+    const weeks = sp.weeksElapsed;
+    const weekText = weeks === 1 ? 'One week in' : `${weeks} weeks in`;
+    const ahead = sp.delta > 0;
+    const level = sp.delta === 0;
+
+    const verdict = level
+        ? `exactly where you were at this point in ${escapeHistoryText(sp.previousLabel)}`
+        : `${currency}${formatAmount(Math.abs(sp.delta))} ${ahead ? 'ahead of' : 'behind'} where you were at this point in ${escapeHistoryText(sp.previousLabel)}`;
+
+    return `
+        <div class="card mb-6" style="border-top: 4px solid var(--color-primary);">
+            <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('history', 'This quarter against the last one')}</p>
+            <p style="font-size: 1.05rem; line-height: 1.6; color: var(--color-black); margin: 0 0 0.75rem 0;">
+                ${weekText}, you are on <strong>${currency}${formatAmount(sp.currentRevenue)}</strong> —
+                <strong style="color: ${level ? 'var(--color-text-muted)' : (ahead ? UP_COLOUR : DOWN_COLOUR)};">${verdict}</strong>.
+            </p>
+            <p style="font-size: 0.9rem; color: var(--color-text-muted); margin: 0; line-height: 1.5;">
+                ${escapeHistoryText(sp.previousLabel)} had ${currency}${formatAmount(sp.previousRevenue)} on the board by this day and
+                finished on ${currency}${formatAmount(sp.previousFinal)}. That last figure is the one to beat.
+            </p>
+        </div>
+    `;
+}
+
+// The comparison table. Scrolls inside its own wrapper rather than pushing the
+// page sideways — the same rule the pipeline board follows.
+function renderQuarterTable(history, currency) {
+    const rows = history.quarters.map(q => {
+        // ⚠️ The quarter in progress does NOT get compared against the previous
+        // quarter's finished total. Six weeks of trading against ninety days of
+        // it prints a red "down 55%" at someone who is in fact ahead, which is
+        // the one thing this screen must never do. It gets the same-point
+        // comparison the headline card uses, labelled as such, or nothing.
+        const changeCell = !q.isCurrent
+            ? changeChip(q.change ? q.change.revenue : null, currency)
+            : (history.samePoint
+                ? `${changeChip(history.samePoint, currency)}<span class="history-row-dates">at this point in ${escapeHistoryText(history.samePoint.previousLabel)}</span>`
+                : `<span class="history-change history-change-none">In progress</span>`);
+
+        return `
+        <tr${q.isCurrent ? ' class="history-row-current"' : ''}>
+            <td>
+                <strong>${escapeHistoryText(q.label)}</strong>
+                ${q.isCurrent ? '<span class="history-live-tag">in progress</span>' : ''}
+                <span class="history-row-dates">${escapeHistoryText(q.rangeLabel)}</span>
+            </td>
+            <td class="history-num"><strong>${currency}${formatAmount(q.revenue)}</strong></td>
+            <td class="history-num">${q.goal > 0 ? `${currency}${formatAmount(q.goal)}` : '—'}</td>
+            <td class="history-num">${percentText(q.progressPercent)}</td>
+            <td class="history-num">${changeCell}</td>
+            <td class="history-num">${formatAmount(q.leads)}</td>
+            <td class="history-num">${formatAmount(q.calls)}</td>
+            <td class="history-num">${formatAmount(q.closes)}</td>
+            <td class="history-num">${percentText(q.callCloseRate)}</td>
+        </tr>
+    `;
+    }).join('');
+
+    return `
+        <div class="card mb-6">
+            <div class="flex items-center gap-2 mb-4">
+                <h3 style="margin: 0; display: flex; align-items: center;">
+                    Quarter by quarter
+                    ${renderTooltip(
+                        "Every 90-day quarter you have finished, newest first, with the one you are in at the top.",
+                        "Revenue counts sales dated inside each quarter, so anything you back-entered from before a quarter opened is left out of that quarter's total. A finished quarter is compared with the one before it; the quarter you are in is compared with where the last one stood on the same day, because it has not had ninety days yet.",
+                        "bottom",
+                        { what: 'What this shows', why: 'What counts in each row' }
+                    )}
+                </h3>
+            </div>
+            <div class="history-table-wrap">
+                <table class="history-table">
+                    <thead>
+                        <tr>
+                            <th>Quarter</th>
+                            <th class="history-num">Revenue</th>
+                            <th class="history-num">Goal</th>
+                            <th class="history-num">Of goal</th>
+                            <th class="history-num">vs previous</th>
+                            <th class="history-num">Leads</th>
+                            <th class="history-num">Calls</th>
+                            <th class="history-num">Closes</th>
+                            <th class="history-num">Close rate</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+            <p style="font-size: 0.8rem; color: var(--color-text-muted); margin: 1rem 0 0 0; line-height: 1.5;">
+                Close rate reads as a dash until you have logged a close, because no closes recorded is not the same as none happening.
+            </p>
+        </div>
+    `;
+}
+
+// Revenue by calendar year, as a bar per year. Plain divs rather than a chart
+// library: three or four bars do not justify a dependency, and this has to keep
+// working with the app installed offline.
+function renderYearView(history, currency) {
+    const years = history.years;
+    if (years.length === 0) return '';
+
+    const biggest = years.reduce((max, y) => Math.max(max, y.revenue), 0);
+
+    const rows = years.map(y => {
+        const width = biggest > 0 ? Math.max(2, (y.revenue / biggest) * 100) : 2;
+        const quarterNote = y.quartersFinished === 0
+            ? ''
+            : ` · ${y.quartersFinished} ${y.quartersFinished === 1 ? 'quarter' : 'quarters'} finished`;
+        return `
+            <div class="history-year-row">
+                <div class="history-year-head">
+                    <span class="history-year-label">${y.year}</span>
+                    <span class="history-year-total">${currency}${formatAmount(y.revenue)}</span>
+                </div>
+                <div class="history-year-track">
+                    <div class="history-year-bar" style="width: ${width}%;"></div>
+                </div>
+                <p class="history-year-meta">${formatAmount(y.salesCount)} ${y.salesCount === 1 ? 'sale' : 'sales'}${quarterNote}</p>
+            </div>
+        `;
+    }).join('');
+
+    return `
+        <div class="card mb-6">
+            <div class="flex items-center gap-2 mb-4">
+                <h3 style="margin: 0; display: flex; align-items: center;">
+                    Your year
+                    ${renderTooltip(
+                        "What you have earned in each calendar year, across every quarter.",
+                        "This one counts every sale by the date it landed on, including anything logged outside a 90-day window, so it will not always match the quarter totals above adding up. It is the figure that answers 'what did this business earn last year'.",
+                        "bottom",
+                        { what: 'What this shows', why: 'Why it can differ from the table' }
+                    )}
+                </h3>
+            </div>
+            ${rows}
+        </div>
+    `;
+}
+
+// The written record: what each quarter was for, and the four answers given on
+// the way out of it. These are the most considered thing the user writes all
+// quarter and they were being thrown away entirely before batch 2 archived
+// them. This screen is the first place they have ever been readable.
+function renderQuarterDetail(history) {
+    const archived = history.quarters.filter(q => !q.isCurrent);
+    if (archived.length === 0) return '';
+
+    const cards = archived.map(q => {
+        const r = q.reflection || {};
+        const answers = [
+            ['What worked really well', r.worked],
+            ["What didn't work", r.didntWork],
+            ['What explicitly created results', r.results],
+            ['What should change next quarter', r.changeNextQuarter]
+        ].filter(([, text]) => text && String(text).trim());
+
+        const body = answers.length === 0
+            ? `<p style="font-size: 0.9rem; color: var(--color-text-muted); margin: 0;">No wrap-up was written for this quarter.</p>`
+            : answers.map(([label, text]) => `
+                <div class="history-answer">
+                    <p class="history-answer-label">${label}</p>
+                    <p class="history-answer-text">${escapeHistoryText(text)}</p>
+                </div>
+            `).join('');
+
+        return `
+            <details class="card mb-4 history-detail">
+                <summary class="history-detail-summary">
+                    <span>
+                        <strong>${escapeHistoryText(q.label)}</strong>
+                        <span class="history-row-dates">${escapeHistoryText(q.rangeLabel)}</span>
+                    </span>
+                    <!-- Both labels are rendered and CSS shows whichever matches
+                         the open state, so <details> keeps doing the toggling
+                         and this screen still needs no event handler. -->
+                    <span class="history-detail-hint">
+                        <span class="history-hint-closed">${answers.length > 0 ? 'Read the wrap-up' : 'Details'}</span>
+                        <span class="history-hint-open">Hide</span>
+                    </span>
+                </summary>
+                <div class="history-detail-body">
+                    ${q.focus ? `
+                        <div class="history-answer">
+                            <p class="history-answer-label">The 90-day focus</p>
+                            <p class="history-answer-text">${escapeHistoryText(q.focus)}</p>
+                            ${q.outcome ? `<p class="history-answer-text" style="color: var(--color-text-muted);">${escapeHistoryText(q.outcome)}</p>` : ''}
+                        </div>
+                    ` : ''}
+                    ${body}
+                    <p class="history-detail-meta">
+                        ${formatAmount(q.plansCount)} weekly ${q.plansCount === 1 ? 'plan' : 'plans'} ·
+                        ${formatAmount(q.reviewsCount)} Friday ${q.reviewsCount === 1 ? 'review' : 'reviews'} ·
+                        top channel ${escapeHistoryText(q.topSource)} ·
+                        best offer ${escapeHistoryText(q.topOffer)}
+                        ${q.revenueBeforeQuarter > 0 ? `<br>Not counted above: sales dated before this quarter opened.` : ''}
+                    </p>
+                </div>
+            </details>
+        `;
+    });
+
+    return `
+        <h3 class="mb-4">The written record</h3>
+        <p style="color: var(--color-text-muted); margin-bottom: var(--spacing-lg); font-size: 0.9rem;">
+            What each quarter was for, and what you said about it on the way out.
+        </p>
+        ${cards.join('')}
+    `;
+}
+
+// Nothing archived yet, which is every account until the first Quarter Reset.
+// It says what will be here and when, rather than showing an empty table — a
+// feature that looks broken on day one is worse than one that explains itself.
+function renderFirstQuarter(history, currency) {
+    const q = history.current;
+    return `
+        <div class="card mb-6" style="border-top: 4px solid var(--color-primary);">
+            <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('history', 'Your first quarter is still running')}</p>
+            <p style="font-size: 0.95rem; line-height: 1.6; color: var(--color-text-main); margin: 0 0 1rem 0;">
+                There is nothing to compare against yet. When you finish these ninety days with a Quarter Reset, everything in them —
+                the revenue, the leads, the plans and the four answers you write on the way out — is archived here instead of cleared,
+                and the next quarter gets measured against it.
+            </p>
+            <p style="font-size: 0.9rem; color: var(--color-text-muted); margin: 0;">
+                So far: <strong>${currency}${formatAmount(q.revenue)}</strong>${q.goal > 0 ? ` of your ${currency}${formatAmount(q.goal)} goal` : ''},
+                ${formatAmount(q.leads)} ${q.leads === 1 ? 'lead' : 'leads'} and ${formatAmount(q.closes)} ${q.closes === 1 ? 'close' : 'closes'}
+                over ${q.weeksElapsed || 1} ${(q.weeksElapsed || 1) === 1 ? 'week' : 'weeks'}.
+            </p>
+        </div>
+    `;
+}
+
+function renderHistory() {
+    window.setScreenModule({ attachEvents: historyAttachEvents });
+
+    // Base accounts have no route here from anywhere in the UI, but a typed URL
+    // or an old bookmark still lands. Explain rather than redirect, same as the
+    // pipeline screen: being bounced with no reason given is the worst version
+    // of a paywall.
+    if (!canUseHistory()) {
+        return `
+            ${renderNav()}
+            <div class="main-content">
+                <div class="card" style="max-width: 620px; margin: 3rem auto; padding: 2rem; text-align: center;" data-locked-history>
+                    <p style="${PRO_CARD_HEADING_STYLE} justify-content: center;">${proCardHeading('history', 'Your year, quarter by quarter')}</p>
+                    <p style="color: var(--color-text-muted); line-height: 1.6; margin-bottom: 1.5rem;">
+                        Finished quarters kept and compared side by side. This one is part of Pro.
+                    </p>
+                    <button type="button" class="btn btn-primary" data-pro-feature="history">Tell me more</button>
+                    <p style="margin-top: 1.5rem;"><a href="#/progress" style="font-size: 0.875rem; color: var(--color-text-muted);">Back to Wins &amp; Progress</a></p>
+                </div>
+            </div>
+        `;
+    }
+
+    const store = getStore();
+    const currency = store.settings?.currency || '$';
+    const history = getQuarterHistory();
+
+    return `
+        ${renderNav()}
+        <!-- dashboard-layout widens main-content from 800px to 1200px, which the
+             comparison table needs before it starts scrolling sideways. -->
+        <div class="main-content dashboard-layout">
+            <div class="flex justify-between items-center mb-6 flex-mobile-col" style="gap: 1rem;">
+                <div>
+                    <h2 style="margin-bottom: 0.25rem;">Quarter History</h2>
+                    <p style="color: var(--color-text-muted); margin: 0;">Whether this quarter is genuinely better than the last one, or it just feels that way.</p>
+                </div>
+                <p style="${PRO_CARD_HEADING_STYLE} margin: 0;">${proCardHeading('history', 'History')}</p>
+            </div>
+
+            ${history.hasHistory ? renderSamePoint(history, currency) : renderFirstQuarter(history, currency)}
+            ${history.hasHistory ? renderQuarterTable(history, currency) : ''}
+            ${renderYearView(history, currency)}
+            ${renderQuarterDetail(history)}
+
+            <p style="text-align: center; margin-top: var(--spacing-xl);">
+                <a href="#/progress" style="font-size: 0.875rem; color: var(--color-text-muted);">Back to Wins &amp; Progress</a>
+            </p>
+        </div>
+    `;
+}
+
+function historyAttachEvents() {
+    // There is no nav link of its own — this screen is reached from Wins &
+    // Progress, so that is the nav item that stays lit while you are here.
+    document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+    document.getElementById('nav-progress')?.classList.add('active');
 }
 
 
@@ -9249,15 +10955,43 @@ function settingsAttachEvents() {
 // Everything the base plan includes. Written out rather than derived, because
 // the point of this list is to make base feel like a complete product on its
 // own — a Pro list with nothing beside it reads as a list of things you lack.
-const BASE_FEATURES = [
-    'Your 90-day roadmap and quarterly targets',
-    'Weekly planning and the Daily 3',
-    'Revenue, leads and conversion tracking',
-    'The Friday Review and your Monday draft',
-    'The AI coach, 30 conversations a day',
-    'CSV export of everything you log',
-    'Executive reports on demand'
-];
+//
+// A function rather than a constant so the AI line can carry the number that
+// actually applies to the account reading it. It was hardcoded to "30
+// conversations a day", which is the TRIAL rate: every paying base customer was
+// being told they got a quarter of what they were paying for, and a Pro
+// customer two thirds less again.
+//
+// "Requests" rather than "conversations" because one request is one request
+// whether it is a chat message, a 90-day plan or a refreshed suggestion — and
+// on Pro the planning surfaces spend them too.
+function baseFeatures() {
+    return [
+        'Your 90-day roadmap and quarterly targets',
+        'Weekly planning and the Daily 3',
+        'Revenue, leads and conversion tracking',
+        'The Friday Review and your Monday draft',
+        `The AI coach, ${aiDailyAllowance()} requests a day${usedTodaySuffix()}`,
+        'CSV export of everything you log',
+        'Executive reports on demand'
+    ];
+}
+
+// "— 12 used today", when we know.
+//
+// This is the one place a running count belongs. A counter on the dashboard
+// would teach people to ration a tool they are paying to use, and most accounts
+// never come near the limit; here the reader is already thinking about plans, so
+// the same number is context rather than pressure.
+//
+// Silent when there is no reading for today. `getAiAllowanceToday()` returning
+// null means "nothing asked yet since midnight UTC", which is not the same as
+// zero — printing "0 used today" would be inventing a fact.
+function usedTodaySuffix() {
+    const today = getAiAllowanceToday();
+    if (!today || !Number.isFinite(today.used)) return '';
+    return ` — ${today.used} used today`;
+}
 
 const TICK_SVG = `<svg class="plan-feature-mark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
 const LOCK_SVG = `<svg class="plan-feature-mark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>`;
@@ -9307,7 +11041,7 @@ function renderPlanCard() {
         sub = "Everything in the first list is yours. The second list is what Pro adds — click any line to read what it actually does.";
     }
 
-    const baseRows = BASE_FEATURES.map(f => `
+    const baseRows = baseFeatures().map(f => `
         <div class="plan-feature-row">${TICK_SVG}<span>${f}</span></div>
     `).join('');
 
@@ -9936,6 +11670,12 @@ function renderQuarterReset() {
                 <div style="background: var(--color-bg-light); padding: 1.5rem; border-radius: var(--radius-md); border-left: 4px solid var(--color-accent); margin-bottom: 1.5rem;">
                     <h4 style="margin-bottom: 0.5rem; color: var(--color-black);">Ready to Reset?</h4>
                     <p style="font-size: 0.9rem; color: var(--color-text-muted); margin-bottom: 0;">By confirming below, your current 90-day goal, priorities, and weekly plans will be securely archived. Your streaks, wins, and profile information will remain intact.</p>
+                    ${canUseHistory()
+                        // Only shown to accounts that can actually open it. This
+                        // is the moment the word "archived" stops being a
+                        // promise, so it is worth saying where the archive is.
+                        ? `<p style="font-size: 0.9rem; margin: 0.75rem 0 0 0;"><a href="#/history" style="color: var(--color-primary-dark); font-weight: 600;">See your finished quarters</a></p>`
+                        : ''}
                 </div>
 
                 <div class="flex justify-between items-center">
@@ -9972,6 +11712,10 @@ function quarterResetAttachEvents() {
                 // resetQuarter archives the goals, revenue, leads, metrics and plans
                 // alongside this reflection into store.pastQuarters before clearing.
                 resetQuarter(reflection);
+                // Cached suggestions were written about last quarter's goals and
+                // numbers. The fingerprint would catch most of that on its own,
+                // but a reset is precisely the moment nothing should carry over.
+                clearLiveAICache();
                 // The wizard keeps its step in module state and this route change
                 // does not reload the page, so send it back to step 1 explicitly.
                 resetWizardProgress();
@@ -10060,6 +11804,12 @@ function renderCoach() {
                         </div>
                         <p id="alignment-explanation" style="font-size: 1rem; color: var(--color-text-main); margin-top: 0.5rem; line-height: 1.5;"></p>
                     </div>
+                    ${liveAINote('Judged against your 90-day goal, bottleneck and numbers.')}
+                    ${proTeaser(
+                        'live-ai',
+                        'A verdict that has read your plan',
+                        'This matches words today. Pro weighs the idea against your goal and bottleneck.'
+                    )}
                 </div>
 
             </div>
@@ -10195,44 +11945,97 @@ function coachAttachEvents() {
     // Decision Filter Events
     const filterForm = document.getElementById('decision-filter-form');
     if (filterForm) {
-        filterForm.addEventListener('submit', (e) => {
+        filterForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            const idea = document.getElementById('idea-input').value.toLowerCase();
-            const store = getStore();
-            
-            const focus = (store.goals?.focus || '').toLowerCase();
-            const priorities = (store.goals?.priorities || []).join(' ').toLowerCase();
-            const strategyMode = (store.profile?.stage || '').toLowerCase(); // Approximating Strategy Mode from stage
+            const rawIdea = document.getElementById('idea-input').value.trim();
+            if (!rawIdea) return;
 
-            let score = "Busy Work";
-            let color = "#B42318";
-            let bg = "#FEE4E2";
-            let explanation = "This idea represents a tangent, distraction, or simply doesn't share DNA with your current Top 3 priorities. Put it in an idea parking lot for the next quarter.";
+            // The keyword verdict, shown immediately. On the base plan this is
+            // the whole feature. On Pro it is what stays on screen if the call
+            // fails, so it is worked out first either way.
+            const fallback = keywordVerdict(rawIdea);
+            showVerdict(fallback.score, fallback.explanation, fallback.color, fallback.bg);
 
-            const ideaWords = idea.split(' ').filter(w => w.length > 3);
-            let matchCount = 0;
-            
-            ideaWords.forEach(word => {
-                if (focus.includes(word) || priorities.includes(word) || strategyMode.includes(word)) {
-                    matchCount++;
-                }
-            });
+            if (!canUseLiveAI()) return;
 
-            // "If the idea directly aligns with your stated 90-day focus or heavily supports your active Strategy Mode"
-            if (matchCount >= 2 || (idea.includes('sales') || idea.includes('revenue') || idea.includes('offer'))) {
-                score = "Strategic";
-                color = "#027A48"; bg = "#E1FDF4";
-                explanation = "This idea directly aligns with your stated 90-day focus and supports your active Strategy Mode. Add it to your weekly plan.";
+            // This is the one live surface the user actually asked for, so it is
+            // allowed to say it is working — and, unlike the automatic ones, it
+            // does not draw on the daily background budget.
+            const submitBtn = filterForm.querySelector('button[type="submit"]');
+            const originalLabel = submitBtn ? submitBtn.textContent : '';
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Thinking…';
             }
 
-            const scoreEl = document.getElementById('alignment-score');
-            scoreEl.textContent = score; 
-            scoreEl.style.color = color; 
-            scoreEl.style.backgroundColor = bg;
-            document.getElementById('alignment-explanation').textContent = explanation;
-            document.getElementById('decision-result').style.display = 'block';
+            const live = await fetchIdeaVerdict(rawIdea);
+
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = originalLabel;
+            }
+
+            // A null answer means the keyword verdict already on screen stands.
+            // Saying "the AI failed" would replace a usable answer with an
+            // apology, which helps nobody decide anything.
+            if (!live) return;
+
+            const palette = VERDICT_COLOURS[live.verdict] || VERDICT_COLOURS['Busy work'];
+            showVerdict(live.verdict, live.explanation, palette.color, palette.bg);
         });
     }
+}
+
+const VERDICT_COLOURS = {
+    'Strategic': { color: '#027A48', bg: '#E1FDF4' },
+    'Worth testing': { color: '#B54708', bg: '#FFFAEB' },
+    'Busy work': { color: '#B42318', bg: '#FEE4E2' }
+};
+
+function showVerdict(score, explanation, color, bg) {
+    const scoreEl = document.getElementById('alignment-score');
+    if (!scoreEl) return;
+    scoreEl.textContent = score;
+    scoreEl.style.color = color;
+    scoreEl.style.backgroundColor = bg;
+    document.getElementById('alignment-explanation').textContent = explanation;
+    document.getElementById('decision-result').style.display = 'block';
+}
+
+// The base-tier filter, unchanged. It matches words rather than reading the
+// plan, which is why any idea containing "sales" comes back Strategic — that is
+// the limitation Pro exists to remove, and the teaser on this card says so
+// rather than the app pretending otherwise.
+function keywordVerdict(rawIdea) {
+    const idea = rawIdea.toLowerCase();
+    const store = getStore();
+
+    const focus = (store.goals?.focus || '').toLowerCase();
+    const priorities = (store.goals?.priorities || []).join(' ').toLowerCase();
+    const strategyMode = (store.profile?.stage || '').toLowerCase(); // Approximating Strategy Mode from stage
+
+    let score = "Busy Work";
+    let color = "#B42318";
+    let bg = "#FEE4E2";
+    let explanation = "This idea represents a tangent, distraction, or simply doesn't share DNA with your current Top 3 priorities. Put it in an idea parking lot for the next quarter.";
+
+    const ideaWords = idea.split(' ').filter(w => w.length > 3);
+    let matchCount = 0;
+
+    ideaWords.forEach(word => {
+        if (focus.includes(word) || priorities.includes(word) || strategyMode.includes(word)) {
+            matchCount++;
+        }
+    });
+
+    // "If the idea directly aligns with your stated 90-day focus or heavily supports your active Strategy Mode"
+    if (matchCount >= 2 || (idea.includes('sales') || idea.includes('revenue') || idea.includes('offer'))) {
+        score = "Strategic";
+        color = "#027A48"; bg = "#E1FDF4";
+        explanation = "This idea directly aligns with your stated 90-day focus and supports your active Strategy Mode. Add it to your weekly plan.";
+    }
+
+    return { score, explanation, color, bg };
 }
 
 
@@ -11210,6 +13013,8 @@ function authAttachEvents() {
                 // half-finished wizard — is adopted by the new account and pushed to
                 // their cloud row on the first save.
                 localStorage.removeItem('ceoPlanner_store');
+                clearLiveAICache();
+                clearAiAllowance();
 
                 localStorage.setItem('ceo_auth', 'true');
                 window.location.hash = '#/';
@@ -11232,6 +13037,10 @@ function authAttachEvents() {
                     // so logging in as a second user on a shared browser handed them
                     // the first user's plans and revenue, and wrote it to their row.
                     localStorage.removeItem('ceoPlanner_store');
+                    // Same reasoning for the cached AI suggestions and the AI
+                    // usage count: both belonged to the previous account.
+                    clearLiveAICache();
+                    clearAiAllowance();
 
                     // Then restore this account's own data, if they have any yet.
                     try {
@@ -11862,6 +13671,9 @@ function router() {
             break;
         case '#/progress':
             appContainer.innerHTML = renderProgress();
+            break;
+        case '#/history':
+            appContainer.innerHTML = renderHistory();
             break;
         case '#/settings':
             appContainer.innerHTML = renderSettings();

@@ -308,9 +308,24 @@ window.reconcileAuthState = async function reconcileAuthState() {
 // somebody to sign in is the last thing this does, not the first: every route
 // to a fresh token is tried before the request is given up on.
 //
+// `options` is passed straight through to the function body alongside the
+// messages. All of it is optional, and omitting it behaves exactly as before:
+//
+//   feature    a Pro feature key, e.g. 'live-ai'. The function refuses the
+//              request unless the account really is on Pro. Leave it off for
+//              anything every plan gets, like the chat coach itself.
+//   json       true to make OpenAI guarantee valid JSON. Set this on every
+//              caller that runs JSON.parse on the answer.
+//   maxTokens  a ceiling on the reply length. Clamped server side.
+//   background true for a call the user did not ask for. Kept on the client —
+//              it only decides whether an allowance warning may interrupt.
+//
 // Returns the OpenAI response body, or throws an Error whose message is safe to
 // show the customer.
-window.invokeChat = async function invokeChat(messages) {
+window.invokeChat = async function invokeChat(messages, options = {}) {
+    // `background` is ours, not the function's. Stripping it here means the
+    // server contract stays exactly the three fields it documents.
+    const { background = false, ...serverOptions } = options;
     let token = await getAccessToken();
     if (!token) {
         throw new Error('Your session has expired. Please sign in again to use the AI coach.');
@@ -325,7 +340,7 @@ window.invokeChat = async function invokeChat(messages) {
         // Passing the token explicitly rather than trusting the SDK to attach
         // it, so this can never fall back to the anon key behind our backs.
         const { data, error } = await window.db.functions.invoke('chat', {
-            body: { messages },
+            body: { messages, ...serverOptions },
             headers: { Authorization: `Bearer ${token}` },
         });
 
@@ -333,6 +348,16 @@ window.invokeChat = async function invokeChat(messages) {
             if (data && data.error) {
                 throw new Error(data.error.message || data.error);
             }
+
+            // Every successful call reports where today's allowance stands, so
+            // this is the one place that has to notice. Recording is silent;
+            // warning is not, which is why it is limited to requests the user
+            // actually made.
+            if (data && data.ceo_allowance) {
+                recordAiAllowance(data.ceo_allowance);
+                if (!background) warnIfAllowanceLow(data.ceo_allowance);
+            }
+
             return data;
         }
 

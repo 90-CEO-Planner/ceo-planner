@@ -113,6 +113,20 @@ The app functions as your objective Board of Directors, providing dynamic insigh
 - **AI Executive Report:** From the Revenue tab, click **AI Executive Report**. The system will scan your entire pipeline, calculate your conversion bottlenecks, and generate a brutally honest strategic briefing telling you exactly what to fix in your funnel. You can instantly download this report as a text file.
 - **Notepad / Chat:** Visit the Notepad tab or use the floating Executive AI Coach bubble to chat directly with your Executive AI Coach regarding your business bottlenecks.
 
+**Where the suggestions come from:**
+Four places in the app suggest things for you to do: the AI Planning Assistant on the Weekly Plan page, the breakdown of your Daily 3 on the dashboard, the small nudges beside your Revenue and Pipeline figures, and the CEO vs Busy Work filter in the Notepad.
+
+On the base plan these follow built-in patterns. They are sensible starting points, but they work from keywords in what you have written rather than from your situation, so they can read a little generic.
+
+On Pro the same four are written by your coach from your real context: your stage, your niche, your ideal client, your #1 bottleneck, your 90-day focus, where you are against your revenue goal and what you actually planned for this week. If the coach cannot be reached, or you have used your AI allowance for the day, they quietly fall back to the built-in versions rather than failing — so there is always something there.
+
+Two things stay fixed on both plans. The **colour and the heading** of a dashboard nudge are always worked out from your numbers, never written by the AI, so a red Pace Alert always means the maths says so. And your Daily 3 is never rewritten once you have ticked something off that day.
+
+**Your daily AI allowance:**
+Every plan includes a set number of AI requests a day: 30 on the free trial, 120 on the base plan, 300 on Pro. One request is one request whether it is a message to the coach, a regenerated 90-day plan, an executive report, or a refreshed suggestion on Pro. The count resets at midnight UTC.
+
+You will get a quiet heads-up once you have used about eighty percent of the day's allowance, so you can plan the rest of your day rather than being stopped mid-conversation. The **Account** page shows your allowance and how much of it you have used today.
+
 ---
 
 ## 8. Managing Your Data

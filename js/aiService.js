@@ -178,7 +178,15 @@ You MUST return ONLY a raw JSON strictly following this schema with no markdown 
 }`;
 
     try {
-        const data = await window.invokeChat([{ role: 'user', content: prompt }]);
+        // json: true makes OpenAI return a parseable object rather than prose
+        // that happens to look like one. The fence-stripping below is kept as a
+        // belt-and-braces measure: JSON mode is skipped server side if no
+        // message mentions JSON, and a future edit to this prompt could quietly
+        // remove the word.
+        const data = await window.invokeChat(
+            [{ role: 'user', content: prompt }],
+            { json: true, maxTokens: 800 }
+        );
 
         let content = data.choices[0].message.content;
         content = content.replace(/^```json/g, '').replace(/```$/g, '').trim();
@@ -287,10 +295,18 @@ OUTPUT FORMAT (return exactly this JSON shape):
 CRITICAL: Return ONLY the JSON object above. No explanation, no preamble, no code fences.`;
 
     try {
-        const data = await window.invokeChat([
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: 'Generate my 90-day action plan now. Return only the JSON object, no prose, no markdown fences.' }
-        ]);
+        // A 12-week plan with a setup checklist and red flags is the longest
+        // answer the app ever asks for, so the ceiling is generous. It exists to
+        // stop a runaway, not to shape the output — a plan cut off mid-JSON
+        // fails the shape check below and returns null, which is worse than
+        // costing a few more tokens.
+        const data = await window.invokeChat(
+            [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: 'Generate my 90-day action plan now. Return only the JSON object, no prose, no markdown fences.' }
+            ],
+            { json: true, maxTokens: 8000 }
+        );
 
         let content = data.choices[0].message.content;
         content = content.replace(/^```json/gi, '').replace(/```$/g, '').trim();

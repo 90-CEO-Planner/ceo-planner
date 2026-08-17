@@ -1,9 +1,9 @@
 // progress.js
 import { renderNav } from '../components/nav.js';
-import { getStore } from '../store.js';
+import { getStore, getQuarterHistory, formatAmount } from '../store.js';
 import { renderTooltip } from '../components/tooltip.js';
 import { showToast } from '../components/toast.js';
-import { proTeaser } from '../components/proGate.js';
+import { proTeaser, canUseHistory, proCardHeading, PRO_CARD_HEADING_STYLE } from '../components/proGate.js';
 
 export function renderProgress() {
     window.setScreenModule({ attachEvents: progressAttachEvents });
@@ -27,11 +27,17 @@ export function renderProgress() {
                 </div>
             </div>
 
-            ${proTeaser(
-                'history',
-                'See if this quarter beat the last one',
-                'Everything here resets each quarter. Pro keeps them and shows them side by side.'
-            )}
+            ${canUseHistory()
+                // Same shape as the pipeline card on Revenue: once the account
+                // has the feature, proTeaser deletes itself, and leaving the
+                // hole would take away the only way into the screen it was
+                // advertising. A live summary and a way in takes its place.
+                ? renderHistorySummary(store)
+                : proTeaser(
+                    'history',
+                    'See if this quarter beat the last one',
+                    'Everything here resets each quarter. Pro keeps them and shows them side by side.'
+                )}
 
             <!-- CEO Insight Engine -->
             <div class="card mb-6" style="border-top: 4px solid var(--color-primary);">
@@ -182,6 +188,41 @@ export function renderProgress() {
                     </div>
                 `).join('')}
             </div>
+        </div>
+    `;
+}
+
+// The way into the history screen, for accounts that have it.
+//
+// Every figure is read from getQuarterHistory, which is also what the history
+// screen renders — so this card and that screen cannot end up quoting different
+// numbers for the same two quarters.
+function renderHistorySummary(store) {
+    const currency = store.settings?.currency || '$';
+    const history = getQuarterHistory();
+    const sp = history.samePoint;
+
+    let body;
+    if (sp) {
+        const weeks = sp.weeksElapsed;
+        const level = sp.delta === 0;
+        const ahead = sp.delta > 0;
+        body = level
+            ? `${weeks === 1 ? 'One week' : `${weeks} weeks`} in, you are level with where you were at this point in ${sp.previousLabel}.`
+            : `${weeks === 1 ? 'One week' : `${weeks} weeks`} in, you are
+               <strong style="color: ${ahead ? 'var(--color-secondary-dark)' : '#B42318'};">${currency}${formatAmount(Math.abs(sp.delta))} ${ahead ? 'ahead of' : 'behind'}</strong>
+               where you were at this point in ${sp.previousLabel}.`;
+    } else if (history.hasHistory) {
+        body = `${history.archivedCount} finished ${history.archivedCount === 1 ? 'quarter is' : 'quarters are'} kept here, with everything you wrote on the way out of ${history.archivedCount === 1 ? 'it' : 'them'}.`;
+    } else {
+        body = `Your first quarter is still running. Finish it with a Quarter Reset and all of it is kept here instead of cleared, ready for the next one to be measured against.`;
+    }
+
+    return `
+        <div class="card mb-6" style="padding: 1.25rem; border-left: 3px solid var(--color-primary);">
+            <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('history', 'Quarter history')}</p>
+            <p style="font-size: 0.9rem; color: var(--color-text-main); margin: 0 0 0.75rem 0; line-height: 1.5;">${body}</p>
+            <a href="#/history" class="btn btn-outline btn-sm" style="width: 100%; text-align: center;">Open quarter history</a>
         </div>
     `;
 }

@@ -14,6 +14,7 @@ import { renderRevenue } from './screens/revenue.js';
 import { renderPipeline } from './screens/pipeline.js';
 import { renderReview } from './screens/fridayReview.js';
 import { renderProgress } from './screens/progress.js';
+import { renderHistory } from './screens/history.js';
 import { renderSettings } from './screens/settings.js';
 import { renderAccount } from './screens/account.js';
 import { renderQuarterReset } from './screens/quarterReset.js';
@@ -134,6 +135,9 @@ function router() {
             break;
         case '#/progress':
             appContainer.innerHTML = renderProgress();
+            break;
+        case '#/history':
+            appContainer.innerHTML = renderHistory();
             break;
         case '#/settings':
             appContainer.innerHTML = renderSettings();

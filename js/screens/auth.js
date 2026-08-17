@@ -1,5 +1,7 @@
 // auth.js
 import { showToast } from '../components/toast.js';
+import { clearLiveAICache } from '../liveAI.js';
+import { clearAiAllowance } from '../components/proGate.js';
 
 export function renderAuth(mode = 'login') {
     // Keep compatibility with old boolean signature
@@ -206,6 +208,8 @@ function authAttachEvents() {
                 // half-finished wizard — is adopted by the new account and pushed to
                 // their cloud row on the first save.
                 localStorage.removeItem('ceoPlanner_store');
+                clearLiveAICache();
+                clearAiAllowance();
 
                 localStorage.setItem('ceo_auth', 'true');
                 window.location.hash = '#/';
@@ -228,6 +232,10 @@ function authAttachEvents() {
                     // so logging in as a second user on a shared browser handed them
                     // the first user's plans and revenue, and wrote it to their row.
                     localStorage.removeItem('ceoPlanner_store');
+                    // Same reasoning for the cached AI suggestions and the AI
+                    // usage count: both belonged to the previous account.
+                    clearLiveAICache();
+                    clearAiAllowance();
 
                     // Then restore this account's own data, if they have any yet.
                     try {

@@ -4,6 +4,10 @@ $files = @(
     "js\stripeImport.js",
     "js\aiService.js",
     "js\components\proGate.js",
+    # After proGate, because canUseLiveAI() calls isProUser(). Both are hoisted
+    # function declarations so the order is not strictly load-bearing, but
+    # stripeImport.js already relies on that accident once and once is enough.
+    "js\liveAI.js",
     "js\components\nav.js",
     "js\components\tooltip.js",
     "js\components\toast.js",
@@ -13,8 +17,10 @@ $files = @(
     "js\screens\dashboard.js",
     "js\screens\weeklyPlanner.js",
     "js\screens\revenue.js",
+    "js\screens\pipeline.js",
     "js\screens\fridayReview.js",
     "js\screens\progress.js",
+    "js\screens\history.js",
     "js\screens\settings.js",
     "js\screens\account.js",
     "js\screens\quarterReset.js",

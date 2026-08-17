@@ -96,29 +96,42 @@ alter table public.ai_usage enable row level security;
 -- It checks the subscription AND consumes a unit of the daily allowance, so the
 -- chat edge function cannot accidentally do one without the other.
 -- To change the daily limits, edit the defaults below.
+--
+-- Three rates, because Pro item 4 fires model calls from the dashboard and the
+-- planner without being asked, rather than only when somebody types into the
+-- chat widget:
+--
+--   trialing        ->  30/day
+--   active + base   -> 120/day
+--   active + pro    -> 300/day
+--
+-- A trial resolves to the 'pro' tier for feature purposes but keeps the trial
+-- rate. That is the batch 8 rule: a trial grants Pro features, never Pro spend.
 create or replace function public.consume_ai_quota(
   p_user_id uuid,
   p_trial_limit integer default 30,
-  p_paid_limit integer default 120
+  p_paid_limit integer default 120,
+  p_pro_limit integer default 300
 )
-returns table (allowed boolean, reason text, used integer, quota integer)
+returns table (allowed boolean, reason text, used integer, quota integer, tier text)
 language plpgsql
 security definer set search_path = public
 as $$
 declare
   v_status text;
   v_trial_ends timestamptz;
+  v_tier text;
   v_has_access boolean;
   v_limit integer;
   v_used integer;
 begin
-  select p.subscription_status, p.trial_ends_at
-  into v_status, v_trial_ends
+  select p.subscription_status, p.trial_ends_at, coalesce(p.plan_tier, 'base')
+  into v_status, v_trial_ends, v_tier
   from public.profiles p
   where p.id = p_user_id;
 
   if not found then
-    return query select false, 'no_profile'::text, 0, 0;
+    return query select false, 'no_profile'::text, 0, 0, 'base'::text;
     return;
   end if;
 
@@ -127,11 +140,19 @@ begin
     or (v_status = 'trialing' and (v_trial_ends is null or v_trial_ends > timezone('utc', now())));
 
   if not v_has_access then
-    return query select false, 'no_access'::text, 0, 0;
+    return query select false, 'no_access'::text, 0, 0, v_tier;
     return;
   end if;
 
-  v_limit := case when v_status = 'active' then p_paid_limit else p_trial_limit end;
+  if v_status = 'trialing' then
+    v_tier := 'pro';
+  end if;
+
+  v_limit := case
+    when v_status = 'active' and v_tier = 'pro' then p_pro_limit
+    when v_status = 'active' then p_paid_limit
+    else p_trial_limit
+  end;
 
   -- Atomic increment. The WHERE on the conflict branch means a user already at
   -- the limit updates no row, so nothing is returned and v_used stays null.
@@ -147,11 +168,11 @@ begin
     from public.ai_usage u
     where u.user_id = p_user_id and u.day = (timezone('utc', now()))::date;
 
-    return query select false, 'rate_limited'::text, coalesce(v_used, v_limit), v_limit;
+    return query select false, 'rate_limited'::text, coalesce(v_used, v_limit), v_limit, v_tier;
     return;
   end if;
 
-  return query select true, 'ok'::text, v_used, v_limit;
+  return query select true, 'ok'::text, v_used, v_limit, v_tier;
 end;
 $$;
 
@@ -161,8 +182,8 @@ $$;
 -- someone else's user id and exhaust that person's daily AI allowance.
 -- These functions are only ever called by the edge functions, which use the
 -- service role, so nobody else needs execute rights.
-revoke all on function public.consume_ai_quota(uuid, integer, integer) from public, anon, authenticated;
-grant execute on function public.consume_ai_quota(uuid, integer, integer) to service_role;
+revoke all on function public.consume_ai_quota(uuid, integer, integer, integer) from public, anon, authenticated;
+grant execute on function public.consume_ai_quota(uuid, integer, integer, integer) to service_role;
 
 revoke all on function public.has_active_access(uuid) from public, anon, authenticated;
 grant execute on function public.has_active_access(uuid) to service_role;

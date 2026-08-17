@@ -652,6 +652,36 @@
     text-decoration: underline;
 }
 
+/* The counterpart to a teaser: what a Pro account sees in the same spot once
+   the feature is live. proTeaser() returns nothing exactly when liveAINote()
+   returns something, so a card carries one or the other and never both.
+
+   Quiet on purpose. Its job is to explain why these suggestions read
+   differently from the ones in the screenshots, not to congratulate anybody on
+   their plan. */
+.live-ai-note {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0.85rem 0 0 0;
+    color: var(--color-text-muted);
+    font-size: 0.75rem;
+    line-height: 1.4;
+}
+
+.live-ai-note svg {
+    flex-shrink: 0;
+    color: var(--color-primary-dark);
+}
+
+/* While a live answer is in flight, the version already on screen dims very
+   slightly. Enough that the swap reads as an update rather than as the page
+   glitching, and not so much that it looks broken if the call never lands. */
+.live-ai-pending {
+    opacity: 0.6;
+    transition: opacity var(--transition-fast);
+}
+
 /* One-line variant, for narrow places like the chat panel where a full strip
    would eat the space the conversation needs. */
 .pro-teaser-compact {
@@ -1162,5 +1192,211 @@
 }
 
 .pipeline-field .tooltip-content::after {
+    display: none;
+}
+
+/* --- Quarter history (Pro item 3) ---------------------------------------- */
+
+/* The comparison table scrolls inside its own box rather than pushing the page
+   sideways. Nine columns will not fit a phone at any font size worth reading,
+   and a horizontally scrolling BODY hides controls off the right edge — the
+   rule batch 7 arrived at and the pipeline board follows. */
+.history-table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.history-table {
+    width: 100%;
+    min-width: 720px;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+}
+
+.history-table th {
+    text-align: left;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-text-muted);
+    font-weight: 700;
+    padding: 0 0.75rem 0.6rem 0.75rem;
+    border-bottom: 1px solid var(--color-border);
+    white-space: nowrap;
+}
+
+.history-table td {
+    padding: 0.85rem 0.75rem;
+    border-bottom: 1px solid var(--color-border);
+    color: var(--color-text-main);
+    vertical-align: top;
+}
+
+.history-table tr:last-child td {
+    border-bottom: none;
+}
+
+.history-table .history-num {
+    text-align: right;
+    white-space: nowrap;
+}
+
+/* The quarter you are living in, marked so it is never mistaken for a finished
+   one sitting at the top of the list. */
+.history-row-current td {
+    background: var(--color-bg-main);
+}
+
+.history-live-tag {
+    display: inline-block;
+    margin-left: 0.4rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: var(--radius-sm);
+    background: var(--color-primary-light);
+    color: var(--color-primary-dark);
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    vertical-align: middle;
+}
+
+.history-row-dates {
+    display: block;
+    margin-top: 0.2rem;
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+    font-weight: 400;
+    white-space: nowrap;
+}
+
+.history-change {
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.history-change-none {
+    color: var(--color-text-muted);
+    font-weight: 400;
+}
+
+/* Year view */
+.history-year-row + .history-year-row {
+    margin-top: 1.25rem;
+}
+
+.history-year-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 1rem;
+    margin-bottom: 0.4rem;
+}
+
+.history-year-label {
+    font-family: var(--font-heading);
+    font-weight: 700;
+    color: var(--color-black);
+}
+
+.history-year-total {
+    font-weight: 700;
+    color: var(--color-primary-dark);
+}
+
+.history-year-track {
+    height: 10px;
+    border-radius: var(--radius-full);
+    background: var(--color-bg-main);
+    overflow: hidden;
+}
+
+.history-year-bar {
+    height: 100%;
+    border-radius: var(--radius-full);
+    background: var(--color-primary);
+}
+
+.history-year-meta {
+    margin: 0.4rem 0 0 0;
+    font-size: 0.8rem;
+    color: var(--color-text-muted);
+}
+
+/* The written record. <details> rather than a JS toggle: it opens with a click
+   or with Enter, it is readable with a screen reader, and it keeps no state
+   this screen would have to restore after a re-render. */
+.history-detail {
+    padding: 0;
+}
+
+.history-detail-summary {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    padding: 1.25rem;
+    cursor: pointer;
+    list-style: none;
+}
+
+.history-detail-summary::-webkit-details-marker {
+    display: none;
+}
+
+.history-detail-summary:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: -2px;
+    border-radius: var(--radius-md);
+}
+
+.history-detail-hint {
+    font-size: 0.8rem;
+    color: var(--color-primary-dark);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.history-detail[open] .history-detail-hint {
+    color: var(--color-text-muted);
+}
+
+.history-detail-body {
+    padding: 0 1.25rem 1.25rem 1.25rem;
+    border-top: 1px solid var(--color-border);
+}
+
+.history-answer {
+    margin-top: 1.25rem;
+}
+
+.history-answer-label {
+    margin: 0 0 0.3rem 0;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-primary-dark);
+}
+
+.history-answer-text {
+    margin: 0;
+    font-size: 0.95rem;
+    line-height: 1.6;
+    color: var(--color-text-main);
+    white-space: pre-wrap;
+}
+
+.history-detail-meta {
+    margin: 1.5rem 0 0 0;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--color-border);
+    font-size: 0.8rem;
+    color: var(--color-text-muted);
+    line-height: 1.6;
+}
+
+.history-detail:not([open]) .history-hint-open,
+.history-detail[open] .history-hint-closed {
     display: none;
 }

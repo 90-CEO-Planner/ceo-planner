@@ -10,21 +10,49 @@
 // strategy mode and reminders, all of which feed the AI rather than the account.
 import { renderNav, signOutAndClear } from '../components/nav.js';
 import { showToast, showConfirm } from '../components/toast.js';
-import { PRO_FEATURES, PRO_FEATURE_KEYS, getPlanTier, isProTrial, trialDaysLeft, isFeatureLive, proBadge } from '../components/proGate.js';
+import { PRO_FEATURES, PRO_FEATURE_KEYS, getPlanTier, isProTrial, trialDaysLeft, isFeatureLive, proBadge, aiDailyAllowance, getAiAllowanceToday } from '../components/proGate.js';
 import { fetchStripeConnection, connectStripeKey, disconnectStripe, syncStripeSales, canConnectStripe, STRIPE_KEY_PAGE, refreshImportedSales } from '../stripeImport.js';
 
 // Everything the base plan includes. Written out rather than derived, because
 // the point of this list is to make base feel like a complete product on its
 // own — a Pro list with nothing beside it reads as a list of things you lack.
-const BASE_FEATURES = [
-    'Your 90-day roadmap and quarterly targets',
-    'Weekly planning and the Daily 3',
-    'Revenue, leads and conversion tracking',
-    'The Friday Review and your Monday draft',
-    'The AI coach, 30 conversations a day',
-    'CSV export of everything you log',
-    'Executive reports on demand'
-];
+//
+// A function rather than a constant so the AI line can carry the number that
+// actually applies to the account reading it. It was hardcoded to "30
+// conversations a day", which is the TRIAL rate: every paying base customer was
+// being told they got a quarter of what they were paying for, and a Pro
+// customer two thirds less again.
+//
+// "Requests" rather than "conversations" because one request is one request
+// whether it is a chat message, a 90-day plan or a refreshed suggestion — and
+// on Pro the planning surfaces spend them too.
+function baseFeatures() {
+    return [
+        'Your 90-day roadmap and quarterly targets',
+        'Weekly planning and the Daily 3',
+        'Revenue, leads and conversion tracking',
+        'The Friday Review and your Monday draft',
+        `The AI coach, ${aiDailyAllowance()} requests a day${usedTodaySuffix()}`,
+        'CSV export of everything you log',
+        'Executive reports on demand'
+    ];
+}
+
+// "— 12 used today", when we know.
+//
+// This is the one place a running count belongs. A counter on the dashboard
+// would teach people to ration a tool they are paying to use, and most accounts
+// never come near the limit; here the reader is already thinking about plans, so
+// the same number is context rather than pressure.
+//
+// Silent when there is no reading for today. `getAiAllowanceToday()` returning
+// null means "nothing asked yet since midnight UTC", which is not the same as
+// zero — printing "0 used today" would be inventing a fact.
+function usedTodaySuffix() {
+    const today = getAiAllowanceToday();
+    if (!today || !Number.isFinite(today.used)) return '';
+    return ` — ${today.used} used today`;
+}
 
 const TICK_SVG = `<svg class="plan-feature-mark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
 const LOCK_SVG = `<svg class="plan-feature-mark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>`;
@@ -74,7 +102,7 @@ function renderPlanCard() {
         sub = "Everything in the first list is yours. The second list is what Pro adds — click any line to read what it actually does.";
     }
 
-    const baseRows = BASE_FEATURES.map(f => `
+    const baseRows = baseFeatures().map(f => `
         <div class="plan-feature-row">${TICK_SVG}<span>${f}</span></div>
     `).join('');
 

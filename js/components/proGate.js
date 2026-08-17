@@ -44,14 +44,28 @@ export const PRO_FEATURES = {
         blurb: 'Named contacts instead of a running count. Move each one through lead, call booked, proposal sent, won or lost, set a follow-up date, and see at a glance who has gone quiet on you.'
     },
     'history': {
-        shipped: false,
+        // Shipped 16 Aug 2026. Lives at #/history, reached from Wins & Progress
+        // — where the teaser for it used to sit — and from the Quarter Reset
+        // screen, which is the moment history gets made.
+        shipped: true,
         title: 'Your year, quarter by quarter',
         blurb: 'Every quarter you finish is archived rather than cleared. This is where you see them side by side, so you can tell whether this quarter is genuinely better than the last one or it just feels that way.'
     },
     'live-ai': {
-        shipped: false,
+        // Shipped 17 Aug 2026. All four keyword engines now have a live half:
+        // the planning assistant, the Daily 3 breakdown, the Quiet Advisor
+        // pulses and the CEO vs Busy Work filter. The keyword versions stay as
+        // the base tier and as the fallback — see js/liveAI.js.
+        shipped: true,
         title: 'Planning that thinks about your business',
         blurb: 'The suggestions here are currently pattern rules, which is why they can feel a little generic. Pro sends your actual numbers, offer and stage to the coach, so what comes back is written about your business rather than about businesses in general.'
+    },
+    'ai-allowance': {
+        // Real today — the limits have existed since batch 1.1 and became
+        // per-tier with Pro item 4. Nothing to build, so it ships as true.
+        shipped: true,
+        title: 'More AI to work with',
+        blurb: 'Every plan includes the coach. Base is 120 requests a day, Pro is 300. It matters more on Pro than it sounds: Pro also writes your planning suggestions and your Daily 3 with the coach, so the bigger allowance is what keeps that going all day instead of stopping by lunchtime.'
     },
     'coach-memory': {
         shipped: false,
@@ -87,6 +101,7 @@ export const PRO_FEATURES = {
             'A named lead pipeline with follow-up dates',
             'Quarter-over-quarter history and a year view',
             'AI planning written from your real numbers',
+            '300 AI requests a day instead of 120',
             'A coach that remembers your conversations',
             'Weekly digest by email',
             'Branded PDF reports',
@@ -102,6 +117,10 @@ export const PRO_FEATURE_KEYS = [
     'lead-pipeline',
     'history',
     'live-ai',
+    // Sits directly under live-ai on purpose: it is the reason the allowance
+    // matters. Read on its own it is a number; read after "planning written by
+    // the coach" it is the thing that keeps that working.
+    'ai-allowance',
     'coach-memory',
     'week-regen',
     'email-digest',
@@ -141,6 +160,119 @@ export function isProUser() {
     return getPlanTier() === 'pro';
 }
 
+// How many AI requests a day each plan gets.
+//
+// ⚠️ These MUST match the defaults in `consume_ai_quota` (supabase/setup.sql
+// and migration 20260816_ai_quota_pro_tier.sql). The server is what actually
+// enforces them; this copy exists only so the app can say the number out loud
+// on the plan card. **Change one and you must change the other**, or the app
+// will promise an allowance the database does not honour.
+export const AI_DAILY_LIMITS = { trial: 30, base: 120, pro: 300 };
+
+// What THIS account gets per day.
+//
+// Written as the real number for the person reading it rather than as a
+// headline. A trial resolves to the Pro feature set but deliberately keeps the
+// trial rate, so quoting the Pro figure to a trial user would be a promise the
+// server refuses at request 31.
+export function aiDailyAllowance() {
+    if (localStorage.getItem('ceo_sub_status') === 'trialing') return AI_DAILY_LIMITS.trial;
+    return isProUser() ? AI_DAILY_LIMITS.pro : AI_DAILY_LIMITS.base;
+}
+
+// --- Where today's allowance actually stands ---------------------------------
+//
+// The chat function reports `used` and `quota` on every successful call, so the
+// app knows where it stands without asking. No polling, no extra endpoint: the
+// numbers arrive as a side effect of work already being done.
+//
+// Keyed on the **UTC** date because that is what the server counter resets on.
+// Using the local date would show a stale figure, or a fresh one that isn't,
+// for anybody outside GMT — and being wrong about a limit is worse than being
+// silent about it.
+const ALLOWANCE_KEY = 'ceo_ai_allowance';
+const ALLOWANCE_WARNED_KEY = 'ceo_ai_allowance_warned';
+
+// Warn once the day is 80% spent. Early enough to change plans, late enough
+// that it isn't nagging somebody who was never going to run out.
+const ALLOWANCE_WARN_AT = 0.8;
+
+function utcDay() {
+    return new Date().toISOString().slice(0, 10);
+}
+
+export function recordAiAllowance(allowance) {
+    if (!allowance || !Number.isFinite(allowance.quota) || allowance.quota <= 0) return;
+    try {
+        localStorage.setItem(ALLOWANCE_KEY, JSON.stringify({
+            day: utcDay(),
+            used: allowance.used,
+            quota: allowance.quota
+        }));
+    } catch (err) {
+        // Storage full. The warning simply won't fire; nothing else breaks.
+    }
+}
+
+// Today's figures, or null when nothing has been recorded today. Null is a real
+// answer and must not be shown as "0 used" — it means "we haven't asked yet",
+// which is different, and on the Account card it reads very differently.
+export function getAiAllowanceToday() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(ALLOWANCE_KEY) || 'null');
+        if (!raw || raw.day !== utcDay()) return null;
+        return { used: raw.used, quota: raw.quota };
+    } catch (err) {
+        return null;
+    }
+}
+
+// Forget today's figures. Called wherever the account changes on this browser —
+// sign-out, login, signup — because a usage count belongs to one person. NOT
+// called on quarter reset: this is a daily counter and has nothing to do with
+// which 90 days you are in.
+export function clearAiAllowance() {
+    try {
+        localStorage.removeItem(ALLOWANCE_KEY);
+        localStorage.removeItem(ALLOWANCE_WARNED_KEY);
+    } catch (err) {
+        /* nothing worth reporting */
+    }
+}
+
+// Say something once a day, when they are close and it is still useful to know.
+//
+// Only ever called for requests the user actually made. The live planning
+// surfaces spend quota on page load, and a toast appearing unprompted to say
+// "you have used 80% of your AI" would alarm somebody who has not done
+// anything — see the `background` flag in invokeChat.
+export function warnIfAllowanceLow(allowance) {
+    if (!allowance || !Number.isFinite(allowance.quota) || allowance.quota <= 0) return;
+    if (allowance.used / allowance.quota < ALLOWANCE_WARN_AT) return;
+    if (allowance.used >= allowance.quota) return; // The 429 says it better.
+
+    try {
+        if (localStorage.getItem(ALLOWANCE_WARNED_KEY) === utcDay()) return;
+        localStorage.setItem(ALLOWANCE_WARNED_KEY, utcDay());
+    } catch (err) {
+        return; // Can't remember having warned, so don't risk warning repeatedly.
+    }
+
+    const left = allowance.quota - allowance.used;
+    const requests = left === 1 ? 'request' : 'requests';
+    const base = `${left} AI ${requests} left today. It resets at midnight UTC.`;
+
+    // The upgrade line is only fair because they are genuinely close to the
+    // limit and Pro genuinely fixes it. Saying it at 20% would be a nag.
+    const message = isProUser()
+        ? base
+        : `${base} Pro comes with ${AI_DAILY_LIMITS.pro} a day — see Account.`;
+
+    // toast.js is concatenated after this file in the bundle. The call happens
+    // at runtime rather than at load, so it resolves, but guard it anyway.
+    if (typeof showToast === 'function') showToast(message, 'info', 7000);
+}
+
 // True while the account is inside the app-managed 14-day trial, which is the
 // only state where someone has Pro without paying for it.
 export function isProTrial() {
@@ -164,6 +296,13 @@ export function trialDaysLeft() {
 // pointing at a locked screen — the exact shape of the canConnectStripe bug.
 export function canUseLeadPipeline() {
     return isProUser() && isFeatureLive('lead-pipeline');
+}
+
+// Can this account open the quarter history screen? Same single-answer rule as
+// canUseLeadPipeline above, asked by the screen's own guard, the card on Wins &
+// Progress and the link on Quarter Reset.
+export function canUseHistory() {
+    return isProUser() && isFeatureLive('history');
 }
 
 // A small "PRO" chip, for sitting next to a heading or a label.

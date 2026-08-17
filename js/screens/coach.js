@@ -3,6 +3,8 @@ import { renderNav } from '../components/nav.js';
 import { getStore, addNote, deleteNote } from '../store.js';
 import { renderTooltip } from '../components/tooltip.js';
 import { showToast, showConfirm } from '../components/toast.js';
+import { proTeaser } from '../components/proGate.js';
+import { canUseLiveAI, fetchIdeaVerdict, liveAINote } from '../liveAI.js';
 
 export function renderCoach() {
     window.setScreenModule({ attachEvents: coachAttachEvents });
@@ -78,6 +80,12 @@ export function renderCoach() {
                         </div>
                         <p id="alignment-explanation" style="font-size: 1rem; color: var(--color-text-main); margin-top: 0.5rem; line-height: 1.5;"></p>
                     </div>
+                    ${liveAINote('Judged against your 90-day goal, bottleneck and numbers.')}
+                    ${proTeaser(
+                        'live-ai',
+                        'A verdict that has read your plan',
+                        'This matches words today. Pro weighs the idea against your goal and bottleneck.'
+                    )}
                 </div>
 
             </div>
@@ -213,42 +221,95 @@ function coachAttachEvents() {
     // Decision Filter Events
     const filterForm = document.getElementById('decision-filter-form');
     if (filterForm) {
-        filterForm.addEventListener('submit', (e) => {
+        filterForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            const idea = document.getElementById('idea-input').value.toLowerCase();
-            const store = getStore();
-            
-            const focus = (store.goals?.focus || '').toLowerCase();
-            const priorities = (store.goals?.priorities || []).join(' ').toLowerCase();
-            const strategyMode = (store.profile?.stage || '').toLowerCase(); // Approximating Strategy Mode from stage
+            const rawIdea = document.getElementById('idea-input').value.trim();
+            if (!rawIdea) return;
 
-            let score = "Busy Work";
-            let color = "#B42318";
-            let bg = "#FEE4E2";
-            let explanation = "This idea represents a tangent, distraction, or simply doesn't share DNA with your current Top 3 priorities. Put it in an idea parking lot for the next quarter.";
+            // The keyword verdict, shown immediately. On the base plan this is
+            // the whole feature. On Pro it is what stays on screen if the call
+            // fails, so it is worked out first either way.
+            const fallback = keywordVerdict(rawIdea);
+            showVerdict(fallback.score, fallback.explanation, fallback.color, fallback.bg);
 
-            const ideaWords = idea.split(' ').filter(w => w.length > 3);
-            let matchCount = 0;
-            
-            ideaWords.forEach(word => {
-                if (focus.includes(word) || priorities.includes(word) || strategyMode.includes(word)) {
-                    matchCount++;
-                }
-            });
+            if (!canUseLiveAI()) return;
 
-            // "If the idea directly aligns with your stated 90-day focus or heavily supports your active Strategy Mode"
-            if (matchCount >= 2 || (idea.includes('sales') || idea.includes('revenue') || idea.includes('offer'))) {
-                score = "Strategic";
-                color = "#027A48"; bg = "#E1FDF4";
-                explanation = "This idea directly aligns with your stated 90-day focus and supports your active Strategy Mode. Add it to your weekly plan.";
+            // This is the one live surface the user actually asked for, so it is
+            // allowed to say it is working — and, unlike the automatic ones, it
+            // does not draw on the daily background budget.
+            const submitBtn = filterForm.querySelector('button[type="submit"]');
+            const originalLabel = submitBtn ? submitBtn.textContent : '';
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Thinking…';
             }
 
-            const scoreEl = document.getElementById('alignment-score');
-            scoreEl.textContent = score; 
-            scoreEl.style.color = color; 
-            scoreEl.style.backgroundColor = bg;
-            document.getElementById('alignment-explanation').textContent = explanation;
-            document.getElementById('decision-result').style.display = 'block';
+            const live = await fetchIdeaVerdict(rawIdea);
+
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = originalLabel;
+            }
+
+            // A null answer means the keyword verdict already on screen stands.
+            // Saying "the AI failed" would replace a usable answer with an
+            // apology, which helps nobody decide anything.
+            if (!live) return;
+
+            const palette = VERDICT_COLOURS[live.verdict] || VERDICT_COLOURS['Busy work'];
+            showVerdict(live.verdict, live.explanation, palette.color, palette.bg);
         });
     }
+}
+
+const VERDICT_COLOURS = {
+    'Strategic': { color: '#027A48', bg: '#E1FDF4' },
+    'Worth testing': { color: '#B54708', bg: '#FFFAEB' },
+    'Busy work': { color: '#B42318', bg: '#FEE4E2' }
+};
+
+function showVerdict(score, explanation, color, bg) {
+    const scoreEl = document.getElementById('alignment-score');
+    if (!scoreEl) return;
+    scoreEl.textContent = score;
+    scoreEl.style.color = color;
+    scoreEl.style.backgroundColor = bg;
+    document.getElementById('alignment-explanation').textContent = explanation;
+    document.getElementById('decision-result').style.display = 'block';
+}
+
+// The base-tier filter, unchanged. It matches words rather than reading the
+// plan, which is why any idea containing "sales" comes back Strategic — that is
+// the limitation Pro exists to remove, and the teaser on this card says so
+// rather than the app pretending otherwise.
+function keywordVerdict(rawIdea) {
+    const idea = rawIdea.toLowerCase();
+    const store = getStore();
+
+    const focus = (store.goals?.focus || '').toLowerCase();
+    const priorities = (store.goals?.priorities || []).join(' ').toLowerCase();
+    const strategyMode = (store.profile?.stage || '').toLowerCase(); // Approximating Strategy Mode from stage
+
+    let score = "Busy Work";
+    let color = "#B42318";
+    let bg = "#FEE4E2";
+    let explanation = "This idea represents a tangent, distraction, or simply doesn't share DNA with your current Top 3 priorities. Put it in an idea parking lot for the next quarter.";
+
+    const ideaWords = idea.split(' ').filter(w => w.length > 3);
+    let matchCount = 0;
+
+    ideaWords.forEach(word => {
+        if (focus.includes(word) || priorities.includes(word) || strategyMode.includes(word)) {
+            matchCount++;
+        }
+    });
+
+    // "If the idea directly aligns with your stated 90-day focus or heavily supports your active Strategy Mode"
+    if (matchCount >= 2 || (idea.includes('sales') || idea.includes('revenue') || idea.includes('offer'))) {
+        score = "Strategic";
+        color = "#027A48"; bg = "#E1FDF4";
+        explanation = "This idea directly aligns with your stated 90-day focus and supports your active Strategy Mode. Add it to your weekly plan.";
+    }
+
+    return { score, explanation, color, bg };
 }

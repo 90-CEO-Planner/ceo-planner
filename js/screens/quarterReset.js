@@ -3,6 +3,8 @@ import { renderNav } from '../components/nav.js';
 import { resetQuarter } from '../store.js';
 import { showToast, showConfirm } from '../components/toast.js';
 import { resetWizardProgress } from './wizard.js';
+import { canUseHistory } from '../components/proGate.js';
+import { clearLiveAICache } from '../liveAI.js';
 
 export function renderQuarterReset() {
     window.setScreenModule({ attachEvents: quarterResetAttachEvents });
@@ -47,6 +49,12 @@ export function renderQuarterReset() {
                 <div style="background: var(--color-bg-light); padding: 1.5rem; border-radius: var(--radius-md); border-left: 4px solid var(--color-accent); margin-bottom: 1.5rem;">
                     <h4 style="margin-bottom: 0.5rem; color: var(--color-black);">Ready to Reset?</h4>
                     <p style="font-size: 0.9rem; color: var(--color-text-muted); margin-bottom: 0;">By confirming below, your current 90-day goal, priorities, and weekly plans will be securely archived. Your streaks, wins, and profile information will remain intact.</p>
+                    ${canUseHistory()
+                        // Only shown to accounts that can actually open it. This
+                        // is the moment the word "archived" stops being a
+                        // promise, so it is worth saying where the archive is.
+                        ? `<p style="font-size: 0.9rem; margin: 0.75rem 0 0 0;"><a href="#/history" style="color: var(--color-primary-dark); font-weight: 600;">See your finished quarters</a></p>`
+                        : ''}
                 </div>
 
                 <div class="flex justify-between items-center">
@@ -83,6 +91,10 @@ function quarterResetAttachEvents() {
                 // resetQuarter archives the goals, revenue, leads, metrics and plans
                 // alongside this reflection into store.pastQuarters before clearing.
                 resetQuarter(reflection);
+                // Cached suggestions were written about last quarter's goals and
+                // numbers. The fingerprint would catch most of that on its own,
+                // but a reset is precisely the moment nothing should carry over.
+                clearLiveAICache();
                 // The wizard keeps its step in module state and this route change
                 // does not reload the page, so send it back to step 1 explicitly.
                 resetWizardProgress();

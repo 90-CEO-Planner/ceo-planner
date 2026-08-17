@@ -1,6 +1,7 @@
 // nav.js
 import { getStore } from '../store.js';
-import { isProTrial, trialDaysLeft, anyProFeatureLive, canUseLeadPipeline } from './proGate.js';
+import { isProTrial, trialDaysLeft, anyProFeatureLive, canUseLeadPipeline, clearAiAllowance } from './proGate.js';
+import { clearLiveAICache } from '../liveAI.js';
 
 // Signs the user out properly. The old inline handler cleared localStorage but
 // never called signOut, so the Supabase sb-*-auth-token survived: the next person
@@ -18,6 +19,10 @@ export async function signOutAndClear() {
     localStorage.removeItem('ceo_trial_ends_at');
     localStorage.removeItem('ceo_plan_tier');
     localStorage.removeItem('ceoPlanner_store');
+    // Suggestions written about one business must not greet the next person to
+    // sign in on this browser, and neither must their AI usage count.
+    clearLiveAICache();
+    clearAiAllowance();
     window.location.hash = '#/login';
     window.location.reload();
 }
