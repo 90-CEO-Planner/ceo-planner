@@ -23,6 +23,27 @@ const PRO_ONLY_FEATURES = new Set([
 // Enough for a 12-week plan; anything larger is a runaway, not a request.
 const MAX_OUTPUT_TOKENS = 8000;
 
+// A ceiling on the INPUT, which until now nothing measured.
+//
+// The daily quota counts requests, not tokens, so before this a single call
+// could carry any amount of text and cost whatever it liked while spending one
+// unit of allowance. That was tolerable while every prompt was built fresh by
+// the app and had a natural size. Persistent coach memory changes the shape of
+// the problem: conversations now grow without limit, and a long input is a
+// normal thing rather than a sign something is wrong.
+//
+// The honest client already trims hard — twelve messages, 8000 characters, see
+// recentContext in aiService.js. This is the backstop for a client that does
+// not, set about ten times above the largest legitimate request (the 90-day
+// plan prompt, around 6KB). Nothing the app sends comes close, so a request
+// that trips this is a runaway or a probe.
+//
+// Refused rather than truncated on purpose: silently dropping the front of a
+// prompt would hand back a confident answer to a question the caller did not
+// ask, and cutting a JSON instruction in half is worse than an error.
+const MAX_INPUT_CHARS = 60000;
+const MAX_INPUT_MESSAGES = 60;
+
 Deno.serve(async (req) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
@@ -79,6 +100,22 @@ Deno.serve(async (req) => {
     }
 
     const messages = body.messages;
+
+    // Checked here, alongside the shape check and before consume_ai_quota, so an
+    // oversized body costs the caller nothing but also never reaches OpenAI.
+    const inputChars = messages.reduce(
+      (sum: number, m: { content?: unknown }) => sum + (typeof m?.content === 'string' ? m.content.length : 0),
+      0
+    );
+
+    if (messages.length > MAX_INPUT_MESSAGES || inputChars > MAX_INPUT_CHARS) {
+      console.warn(`Oversized chat request: ${messages.length} messages, ${inputChars} characters.`)
+      return new Response(
+        JSON.stringify({ error: 'That conversation is too long to send in one go. Reset the chat and ask again.' }),
+        { status: 413, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
     const feature = typeof body.feature === 'string' ? body.feature : null;
     const wantsJson = body.json === true;
     const requestedTokens = Number.isFinite(body.maxTokens) ? Math.floor(body.maxTokens) : null;

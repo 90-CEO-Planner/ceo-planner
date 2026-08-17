@@ -150,6 +150,11 @@ const defaultState = {
     planningStreak: 0, // Monday Plan Streak
     draftMondayPlan: null, // AI generated plan waiting for Monday
     notes: [], // Array of { id, text, date }
+    // The coach conversation, kept across page loads on Pro. Display messages
+    // only: the system prompt is rebuilt from live data on every call and is
+    // deliberately never stored, or a returning user would get answers about
+    // last month's numbers.
+    coachChat: [], // Array of { role: 'user'|'assistant', content, at }
     setupChecklist: [], // Array of one-time setup tasks
     redFlags: [], // Array of leading indicators
     monthlyThemes: { month1: '', month2: '', month3: '' }
@@ -179,6 +184,7 @@ export function getStore() {
                 dailyLogSources: parsed.dailyLogSources || {},
                 draftMondayPlan: parsed.draftMondayPlan || null,
                 notes: parsed.notes || [],
+                coachChat: parsed.coachChat || [],
                 setupChecklist: parsed.setupChecklist || [],
                 redFlags: parsed.redFlags || [],
                 monthlyThemes: parsed.monthlyThemes || { month1: '', month2: '', month3: '' }
@@ -1622,6 +1628,66 @@ export function deleteNote(id) {
     saveStore(store);
 }
 
+// --- The coach's memory ------------------------------------------------------
+//
+// The conversation used to live in `window.ceoChatHistory` and died on refresh,
+// so a product sold as a 24/7 board of directors started from nothing several
+// times a day.
+//
+// It lives in the store rather than in its own localStorage key or its own
+// table, which buys cross-device sync for free — the store is already upserted
+// to `user_data` on every save, so signing in on a laptop picks up a thread
+// started on a phone with no new infrastructure at all. The price is that every
+// save now carries the conversation with it, which is what the two caps below
+// are for. A conversation at both ceilings adds roughly 20KB to a payload that
+// already carries a quarter of plans, sales and daily logs.
+//
+// Only what to KEEP is decided here. How much of it gets sent to the model on
+// each turn is a separate, much smaller number — see CHAT_CONTEXT_MESSAGES in
+// aiService.js. Storage is cheap; tokens are not.
+export const COACH_CHAT_MAX_MESSAGES = 40;
+export const COACH_CHAT_MAX_CHARS = 20000;
+
+// Drops the oldest first, so the tail — the part of the conversation you are
+// actually still in — is what survives. Both caps apply: the message count
+// keeps the array sane, and the character budget stops one very long answer
+// from filling the whole allowance on its own.
+export function trimCoachChat(messages) {
+    let trimmed = (messages || [])
+        .filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
+        .map(m => ({ role: m.role, content: m.content, at: m.at || new Date().toISOString() }))
+        .slice(-COACH_CHAT_MAX_MESSAGES);
+
+    let total = trimmed.reduce((sum, m) => sum + m.content.length, 0);
+    while (trimmed.length > 1 && total > COACH_CHAT_MAX_CHARS) {
+        total -= trimmed[0].content.length;
+        trimmed = trimmed.slice(1);
+    }
+
+    return trimmed;
+}
+
+export function getCoachChat() {
+    return getStore().coachChat || [];
+}
+
+// Returns what was actually written, not what was handed in. The caller holds
+// the same array in memory, and if it keeps every message while the store keeps
+// forty, the two drift apart until the next page load quietly shortens the
+// conversation.
+export function saveCoachChat(messages) {
+    const store = getStore();
+    store.coachChat = trimCoachChat(messages);
+    saveStore(store);
+    return store.coachChat;
+}
+
+export function clearCoachChat() {
+    const store = getStore();
+    store.coachChat = [];
+    saveStore(store);
+}
+
 function calculateStreak(reviews) {
     if (!reviews || reviews.length === 0) return 0;
 
@@ -1726,6 +1792,12 @@ export function resetQuarter(reflection = null) {
 
     // Clear daily action history active log
     store.dailyLogs = {};
+
+    // The coach conversation is deliberately NOT cleared. It is a thread with a
+    // person about their business, not a record of one quarter's numbers, and
+    // wiping it on the calendar turning over would reintroduce exactly the
+    // start-from-nothing problem the memory was built to fix. The Reset button
+    // in the chat header is how someone throws it away on purpose.
 
     // The new 90 days start now. Pace maths reads this.
     store.quarterStartDate = new Date().toISOString();

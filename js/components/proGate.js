@@ -68,7 +68,10 @@ export const PRO_FEATURES = {
         blurb: 'Every plan includes the coach. Base is 120 requests a day, Pro is 300. It matters more on Pro than it sounds: Pro also writes your planning suggestions and your Daily 3 with the coach, so the bigger allowance is what keeps that going all day instead of stopping by lunchtime.'
     },
     'coach-memory': {
-        shipped: false,
+        // Shipped 17 Aug 2026. The conversation is kept in the store rather
+        // than in a page-lifetime global, so it survives a refresh and follows
+        // the account to another device.
+        shipped: true,
         title: 'A coach that remembers',
         blurb: 'Right now the conversation resets every time you refresh the page. With Pro your coach keeps the thread, so you can pick up on Thursday where you left off on Monday without explaining yourself again.'
     },
@@ -331,6 +334,16 @@ export function canUseLeadPipeline() {
 // Progress and the link on Quarter Reset.
 export function canUseHistory() {
     return isProUser() && isFeatureLive('history');
+}
+
+// Does this account's coach keep the conversation between page loads?
+//
+// Same single-answer rule as the two above, asked by four places in the chat
+// widget: whether to read the thread back, whether to write it, what the Reset
+// button warns about, and whether the teaser is still there. Chatting itself is
+// on every plan — this gates the remembering, not the coach.
+export function canRememberChats() {
+    return isProUser() && isFeatureLive('coach-memory');
 }
 
 // A small "PRO" chip, for sitting next to a heading or a label.

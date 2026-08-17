@@ -113,6 +113,13 @@ The app functions as your objective Board of Directors, providing dynamic insigh
 - **AI Executive Report:** From the Revenue tab, click **AI Executive Report**. The system will scan your entire pipeline, calculate your conversion bottlenecks, and generate a brutally honest strategic briefing telling you exactly what to fix in your funnel. You can instantly download this report as a text file.
 - **Notepad / Chat:** Visit the Notepad tab or use the floating Executive AI Coach bubble to chat directly with your Executive AI Coach regarding your business bottlenecks.
 
+**Does your coach remember the conversation?**
+On the base plan the chat lasts as long as the page does. Refresh, close the tab or move to another device and it starts again from the beginning.
+
+On Pro the conversation is kept. Come back on Thursday and Monday's thread is still there, with a date line marking where each day's messages start, so you can pick up without explaining yourself again. It follows your account rather than your browser, so a thread started on your phone is waiting on your laptop. The bin icon in the chat header deletes it — permanently, and everywhere you are signed in.
+
+Two things are worth knowing about how the memory works. Your coach is re-read your live business context on every single message, so a conversation started last week is still answered against this week's numbers, not the ones that were on screen when you started it. And it carries roughly the last dozen messages into each reply rather than the entire history, which keeps a long-running thread from getting slower and more expensive with every question.
+
 **Where the suggestions come from:**
 Four places in the app suggest things for you to do: the AI Planning Assistant on the Weekly Plan page, the breakdown of your Daily 3 on the dashboard, the small nudges beside your Revenue and Pipeline figures, and the CEO vs Busy Work filter in the Notepad.
 

@@ -1,6 +1,7 @@
 // chatWidget.js
 import { showConfirm } from './toast.js';
-import { isProUser, isFeatureLive } from './proGate.js';
+import { canRememberChats } from './proGate.js';
+import { getCoachChat, saveCoachChat, clearCoachChat, getLocalDateString, parseDateInput } from '../store.js';
 
 function renderWidgetMessage(role, content) {
     const isAi = role === 'assistant';
@@ -17,6 +18,47 @@ function renderWidgetMessage(role, content) {
             ${formattedContent}
         </div>
     `;
+}
+
+// A quiet date marker between the messages of one day and the next.
+//
+// This is the whole visible surface of the memory feature. Without it, a
+// remembered conversation looks identical to one you just had, and a reply
+// referring to something "we said earlier" reads as the coach hallucinating
+// rather than as it doing its job.
+function renderDayDivider(day) {
+    const label = day === getLocalDateString()
+        ? 'Today'
+        : parseDateInput(day).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+
+    return `
+        <div style="display: flex; align-items: center; gap: 0.5rem; margin: 0.25rem 0; color: var(--color-text-muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em;">
+            <span style="flex: 1; height: 1px; background: var(--color-border);"></span>
+            <span>${label}</span>
+            <span style="flex: 1; height: 1px; background: var(--color-border);"></span>
+        </div>
+    `;
+}
+
+// The stored conversation, laid out with a divider wherever the day changes.
+//
+// Dividers are skipped entirely when everything on screen happened today: a
+// single "Today" line above a conversation you are in the middle of explains
+// nothing and just takes up room in a 350px panel.
+function renderConversation(history) {
+    const days = history.map(m => (m.at ? getLocalDateString(new Date(m.at)) : null));
+    const distinct = new Set(days.filter(Boolean));
+    const showDividers = distinct.size > 1 || (distinct.size === 1 && !distinct.has(getLocalDateString()));
+
+    let lastDay = null;
+    return history.map((m, i) => {
+        let html = '';
+        if (showDividers && days[i] && days[i] !== lastDay) {
+            html += renderDayDivider(days[i]);
+            lastDay = days[i];
+        }
+        return html + renderWidgetMessage(m.role, m.content);
+    }).join('');
 }
 
 function initChatWidget() {
@@ -66,7 +108,7 @@ function initChatWidget() {
             <div style="padding: 0.75rem 1rem; border-top: 1px solid var(--color-border); background: #F8FAFC;">
                 <!-- The panel is narrow, so this is the compact one-line variant of
                      the teaser rather than the full strip used on the wide screens. -->
-                ${(isProUser() && isFeatureLive('coach-memory')) ? '' : `
+                ${canRememberChats() ? '' : `
                 <button type="button" class="pro-teaser pro-teaser-compact" data-pro-feature="coach-memory">
                     <svg class="pro-teaser-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
                     <span class="pro-teaser-hint">Pick up where you left off. Pro remembers your chats.</span>
@@ -128,8 +170,31 @@ function initChatWidget() {
         });
     }
 
+    // Write the thread back to the store, and take back what was actually
+    // written — saveCoachChat trims to its caps, and if the copy in memory kept
+    // growing past them the two would disagree until the next page load
+    // silently shortened the conversation.
+    //
+    // Called after the answer lands rather than after the question is sent. A
+    // stored user message with no reply comes back on the next load looking
+    // like a question the coach ignored.
+    const rememberChat = () => {
+        if (!canRememberChats()) return;
+        window.ceoChatHistory = saveCoachChat(window.ceoChatHistory);
+    };
+
     // Load History Function
     const loadMemory = () => {
+        // Pro reads the thread back from the store; every other plan keeps
+        // whatever this tab has said since it was opened, and no more.
+        //
+        // Done here rather than at init because the plan tier is resolved
+        // asynchronously on load, and opening the panel is the first moment the
+        // answer is actually needed.
+        if (canRememberChats() && (!window.ceoChatHistory || window.ceoChatHistory.length === 0)) {
+            window.ceoChatHistory = getCoachChat().map(m => ({ ...m }));
+        }
+
         if (!window.ceoChatHistory || window.ceoChatHistory.length === 0) {
             window.ceoChatHistory = [];
             const greeting = `Hello! I am your Executive AI Coach. I have your 90-day goals, active bottleneck, and recent task history fully loaded in my context. How can I accelerate your productivity today?`;
@@ -154,7 +219,7 @@ function initChatWidget() {
         } else {
             // Render from history, removing any old structural HTML
             const displayHistory = window.ceoChatHistory.filter(m => m.role !== 'system');
-            messagesEl.innerHTML = displayHistory.map(m => renderWidgetMessage(m.role, m.content)).join('');
+            messagesEl.innerHTML = renderConversation(displayHistory);
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
     };
@@ -179,12 +244,25 @@ function initChatWidget() {
     });
 
     // Clear Chat
+    //
+    // The warning changes with the plan, because the button now does two
+    // different things. On the base plan it drops a conversation that was going
+    // to end at the next refresh anyway. On Pro it deletes something that was
+    // being kept on purpose, everywhere the account is signed in — and telling
+    // someone that in the same mild words would be the app understating what it
+    // is about to do.
     clearBtn.addEventListener('click', async () => {
-        const ok = await showConfirm('This clears the conversation you have open with your coach.', {
+        const remembers = canRememberChats();
+        const message = remembers
+            ? 'This deletes the whole conversation for good, on this device and anywhere else you sign in. Your coach will start fresh.'
+            : 'This clears the conversation you have open with your coach.';
+
+        const ok = await showConfirm(message, {
             title: 'Reset chat memory?', confirmText: 'Reset', danger: true
         });
         if (!ok) return;
         window.ceoChatHistory = [];
+        if (remembers) clearCoachChat();
         loadMemory();
     });
 
@@ -194,7 +272,9 @@ function initChatWidget() {
         const text = input.value.trim();
         if (!text) return;
 
-        window.ceoChatHistory.push({ role: 'user', content: text });
+        // `at` is what the date dividers read. It is stripped before the
+        // messages are sent to the model — see recentContext in aiService.js.
+        window.ceoChatHistory.push({ role: 'user', content: text, at: new Date().toISOString() });
         messagesEl.innerHTML += renderWidgetMessage('user', text);
         input.value = '';
         input.disabled = true;
@@ -213,8 +293,9 @@ function initChatWidget() {
             const aiResponse = await generateAIResponse(window.ceoChatHistory);
             document.getElementById(loadingId).remove();
             
-            window.ceoChatHistory.push({ role: 'assistant', content: aiResponse });
+            window.ceoChatHistory.push({ role: 'assistant', content: aiResponse, at: new Date().toISOString() });
             messagesEl.innerHTML += renderWidgetMessage('assistant', aiResponse);
+            rememberChat();
         } catch (err) {
             document.getElementById(loadingId).remove();
             messagesEl.innerHTML += renderWidgetMessage('assistant', `Error: ${err.message}`);

@@ -134,11 +134,51 @@ ${USER_GUIDE_TEXT}`;
     return prompt;
 }
 
+// How much of the conversation goes back to the model on each turn.
+//
+// Deliberately much smaller than what the store keeps (COACH_CHAT_MAX_MESSAGES
+// is 40). Once the thread survives refreshes it only ever grows, and sending
+// all of it would make every message cost more than the one before it — with
+// nothing noticing, because the daily allowance counts requests, not tokens.
+//
+// Twelve messages is six exchanges: enough that the coach is still talking
+// about the thing you raised earlier in the session, without carrying a
+// fortnight of conversation into a question about today.
+const CHAT_CONTEXT_MESSAGES = 12;
+const CHAT_CONTEXT_CHARS = 8000;
+
+// The tail of the conversation, trimmed to fit and stripped back to the two
+// fields the API accepts. `at` is ours, for the date dividers in the widget,
+// and OpenAI rejects the request outright if it is left on the message.
+//
+// Trimming from the oldest end is what guarantees the newest message — the
+// question being asked right now — is always in what gets sent.
+function recentContext(messageHistory) {
+    // Named `recent`, not `window`: the bundle puts every file in one global
+    // scope, and a local called `window` inside a function that later needs
+    // window.invokeChat is a trap waiting to be sprung.
+    let recent = (messageHistory || [])
+        .filter(m => m && m.role !== 'system' && typeof m.content === 'string')
+        .slice(-CHAT_CONTEXT_MESSAGES)
+        .map(m => ({ role: m.role, content: m.content }));
+
+    let total = recent.reduce((sum, m) => sum + m.content.length, 0);
+    while (recent.length > 1 && total > CHAT_CONTEXT_CHARS) {
+        total -= recent[0].content.length;
+        recent = recent.slice(1);
+    }
+
+    return recent;
+}
+
 export async function generateAIResponse(messageHistory) {
-    // Inject the dynamic system prompt as the absolute baseline truth
+    // Inject the dynamic system prompt as the absolute baseline truth. It is
+    // rebuilt from the store every time rather than remembered with the rest of
+    // the conversation, so a thread started last week is answered against this
+    // week's numbers.
     const messages = [
         { role: 'system', content: buildSystemPrompt() },
-        ...messageHistory
+        ...recentContext(messageHistory)
     ];
 
     try {

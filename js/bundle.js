@@ -114,6 +114,13 @@ The app functions as your objective Board of Directors, providing dynamic insigh
 - **AI Executive Report:** From the Revenue tab, click **AI Executive Report**. The system will scan your entire pipeline, calculate your conversion bottlenecks, and generate a brutally honest strategic briefing telling you exactly what to fix in your funnel. You can instantly download this report as a text file.
 - **Notepad / Chat:** Visit the Notepad tab or use the floating Executive AI Coach bubble to chat directly with your Executive AI Coach regarding your business bottlenecks.
 
+**Does your coach remember the conversation?**
+On the base plan the chat lasts as long as the page does. Refresh, close the tab or move to another device and it starts again from the beginning.
+
+On Pro the conversation is kept. Come back on Thursday and Monday's thread is still there, with a date line marking where each day's messages start, so you can pick up without explaining yourself again. It follows your account rather than your browser, so a thread started on your phone is waiting on your laptop. The bin icon in the chat header deletes it — permanently, and everywhere you are signed in.
+
+Two things are worth knowing about how the memory works. Your coach is re-read your live business context on every single message, so a conversation started last week is still answered against this week's numbers, not the ones that were on screen when you started it. And it carries roughly the last dozen messages into each reply rather than the entire history, which keeps a long-running thread from getting slower and more expensive with every question.
+
 **Where the suggestions come from:**
 Four places in the app suggest things for you to do: the AI Planning Assistant on the Weekly Plan page, the breakdown of your Daily 3 on the dashboard, the small nudges beside your Revenue and Pipeline figures, and the CEO vs Busy Work filter in the Notepad.
 
@@ -718,6 +725,11 @@ const defaultState = {
     planningStreak: 0, // Monday Plan Streak
     draftMondayPlan: null, // AI generated plan waiting for Monday
     notes: [], // Array of { id, text, date }
+    // The coach conversation, kept across page loads on Pro. Display messages
+    // only: the system prompt is rebuilt from live data on every call and is
+    // deliberately never stored, or a returning user would get answers about
+    // last month's numbers.
+    coachChat: [], // Array of { role: 'user'|'assistant', content, at }
     setupChecklist: [], // Array of one-time setup tasks
     redFlags: [], // Array of leading indicators
     monthlyThemes: { month1: '', month2: '', month3: '' }
@@ -747,6 +759,7 @@ function getStore() {
                 dailyLogSources: parsed.dailyLogSources || {},
                 draftMondayPlan: parsed.draftMondayPlan || null,
                 notes: parsed.notes || [],
+                coachChat: parsed.coachChat || [],
                 setupChecklist: parsed.setupChecklist || [],
                 redFlags: parsed.redFlags || [],
                 monthlyThemes: parsed.monthlyThemes || { month1: '', month2: '', month3: '' }
@@ -2190,6 +2203,66 @@ function deleteNote(id) {
     saveStore(store);
 }
 
+// --- The coach's memory ------------------------------------------------------
+//
+// The conversation used to live in `window.ceoChatHistory` and died on refresh,
+// so a product sold as a 24/7 board of directors started from nothing several
+// times a day.
+//
+// It lives in the store rather than in its own localStorage key or its own
+// table, which buys cross-device sync for free — the store is already upserted
+// to `user_data` on every save, so signing in on a laptop picks up a thread
+// started on a phone with no new infrastructure at all. The price is that every
+// save now carries the conversation with it, which is what the two caps below
+// are for. A conversation at both ceilings adds roughly 20KB to a payload that
+// already carries a quarter of plans, sales and daily logs.
+//
+// Only what to KEEP is decided here. How much of it gets sent to the model on
+// each turn is a separate, much smaller number — see CHAT_CONTEXT_MESSAGES in
+// aiService.js. Storage is cheap; tokens are not.
+const COACH_CHAT_MAX_MESSAGES = 40;
+const COACH_CHAT_MAX_CHARS = 20000;
+
+// Drops the oldest first, so the tail — the part of the conversation you are
+// actually still in — is what survives. Both caps apply: the message count
+// keeps the array sane, and the character budget stops one very long answer
+// from filling the whole allowance on its own.
+function trimCoachChat(messages) {
+    let trimmed = (messages || [])
+        .filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
+        .map(m => ({ role: m.role, content: m.content, at: m.at || new Date().toISOString() }))
+        .slice(-COACH_CHAT_MAX_MESSAGES);
+
+    let total = trimmed.reduce((sum, m) => sum + m.content.length, 0);
+    while (trimmed.length > 1 && total > COACH_CHAT_MAX_CHARS) {
+        total -= trimmed[0].content.length;
+        trimmed = trimmed.slice(1);
+    }
+
+    return trimmed;
+}
+
+function getCoachChat() {
+    return getStore().coachChat || [];
+}
+
+// Returns what was actually written, not what was handed in. The caller holds
+// the same array in memory, and if it keeps every message while the store keeps
+// forty, the two drift apart until the next page load quietly shortens the
+// conversation.
+function saveCoachChat(messages) {
+    const store = getStore();
+    store.coachChat = trimCoachChat(messages);
+    saveStore(store);
+    return store.coachChat;
+}
+
+function clearCoachChat() {
+    const store = getStore();
+    store.coachChat = [];
+    saveStore(store);
+}
+
 function calculateStreak(reviews) {
     if (!reviews || reviews.length === 0) return 0;
 
@@ -2294,6 +2367,12 @@ function resetQuarter(reflection = null) {
 
     // Clear daily action history active log
     store.dailyLogs = {};
+
+    // The coach conversation is deliberately NOT cleared. It is a thread with a
+    // person about their business, not a record of one quarter's numbers, and
+    // wiping it on the calendar turning over would reintroduce exactly the
+    // start-from-nothing problem the memory was built to fix. The Reset button
+    // in the chat header is how someone throws it away on purpose.
 
     // The new 90 days start now. Pace maths reads this.
     store.quarterStartDate = new Date().toISOString();
@@ -2883,11 +2962,51 @@ ${USER_GUIDE_TEXT}`;
     return prompt;
 }
 
+// How much of the conversation goes back to the model on each turn.
+//
+// Deliberately much smaller than what the store keeps (COACH_CHAT_MAX_MESSAGES
+// is 40). Once the thread survives refreshes it only ever grows, and sending
+// all of it would make every message cost more than the one before it — with
+// nothing noticing, because the daily allowance counts requests, not tokens.
+//
+// Twelve messages is six exchanges: enough that the coach is still talking
+// about the thing you raised earlier in the session, without carrying a
+// fortnight of conversation into a question about today.
+const CHAT_CONTEXT_MESSAGES = 12;
+const CHAT_CONTEXT_CHARS = 8000;
+
+// The tail of the conversation, trimmed to fit and stripped back to the two
+// fields the API accepts. `at` is ours, for the date dividers in the widget,
+// and OpenAI rejects the request outright if it is left on the message.
+//
+// Trimming from the oldest end is what guarantees the newest message — the
+// question being asked right now — is always in what gets sent.
+function recentContext(messageHistory) {
+    // Named `recent`, not `window`: the bundle puts every file in one global
+    // scope, and a local called `window` inside a function that later needs
+    // window.invokeChat is a trap waiting to be sprung.
+    let recent = (messageHistory || [])
+        .filter(m => m && m.role !== 'system' && typeof m.content === 'string')
+        .slice(-CHAT_CONTEXT_MESSAGES)
+        .map(m => ({ role: m.role, content: m.content }));
+
+    let total = recent.reduce((sum, m) => sum + m.content.length, 0);
+    while (recent.length > 1 && total > CHAT_CONTEXT_CHARS) {
+        total -= recent[0].content.length;
+        recent = recent.slice(1);
+    }
+
+    return recent;
+}
+
 async function generateAIResponse(messageHistory) {
-    // Inject the dynamic system prompt as the absolute baseline truth
+    // Inject the dynamic system prompt as the absolute baseline truth. It is
+    // rebuilt from the store every time rather than remembered with the rest of
+    // the conversation, so a thread started last week is answered against this
+    // week's numbers.
     const messages = [
         { role: 'system', content: buildSystemPrompt() },
-        ...messageHistory
+        ...recentContext(messageHistory)
     ];
 
     try {
@@ -3146,7 +3265,10 @@ const PRO_FEATURES = {
         blurb: 'Every plan includes the coach. Base is 120 requests a day, Pro is 300. It matters more on Pro than it sounds: Pro also writes your planning suggestions and your Daily 3 with the coach, so the bigger allowance is what keeps that going all day instead of stopping by lunchtime.'
     },
     'coach-memory': {
-        shipped: false,
+        // Shipped 17 Aug 2026. The conversation is kept in the store rather
+        // than in a page-lifetime global, so it survives a refresh and follows
+        // the account to another device.
+        shipped: true,
         title: 'A coach that remembers',
         blurb: 'Right now the conversation resets every time you refresh the page. With Pro your coach keeps the thread, so you can pick up on Thursday where you left off on Monday without explaining yourself again.'
     },
@@ -3409,6 +3531,16 @@ function canUseLeadPipeline() {
 // Progress and the link on Quarter Reset.
 function canUseHistory() {
     return isProUser() && isFeatureLive('history');
+}
+
+// Does this account's coach keep the conversation between page loads?
+//
+// Same single-answer rule as the two above, asked by four places in the chat
+// widget: whether to read the thread back, whether to write it, what the Reset
+// button warns about, and whether the teaser is still there. Chatting itself is
+// on every plan — this gates the remembering, not the coach.
+function canRememberChats() {
+    return isProUser() && isFeatureLive('coach-memory');
 }
 
 // A small "PRO" chip, for sitting next to a heading or a label.
@@ -4551,6 +4683,47 @@ function renderWidgetMessage(role, content) {
     `;
 }
 
+// A quiet date marker between the messages of one day and the next.
+//
+// This is the whole visible surface of the memory feature. Without it, a
+// remembered conversation looks identical to one you just had, and a reply
+// referring to something "we said earlier" reads as the coach hallucinating
+// rather than as it doing its job.
+function renderDayDivider(day) {
+    const label = day === getLocalDateString()
+        ? 'Today'
+        : parseDateInput(day).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+
+    return `
+        <div style="display: flex; align-items: center; gap: 0.5rem; margin: 0.25rem 0; color: var(--color-text-muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em;">
+            <span style="flex: 1; height: 1px; background: var(--color-border);"></span>
+            <span>${label}</span>
+            <span style="flex: 1; height: 1px; background: var(--color-border);"></span>
+        </div>
+    `;
+}
+
+// The stored conversation, laid out with a divider wherever the day changes.
+//
+// Dividers are skipped entirely when everything on screen happened today: a
+// single "Today" line above a conversation you are in the middle of explains
+// nothing and just takes up room in a 350px panel.
+function renderConversation(history) {
+    const days = history.map(m => (m.at ? getLocalDateString(new Date(m.at)) : null));
+    const distinct = new Set(days.filter(Boolean));
+    const showDividers = distinct.size > 1 || (distinct.size === 1 && !distinct.has(getLocalDateString()));
+
+    let lastDay = null;
+    return history.map((m, i) => {
+        let html = '';
+        if (showDividers && days[i] && days[i] !== lastDay) {
+            html += renderDayDivider(days[i]);
+            lastDay = days[i];
+        }
+        return html + renderWidgetMessage(m.role, m.content);
+    }).join('');
+}
+
 function initChatWidget() {
     // Inject Widget HTML into body
     const widgetContainer = document.createElement('div');
@@ -4598,7 +4771,7 @@ function initChatWidget() {
             <div style="padding: 0.75rem 1rem; border-top: 1px solid var(--color-border); background: #F8FAFC;">
                 <!-- The panel is narrow, so this is the compact one-line variant of
                      the teaser rather than the full strip used on the wide screens. -->
-                ${(isProUser() && isFeatureLive('coach-memory')) ? '' : `
+                ${canRememberChats() ? '' : `
                 <button type="button" class="pro-teaser pro-teaser-compact" data-pro-feature="coach-memory">
                     <svg class="pro-teaser-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
                     <span class="pro-teaser-hint">Pick up where you left off. Pro remembers your chats.</span>
@@ -4660,8 +4833,31 @@ function initChatWidget() {
         });
     }
 
+    // Write the thread back to the store, and take back what was actually
+    // written — saveCoachChat trims to its caps, and if the copy in memory kept
+    // growing past them the two would disagree until the next page load
+    // silently shortened the conversation.
+    //
+    // Called after the answer lands rather than after the question is sent. A
+    // stored user message with no reply comes back on the next load looking
+    // like a question the coach ignored.
+    const rememberChat = () => {
+        if (!canRememberChats()) return;
+        window.ceoChatHistory = saveCoachChat(window.ceoChatHistory);
+    };
+
     // Load History Function
     const loadMemory = () => {
+        // Pro reads the thread back from the store; every other plan keeps
+        // whatever this tab has said since it was opened, and no more.
+        //
+        // Done here rather than at init because the plan tier is resolved
+        // asynchronously on load, and opening the panel is the first moment the
+        // answer is actually needed.
+        if (canRememberChats() && (!window.ceoChatHistory || window.ceoChatHistory.length === 0)) {
+            window.ceoChatHistory = getCoachChat().map(m => ({ ...m }));
+        }
+
         if (!window.ceoChatHistory || window.ceoChatHistory.length === 0) {
             window.ceoChatHistory = [];
             const greeting = `Hello! I am your Executive AI Coach. I have your 90-day goals, active bottleneck, and recent task history fully loaded in my context. How can I accelerate your productivity today?`;
@@ -4686,7 +4882,7 @@ function initChatWidget() {
         } else {
             // Render from history, removing any old structural HTML
             const displayHistory = window.ceoChatHistory.filter(m => m.role !== 'system');
-            messagesEl.innerHTML = displayHistory.map(m => renderWidgetMessage(m.role, m.content)).join('');
+            messagesEl.innerHTML = renderConversation(displayHistory);
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
     };
@@ -4711,12 +4907,25 @@ function initChatWidget() {
     });
 
     // Clear Chat
+    //
+    // The warning changes with the plan, because the button now does two
+    // different things. On the base plan it drops a conversation that was going
+    // to end at the next refresh anyway. On Pro it deletes something that was
+    // being kept on purpose, everywhere the account is signed in — and telling
+    // someone that in the same mild words would be the app understating what it
+    // is about to do.
     clearBtn.addEventListener('click', async () => {
-        const ok = await showConfirm('This clears the conversation you have open with your coach.', {
+        const remembers = canRememberChats();
+        const message = remembers
+            ? 'This deletes the whole conversation for good, on this device and anywhere else you sign in. Your coach will start fresh.'
+            : 'This clears the conversation you have open with your coach.';
+
+        const ok = await showConfirm(message, {
             title: 'Reset chat memory?', confirmText: 'Reset', danger: true
         });
         if (!ok) return;
         window.ceoChatHistory = [];
+        if (remembers) clearCoachChat();
         loadMemory();
     });
 
@@ -4726,7 +4935,9 @@ function initChatWidget() {
         const text = input.value.trim();
         if (!text) return;
 
-        window.ceoChatHistory.push({ role: 'user', content: text });
+        // `at` is what the date dividers read. It is stripped before the
+        // messages are sent to the model — see recentContext in aiService.js.
+        window.ceoChatHistory.push({ role: 'user', content: text, at: new Date().toISOString() });
         messagesEl.innerHTML += renderWidgetMessage('user', text);
         input.value = '';
         input.disabled = true;
@@ -4745,8 +4956,9 @@ function initChatWidget() {
             const aiResponse = await generateAIResponse(window.ceoChatHistory);
             document.getElementById(loadingId).remove();
             
-            window.ceoChatHistory.push({ role: 'assistant', content: aiResponse });
+            window.ceoChatHistory.push({ role: 'assistant', content: aiResponse, at: new Date().toISOString() });
             messagesEl.innerHTML += renderWidgetMessage('assistant', aiResponse);
+            rememberChat();
         } catch (err) {
             document.getElementById(loadingId).remove();
             messagesEl.innerHTML += renderWidgetMessage('assistant', `Error: ${err.message}`);
