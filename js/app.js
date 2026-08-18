@@ -1,5 +1,5 @@
 // app.js
-import { getStore, seedMockData, getLocalDateString, REMINDER_WEEKLY, REMINDER_DAILY, REMINDER_FRIDAY, REMINDER_SNAPSHOT } from './store.js';
+import { getStore, seedMockData, getLocalDateString, refreshDigestSnapshot, REMINDER_WEEKLY, REMINDER_DAILY, REMINDER_FRIDAY, REMINDER_SNAPSHOT } from './store.js';
 import { signOutAndClear } from './components/nav.js';
 import { initProGate } from './components/proGate.js';
 import { applyStripePreviewParam, autoSyncStripeIfDue } from './stripeImport.js';
@@ -361,6 +361,18 @@ window.addEventListener('load', () => {
     // without it, sales only arrived when someone remembered to press a button.
     // Fire and forget — it must never delay or interrupt the app starting.
     autoSyncStripeIfDue();
+
+    // Leave the Monday email's numbers ready to send. The cron that mails the
+    // weekly digest cannot run getRevenueInsights() -- it lives in the browser --
+    // so the app writes a finished snapshot here instead and the edge function
+    // only forwards it. Self-limiting to once an hour, because saveStore()
+    // upserts the whole store to Supabase on every write.
+    //
+    // Runs for every plan, not just Pro: the server decides who is actually
+    // sent one, and an account that upgrades then already has a snapshot
+    // waiting rather than missing its first Monday.
+    refreshDigestSnapshot();
+
     // And re-check hourly, so a long-open tab doesn't outlive the trial
     setInterval(revalidateAccess, 3600000);
     // ...plus whenever they come back to the tab, which is how the app notices a

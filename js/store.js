@@ -161,7 +161,10 @@ const defaultState = {
     coachChat: [], // Array of { role: 'user'|'assistant', content, at }
     setupChecklist: [], // Array of one-time setup tasks
     redFlags: [], // Array of leading indicators
-    monthlyThemes: { month1: '', month2: '', month3: '' }
+    monthlyThemes: { month1: '', month2: '', month3: '' },
+    // What the Monday email would say, rebuilt at most hourly while the app
+    // is open. The cron cannot run the app's maths, so the app leaves it ready.
+    digestSnapshot: null
 };
 
 export function getStore() {
@@ -191,7 +194,8 @@ export function getStore() {
                 coachChat: parsed.coachChat || [],
                 setupChecklist: parsed.setupChecklist || [],
                 redFlags: parsed.redFlags || [],
-                monthlyThemes: parsed.monthlyThemes || { month1: '', month2: '', month3: '' }
+                monthlyThemes: parsed.monthlyThemes || { month1: '', month2: '', month3: '' },
+                digestSnapshot: parsed.digestSnapshot || null
             };
             
             // Retroactively assign IDs to legacy revenue entries so they can be securely deleted
@@ -932,6 +936,147 @@ export function getChannelFunnel() {
         if (b.key === '__unattributed__') return -1;
         return b.revenue - a.revenue;
     });
+}
+
+// ---------------------------------------------------------------------------
+// Which plan is "this week's"? (Pro item 7)
+// ---------------------------------------------------------------------------
+//
+// This block was copy-pasted in three places before it lived here: twice in
+// dashboard.js and once in weeklyPlanner.js, byte for byte. A fourth copy was
+// about to be written for the weekly digest, so it became one function instead.
+//
+// The rule: the newest plan that is either hand-written or an APPLIED generated
+// one, discarded if it is more than 7 days old. Unapplied generated drafts are
+// deliberately ignored, because a roadmap week nobody has accepted is not what
+// the user is actually working on.
+//
+// Callers keep their own fallback for the null case, because they disagree
+// about it on purpose. The planner pre-fills from the next unapplied week; the
+// digest wants the roadmap week matching TODAY (see buildDigestSnapshot).
+export function getActivePlan(store = getStore()) {
+    const valid = (store.weeklyPlans || []).filter(p => !p.generated || p.applied);
+    valid.sort((a, b) => new Date(a.date) - new Date(b.date));
+    const newest = valid.length > 0 ? valid[valid.length - 1] : null;
+    if (!newest) return null;
+
+    const diffDays = Math.ceil(Math.abs(new Date() - new Date(newest.date)) / (1000 * 60 * 60 * 24));
+    return diffDays > 7 ? null : newest;
+}
+
+// ---------------------------------------------------------------------------
+// The weekly digest snapshot (Pro item 7)
+// ---------------------------------------------------------------------------
+//
+// What the Monday email says, worked out HERE and stored as finished strings.
+//
+// The edge function that sends the email does no maths and no formatting. It
+// forwards these values to Loops exactly as written. That is the whole design:
+// every figure comes from getRevenueInsights(), every currency string from
+// formatAmount() and settings.currency, so the email can never disagree with
+// the screen. If you find yourself calculating something in the edge function,
+// it belongs here instead.
+//
+// The PLAN half comes from the 90-day roadmap when the user has not written
+// their own week, which means it does not go stale: week 7's actions are week
+// 7's actions however long ago they last opened the app. Only the numbers
+// carry an "as of" caveat.
+
+// Rotated on the week number rather than at random, so what was sent to a given
+// person in a given week can always be worked out afterwards. Four against a
+// twelve week quarter means each lands exactly three times, never twice running.
+const DIGEST_NUDGES = [
+    'If the week goes sideways and only one of those gets done, make it the first one. That is the whole reason it is first.',
+    'Three is the number on purpose. A list of ten is a wish, a list of three is a week.',
+    'If Friday arrives and only the first one is done, that was still a good week.',
+    'Nothing on that list needs to be perfect. It needs to be done.'
+];
+
+// Deliberately NOT rotated. It is a factual caveat, and varying a caveat's
+// wording makes it read as copywriting rather than as fact.
+const DIGEST_FRESHNESS =
+    'Your plan above is current. The figures are only as recent as your last visit.';
+
+// Blank slots are shown, not hidden. Loops cannot drop a section, and in a
+// re-engagement email this reads as a prompt rather than as a failure.
+const DIGEST_GAP = 'Not set yet. Open the planner and fill this one in.';
+
+function digestText(value) {
+    const text = typeof value === 'string' ? value.trim() : '';
+    return text === '' ? DIGEST_GAP : text;
+}
+
+export function buildDigestSnapshot(store = getStore()) {
+    const currency = store.settings?.currency || '$';
+    const weekNumber = getWeeksElapsed(store) || 1;
+
+    // A week the user wrote or applied beats one generated for them.
+    let plan = getActivePlan(store);
+    let planIntro = 'Here is the week you set for yourself.';
+
+    if (!plan) {
+        // The roadmap week for where they are RIGHT NOW, by date. Deliberately
+        // not "the next unapplied week": somebody who skipped applying weeks 2
+        // to 6 would be sent week 2's actions while living in week 7.
+        plan = (store.weeklyPlans || []).find(p => p.generated && p.weekNumber === weekNumber) || null;
+        planIntro = 'Here is week ' + weekNumber + ' of your 90 day plan.';
+    }
+
+    const actions = (plan && Array.isArray(plan.topActions)) ? plan.topActions : [];
+    const insights = getRevenueInsights();
+    const money = (value) => currency + formatAmount(value);
+
+    // "Not enough data" is the one momentum value that does not read as a
+    // sentence, so it gets its own wording rather than being forced into one.
+    const momentumLine = (!insights.momentum || insights.momentum === 'Not enough data')
+        ? 'There is not enough logged yet to call your pace either way.'
+        : 'Momentum is ' + insights.momentum.replace(' \u{1F389}', '').toLowerCase() + '.';
+
+    return {
+        // The server refuses to send when this is false, so it has to mean
+        // "there is a real plan here", not merely "a plan object exists".
+        hasPlan: !!plan,
+        takenAt: new Date().toISOString(),
+        weekNumber,
+
+        planIntro,
+        winCondition: digestText(plan?.winCondition),
+        action1: digestText(actions[0]),
+        action2: digestText(actions[1]),
+        action3: digestText(actions[2]),
+        revenueAction: digestText(plan?.revenueAction),
+        visibilityAction: digestText(plan?.visibilityAction),
+        followUpAction: digestText(plan?.followUps),
+        priorityNudge: DIGEST_NUDGES[weekNumber % DIGEST_NUDGES.length],
+
+        revenueSoFar: money(insights.totalRevenue),
+        quarterGoal: money(insights.goal),
+        quarterProgress: Math.round(insights.progressPercent) + '%',
+        momentumLine,
+        freshnessNote: DIGEST_FRESHNESS,
+
+        appUrl: 'https://app.thewomensentrepreneurialnetwork.com/#/weekly'
+    };
+}
+
+// Refresh the stored snapshot, at most once an hour.
+//
+// The rate limit is the point: saveStore() upserts the WHOLE store to Supabase
+// on every call, so rebuilding this on each render would turn one page visit
+// into a stream of writes. An hour is far fresher than a weekly email needs.
+export function refreshDigestSnapshot() {
+    const store = getStore();
+    const previous = store.digestSnapshot;
+
+    if (previous && previous.takenAt) {
+        const age = Date.now() - new Date(previous.takenAt).getTime();
+        if (Number.isFinite(age) && age >= 0 && age < 60 * 60 * 1000) return previous;
+    }
+
+    const snapshot = buildDigestSnapshot(store);
+    store.digestSnapshot = snapshot;
+    saveStore(store);
+    return snapshot;
 }
 
 export function getRevenueInsights() {

@@ -373,6 +373,16 @@ export function canExportPdf() {
     return isProUser() && isFeatureLive('pdf-export');
 }
 
+// Does this account get the Monday email? Same single-answer rule as the five
+// above, asked by the Settings switch and by the copy beside it.
+//
+// Note the SERVER does not ask this function -- get_digest_recipients() decides
+// who is actually sent one, using is_pro_account() plus the same
+// settings.emailDigest flag this switch writes. This is the presentation half.
+export function canUseEmailDigest() {
+    return isProUser() && isFeatureLive('email-digest');
+}
+
 // How many 1-Tap quick offers the base plan holds. Three is what it has always
 // been — the cap at js/store.js was commented as a base-tier limit long before
 // there was a Pro tier to lift it for.

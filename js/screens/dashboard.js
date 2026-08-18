@@ -1,4 +1,4 @@
-import { getStore, getRevenueInsights, addRevenueEntry, updateDailyLog, addLeadEntry, applyGeneratedPlan, updateProfile, getLocalDateString, parseDateInput, getWeekStart, getWeeksElapsed, planSourceKey } from '../store.js';
+import { getStore, getRevenueInsights, addRevenueEntry, updateDailyLog, addLeadEntry, applyGeneratedPlan, updateProfile, getLocalDateString, parseDateInput, getWeekStart, getWeeksElapsed, planSourceKey, getActivePlan } from '../store.js';
 import { renderNav } from '../components/nav.js';
 import { renderTooltip } from '../components/tooltip.js';
 import { generate90DayActionPlan } from '../aiService.js';
@@ -59,17 +59,9 @@ export function renderDashboard() {
     }
     // ------------------------------------
 
-    // Check if there is an active weekly plan (ignore unapplied AI-generated drafts)
-    const validPlans = store.weeklyPlans.filter(p => !p.generated || p.applied);
-    validPlans.sort((a, b) => new Date(a.date) - new Date(b.date));
-    let activePlan = validPlans.length > 0 ? validPlans[validPlans.length - 1] : null;
-
-    if (activePlan) {
-        const diffDays = Math.ceil(Math.abs(new Date() - new Date(activePlan.date)) / (1000 * 60 * 60 * 24));
-        if (diffDays > 7) {
-            activePlan = null;
-        }
-    }
+    // The active weekly plan, or null. getActivePlan() is the single copy of
+    // this rule; it used to be pasted here, again below, and in weeklyPlanner.
+    const activePlan = getActivePlan(store);
 
     // --- Monday CEO Flow Intercept ---
     const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
@@ -1005,16 +997,7 @@ function dashboardAttachEvents() {
 
     // CEO Focus Score calculation
     const store = getStore();
-    const validPlans = store.weeklyPlans.filter(p => !p.generated || p.applied);
-    validPlans.sort((a, b) => new Date(a.date) - new Date(b.date));
-    let activePlan = validPlans.length > 0 ? validPlans[validPlans.length - 1] : null;
-
-    if (activePlan) {
-        const diffDays = Math.ceil(Math.abs(new Date() - new Date(activePlan.date)) / (1000 * 60 * 60 * 24));
-        if (diffDays > 7) {
-            activePlan = null;
-        }
-    }
+    const activePlan = getActivePlan(store);
 
     const scoreValEl = document.getElementById('score-val');
     const scoreDetailsEl = document.getElementById('score-details');

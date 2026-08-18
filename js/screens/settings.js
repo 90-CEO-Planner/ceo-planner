@@ -2,7 +2,7 @@
 import { renderNav } from '../components/nav.js';
 import { getStore, updateProfile, updateGoals, updateRevenueSettings, updateLeadGoal, updateSettings, REMINDER_WEEKLY, REMINDER_DAILY, REMINDER_FRIDAY, REMINDER_SNAPSHOT } from '../store.js';
 import { showToast, rerenderScreen } from '../components/toast.js';
-import { proTeaser } from '../components/proGate.js';
+import { proTeaser, canUseEmailDigest, proCardHeading, PRO_CARD_HEADING_STYLE } from '../components/proGate.js';
 
 // Must stay identical to CURRENCIES in wizard.js. The wizard was the only place
 // currency could ever be set, so anyone who accepted the default $ by mistake had
@@ -23,6 +23,10 @@ export function renderSettings() {
     const reminders = store.profile.reminderTimes || [];
 
     // Quick helper to check if a reminder is active
+    // Absent means ON. An existing Pro user should not have to go and find a
+    // switch to start receiving something their plan already includes, and
+    // get_digest_recipients() reads the same default server side.
+    const digestOn = store.settings?.emailDigest !== false;
     const isChecked = (val) => reminders.includes(val) ? 'checked' : '';
 
     return `
@@ -220,11 +224,30 @@ export function renderSettings() {
                     app is closed, they won't reach you — so treat them as a nudge while
                     you're working, not an alarm clock.
                 </p>
-                ${proTeaser(
-                    'email-digest',
-                    'A nudge that reaches you anywhere',
-                    'A short Monday email with your numbers and next steps. Works with the app closed.'
-                )}
+                ${canUseEmailDigest()
+                    // Same shape as the Stripe, pipeline and quick-offer cards:
+                    // proTeaser deletes itself once the account has the feature,
+                    // so the control it was advertising takes its place rather
+                    // than leaving a hole where the useful thing should be.
+                    ? `
+                    <div class="card" style="padding: 1rem 1.25rem; margin-bottom: 1rem; background: var(--color-bg-light);">
+                        <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('email-digest', 'Your Monday email')}</p>
+                        <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer;">
+                            <input type="checkbox" id="email-digest-toggle" ${digestOn ? 'checked' : ''} style="margin-top: 0.25rem;">
+                            <span>
+                                <span style="font-weight: 500; display: block; color: var(--color-black);">Send me the weekly digest</span>
+                                <span style="font-size: 0.8rem; color: var(--color-text-muted);">
+                                    Monday morning: the week you are meant to be working on, your three actions,
+                                    and where your numbers stood. This one arrives whether or not the app is open.
+                                </span>
+                            </span>
+                        </label>
+                    </div>`
+                    : proTeaser(
+                        'email-digest',
+                        'A nudge that reaches you anywhere',
+                        'A short Monday email with your numbers and next steps. Works with the app closed.'
+                    )}
                 <div style="display: flex; flex-direction: column; gap: 1rem;">
                     <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer;">
                         <input type="checkbox" name="reminder" value="${REMINDER_WEEKLY}" ${isChecked(REMINDER_WEEKLY)} style="margin-top: 0.25rem;">
@@ -271,6 +294,19 @@ export function renderSettings() {
 }
 
 function settingsAttachEvents() {
+    // Saved the moment it is flipped rather than on form submit: it sits above
+    // the reminder checkboxes, which also save themselves, so a switch here that
+    // needed a separate Save press would be the odd one out.
+    const digestToggle = document.getElementById('email-digest-toggle');
+    if (digestToggle) {
+        digestToggle.addEventListener('change', (e) => {
+            updateSettings({ emailDigest: e.currentTarget.checked });
+            showToast(e.currentTarget.checked
+                ? 'Monday email on. The next one arrives this Monday.'
+                : 'Monday email off. You can turn it back on any time.');
+        });
+    }
+
     // Handle form save
     const form = document.getElementById('settings-form');
 

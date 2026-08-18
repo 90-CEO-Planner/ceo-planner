@@ -752,7 +752,10 @@ const defaultState = {
     coachChat: [], // Array of { role: 'user'|'assistant', content, at }
     setupChecklist: [], // Array of one-time setup tasks
     redFlags: [], // Array of leading indicators
-    monthlyThemes: { month1: '', month2: '', month3: '' }
+    monthlyThemes: { month1: '', month2: '', month3: '' },
+    // What the Monday email would say, rebuilt at most hourly while the app
+    // is open. The cron cannot run the app's maths, so the app leaves it ready.
+    digestSnapshot: null
 };
 
 function getStore() {
@@ -782,7 +785,8 @@ function getStore() {
                 coachChat: parsed.coachChat || [],
                 setupChecklist: parsed.setupChecklist || [],
                 redFlags: parsed.redFlags || [],
-                monthlyThemes: parsed.monthlyThemes || { month1: '', month2: '', month3: '' }
+                monthlyThemes: parsed.monthlyThemes || { month1: '', month2: '', month3: '' },
+                digestSnapshot: parsed.digestSnapshot || null
             };
             
             // Retroactively assign IDs to legacy revenue entries so they can be securely deleted
@@ -1523,6 +1527,147 @@ function getChannelFunnel() {
         if (b.key === '__unattributed__') return -1;
         return b.revenue - a.revenue;
     });
+}
+
+// ---------------------------------------------------------------------------
+// Which plan is "this week's"? (Pro item 7)
+// ---------------------------------------------------------------------------
+//
+// This block was copy-pasted in three places before it lived here: twice in
+// dashboard.js and once in weeklyPlanner.js, byte for byte. A fourth copy was
+// about to be written for the weekly digest, so it became one function instead.
+//
+// The rule: the newest plan that is either hand-written or an APPLIED generated
+// one, discarded if it is more than 7 days old. Unapplied generated drafts are
+// deliberately ignored, because a roadmap week nobody has accepted is not what
+// the user is actually working on.
+//
+// Callers keep their own fallback for the null case, because they disagree
+// about it on purpose. The planner pre-fills from the next unapplied week; the
+// digest wants the roadmap week matching TODAY (see buildDigestSnapshot).
+function getActivePlan(store = getStore()) {
+    const valid = (store.weeklyPlans || []).filter(p => !p.generated || p.applied);
+    valid.sort((a, b) => new Date(a.date) - new Date(b.date));
+    const newest = valid.length > 0 ? valid[valid.length - 1] : null;
+    if (!newest) return null;
+
+    const diffDays = Math.ceil(Math.abs(new Date() - new Date(newest.date)) / (1000 * 60 * 60 * 24));
+    return diffDays > 7 ? null : newest;
+}
+
+// ---------------------------------------------------------------------------
+// The weekly digest snapshot (Pro item 7)
+// ---------------------------------------------------------------------------
+//
+// What the Monday email says, worked out HERE and stored as finished strings.
+//
+// The edge function that sends the email does no maths and no formatting. It
+// forwards these values to Loops exactly as written. That is the whole design:
+// every figure comes from getRevenueInsights(), every currency string from
+// formatAmount() and settings.currency, so the email can never disagree with
+// the screen. If you find yourself calculating something in the edge function,
+// it belongs here instead.
+//
+// The PLAN half comes from the 90-day roadmap when the user has not written
+// their own week, which means it does not go stale: week 7's actions are week
+// 7's actions however long ago they last opened the app. Only the numbers
+// carry an "as of" caveat.
+
+// Rotated on the week number rather than at random, so what was sent to a given
+// person in a given week can always be worked out afterwards. Four against a
+// twelve week quarter means each lands exactly three times, never twice running.
+const DIGEST_NUDGES = [
+    'If the week goes sideways and only one of those gets done, make it the first one. That is the whole reason it is first.',
+    'Three is the number on purpose. A list of ten is a wish, a list of three is a week.',
+    'If Friday arrives and only the first one is done, that was still a good week.',
+    'Nothing on that list needs to be perfect. It needs to be done.'
+];
+
+// Deliberately NOT rotated. It is a factual caveat, and varying a caveat's
+// wording makes it read as copywriting rather than as fact.
+const DIGEST_FRESHNESS =
+    'Your plan above is current. The figures are only as recent as your last visit.';
+
+// Blank slots are shown, not hidden. Loops cannot drop a section, and in a
+// re-engagement email this reads as a prompt rather than as a failure.
+const DIGEST_GAP = 'Not set yet. Open the planner and fill this one in.';
+
+function digestText(value) {
+    const text = typeof value === 'string' ? value.trim() : '';
+    return text === '' ? DIGEST_GAP : text;
+}
+
+function buildDigestSnapshot(store = getStore()) {
+    const currency = store.settings?.currency || '$';
+    const weekNumber = getWeeksElapsed(store) || 1;
+
+    // A week the user wrote or applied beats one generated for them.
+    let plan = getActivePlan(store);
+    let planIntro = 'Here is the week you set for yourself.';
+
+    if (!plan) {
+        // The roadmap week for where they are RIGHT NOW, by date. Deliberately
+        // not "the next unapplied week": somebody who skipped applying weeks 2
+        // to 6 would be sent week 2's actions while living in week 7.
+        plan = (store.weeklyPlans || []).find(p => p.generated && p.weekNumber === weekNumber) || null;
+        planIntro = 'Here is week ' + weekNumber + ' of your 90 day plan.';
+    }
+
+    const actions = (plan && Array.isArray(plan.topActions)) ? plan.topActions : [];
+    const insights = getRevenueInsights();
+    const money = (value) => currency + formatAmount(value);
+
+    // "Not enough data" is the one momentum value that does not read as a
+    // sentence, so it gets its own wording rather than being forced into one.
+    const momentumLine = (!insights.momentum || insights.momentum === 'Not enough data')
+        ? 'There is not enough logged yet to call your pace either way.'
+        : 'Momentum is ' + insights.momentum.replace(' \u{1F389}', '').toLowerCase() + '.';
+
+    return {
+        // The server refuses to send when this is false, so it has to mean
+        // "there is a real plan here", not merely "a plan object exists".
+        hasPlan: !!plan,
+        takenAt: new Date().toISOString(),
+        weekNumber,
+
+        planIntro,
+        winCondition: digestText(plan?.winCondition),
+        action1: digestText(actions[0]),
+        action2: digestText(actions[1]),
+        action3: digestText(actions[2]),
+        revenueAction: digestText(plan?.revenueAction),
+        visibilityAction: digestText(plan?.visibilityAction),
+        followUpAction: digestText(plan?.followUps),
+        priorityNudge: DIGEST_NUDGES[weekNumber % DIGEST_NUDGES.length],
+
+        revenueSoFar: money(insights.totalRevenue),
+        quarterGoal: money(insights.goal),
+        quarterProgress: Math.round(insights.progressPercent) + '%',
+        momentumLine,
+        freshnessNote: DIGEST_FRESHNESS,
+
+        appUrl: 'https://app.thewomensentrepreneurialnetwork.com/#/weekly'
+    };
+}
+
+// Refresh the stored snapshot, at most once an hour.
+//
+// The rate limit is the point: saveStore() upserts the WHOLE store to Supabase
+// on every call, so rebuilding this on each render would turn one page visit
+// into a stream of writes. An hour is far fresher than a weekly email needs.
+function refreshDigestSnapshot() {
+    const store = getStore();
+    const previous = store.digestSnapshot;
+
+    if (previous && previous.takenAt) {
+        const age = Date.now() - new Date(previous.takenAt).getTime();
+        if (Number.isFinite(age) && age >= 0 && age < 60 * 60 * 1000) return previous;
+    }
+
+    const snapshot = buildDigestSnapshot(store);
+    store.digestSnapshot = snapshot;
+    saveStore(store);
+    return snapshot;
 }
 
 function getRevenueInsights() {
@@ -3820,6 +3965,16 @@ function canRegenerateWeek() {
 // four above, asked by the Revenue screen's button and by the modal behind it.
 function canExportPdf() {
     return isProUser() && isFeatureLive('pdf-export');
+}
+
+// Does this account get the Monday email? Same single-answer rule as the five
+// above, asked by the Settings switch and by the copy beside it.
+//
+// Note the SERVER does not ask this function -- get_digest_recipients() decides
+// who is actually sent one, using is_pro_account() plus the same
+// settings.emailDigest flag this switch writes. This is the presentation half.
+function canUseEmailDigest() {
+    return isProUser() && isFeatureLive('email-digest');
 }
 
 // How many 1-Tap quick offers the base plan holds. Three is what it has always
@@ -7140,17 +7295,9 @@ function renderDashboard() {
     }
     // ------------------------------------
 
-    // Check if there is an active weekly plan (ignore unapplied AI-generated drafts)
-    const validPlans = store.weeklyPlans.filter(p => !p.generated || p.applied);
-    validPlans.sort((a, b) => new Date(a.date) - new Date(b.date));
-    let activePlan = validPlans.length > 0 ? validPlans[validPlans.length - 1] : null;
-
-    if (activePlan) {
-        const diffDays = Math.ceil(Math.abs(new Date() - new Date(activePlan.date)) / (1000 * 60 * 60 * 24));
-        if (diffDays > 7) {
-            activePlan = null;
-        }
-    }
+    // The active weekly plan, or null. getActivePlan() is the single copy of
+    // this rule; it used to be pasted here, again below, and in weeklyPlanner.
+    const activePlan = getActivePlan(store);
 
     // --- Monday CEO Flow Intercept ---
     const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
@@ -8086,16 +8233,7 @@ function dashboardAttachEvents() {
 
     // CEO Focus Score calculation
     const store = getStore();
-    const validPlans = store.weeklyPlans.filter(p => !p.generated || p.applied);
-    validPlans.sort((a, b) => new Date(a.date) - new Date(b.date));
-    let activePlan = validPlans.length > 0 ? validPlans[validPlans.length - 1] : null;
-
-    if (activePlan) {
-        const diffDays = Math.ceil(Math.abs(new Date() - new Date(activePlan.date)) / (1000 * 60 * 60 * 24));
-        if (diffDays > 7) {
-            activePlan = null;
-        }
-    }
+    const activePlan = getActivePlan(store);
 
     const scoreValEl = document.getElementById('score-val');
     const scoreDetailsEl = document.getElementById('score-details');
@@ -8363,16 +8501,7 @@ function dashboardAttachEvents() {
 function renderPlanner() {
     window.setScreenModule({ attachEvents: plannerAttachEvents });
     const store = getStore();
-    const validPlans = store.weeklyPlans.filter(p => !p.generated || p.applied);
-    validPlans.sort((a, b) => new Date(a.date) - new Date(b.date));
-    let activePlan = validPlans.length > 0 ? validPlans[validPlans.length - 1] : null;
-
-    if (activePlan) {
-        const diffDays = Math.ceil(Math.abs(new Date() - new Date(activePlan.date)) / (1000 * 60 * 60 * 24));
-        if (diffDays > 7) {
-            activePlan = null;
-        }
-    }
+    const activePlan = getActivePlan(store);
 
     // Identify next generated plan to pre-fill if no active plan
     let nextGeneratedPlan = null;
@@ -12275,6 +12404,10 @@ function renderSettings() {
     const reminders = store.profile.reminderTimes || [];
 
     // Quick helper to check if a reminder is active
+    // Absent means ON. An existing Pro user should not have to go and find a
+    // switch to start receiving something their plan already includes, and
+    // get_digest_recipients() reads the same default server side.
+    const digestOn = store.settings?.emailDigest !== false;
     const isChecked = (val) => reminders.includes(val) ? 'checked' : '';
 
     return `
@@ -12472,11 +12605,30 @@ function renderSettings() {
                     app is closed, they won't reach you — so treat them as a nudge while
                     you're working, not an alarm clock.
                 </p>
-                ${proTeaser(
-                    'email-digest',
-                    'A nudge that reaches you anywhere',
-                    'A short Monday email with your numbers and next steps. Works with the app closed.'
-                )}
+                ${canUseEmailDigest()
+                    // Same shape as the Stripe, pipeline and quick-offer cards:
+                    // proTeaser deletes itself once the account has the feature,
+                    // so the control it was advertising takes its place rather
+                    // than leaving a hole where the useful thing should be.
+                    ? `
+                    <div class="card" style="padding: 1rem 1.25rem; margin-bottom: 1rem; background: var(--color-bg-light);">
+                        <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('email-digest', 'Your Monday email')}</p>
+                        <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer;">
+                            <input type="checkbox" id="email-digest-toggle" ${digestOn ? 'checked' : ''} style="margin-top: 0.25rem;">
+                            <span>
+                                <span style="font-weight: 500; display: block; color: var(--color-black);">Send me the weekly digest</span>
+                                <span style="font-size: 0.8rem; color: var(--color-text-muted);">
+                                    Monday morning: the week you are meant to be working on, your three actions,
+                                    and where your numbers stood. This one arrives whether or not the app is open.
+                                </span>
+                            </span>
+                        </label>
+                    </div>`
+                    : proTeaser(
+                        'email-digest',
+                        'A nudge that reaches you anywhere',
+                        'A short Monday email with your numbers and next steps. Works with the app closed.'
+                    )}
                 <div style="display: flex; flex-direction: column; gap: 1rem;">
                     <label style="display: flex; align-items: flex-start; gap: 0.75rem; cursor: pointer;">
                         <input type="checkbox" name="reminder" value="${REMINDER_WEEKLY}" ${isChecked(REMINDER_WEEKLY)} style="margin-top: 0.25rem;">
@@ -12523,6 +12675,19 @@ function renderSettings() {
 }
 
 function settingsAttachEvents() {
+    // Saved the moment it is flipped rather than on form submit: it sits above
+    // the reminder checkboxes, which also save themselves, so a switch here that
+    // needed a separate Save press would be the odd one out.
+    const digestToggle = document.getElementById('email-digest-toggle');
+    if (digestToggle) {
+        digestToggle.addEventListener('change', (e) => {
+            updateSettings({ emailDigest: e.currentTarget.checked });
+            showToast(e.currentTarget.checked
+                ? 'Monday email on. The next one arrives this Monday.'
+                : 'Monday email off. You can turn it back on any time.');
+        });
+    }
+
     // Handle form save
     const form = document.getElementById('settings-form');
 
@@ -15881,6 +16046,18 @@ window.addEventListener('load', () => {
     // without it, sales only arrived when someone remembered to press a button.
     // Fire and forget — it must never delay or interrupt the app starting.
     autoSyncStripeIfDue();
+
+    // Leave the Monday email's numbers ready to send. The cron that mails the
+    // weekly digest cannot run getRevenueInsights() -- it lives in the browser --
+    // so the app writes a finished snapshot here instead and the edge function
+    // only forwards it. Self-limiting to once an hour, because saveStore()
+    // upserts the whole store to Supabase on every write.
+    //
+    // Runs for every plan, not just Pro: the server decides who is actually
+    // sent one, and an account that upgrades then already has a snapshot
+    // waiting rather than missing its first Monday.
+    refreshDigestSnapshot();
+
     // And re-check hourly, so a long-open tab doesn't outlive the trial
     setInterval(revalidateAccess, 3600000);
     // ...plus whenever they come back to the tab, which is how the app notices a

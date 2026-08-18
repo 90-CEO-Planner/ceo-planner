@@ -1,6 +1,6 @@
 // weeklyPlanner.js
 import { renderNav } from '../components/nav.js';
-import { getStore, saveStore, addWeeklyPlan, updateWeeklyPlan, getLocalDateString } from '../store.js';
+import { getStore, saveStore, addWeeklyPlan, updateWeeklyPlan, getLocalDateString, getActivePlan } from '../store.js';
 import { showToast } from '../components/toast.js';
 import { proTeaser } from '../components/proGate.js';
 import { canUseLiveAI, getCachedLive, planSuggestionsFingerprint, hydratePlanSuggestions, liveAINote, escapeText } from '../liveAI.js';
@@ -8,16 +8,7 @@ import { canUseLiveAI, getCachedLive, planSuggestionsFingerprint, hydratePlanSug
 export function renderPlanner() {
     window.setScreenModule({ attachEvents: plannerAttachEvents });
     const store = getStore();
-    const validPlans = store.weeklyPlans.filter(p => !p.generated || p.applied);
-    validPlans.sort((a, b) => new Date(a.date) - new Date(b.date));
-    let activePlan = validPlans.length > 0 ? validPlans[validPlans.length - 1] : null;
-
-    if (activePlan) {
-        const diffDays = Math.ceil(Math.abs(new Date() - new Date(activePlan.date)) / (1000 * 60 * 60 * 24));
-        if (diffDays > 7) {
-            activePlan = null;
-        }
-    }
+    const activePlan = getActivePlan(store);
 
     // Identify next generated plan to pre-fill if no active plan
     let nextGeneratedPlan = null;
