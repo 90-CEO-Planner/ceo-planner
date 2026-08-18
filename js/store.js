@@ -1134,6 +1134,12 @@ export function getRevenueInsights() {
         // deliberately excluded from totalRevenue, progress and the projection.
         revenueBeforeQuarter,
         quarterEntryCount: quarterEntries.length,
+        // The entries themselves, for anything that needs to break the quarter
+        // down rather than total it. `entries` above is every sale ever logged,
+        // so a breakdown built from it produces shares that do not divide into
+        // totalRevenue — which is how the branded report would have printed a
+        // source table adding up to more than the quarter it was reporting on.
+        quarterEntries,
         entries: entries.slice().sort((a, b) => new Date(b.date) - new Date(a.date)) // newest first
     };
 }
@@ -1192,7 +1198,7 @@ function totalsBy(entries, field, fallback) {
 }
 
 // "16 May – 14 Aug 2026", or "16 May 2026 – in progress" for the live one.
-function quarterRangeLabel(startISO, endISO) {
+export function quarterRangeLabel(startISO, endISO) {
     const opts = { day: 'numeric', month: 'short' };
     const start = startISO ? new Date(startISO) : null;
     const end = endISO ? new Date(endISO) : null;

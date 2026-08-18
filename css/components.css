@@ -1459,3 +1459,64 @@
 .history-detail[open] .history-hint-closed {
     display: none;
 }
+
+/* The branded report modal (Pro item 8). Shares .confirm-overlay / .confirm-card
+   with showConfirm() and the redo-a-week modal; what it adds is size, because the
+   card holds a live preview of an A4 page and a 420px column would show a column
+   of crushed tables rather than the document about to be printed. */
+.pdf-report-card {
+    max-width: 940px;
+    width: 100%;
+    height: min(88vh, 940px);
+    display: flex;
+    flex-direction: column;
+    text-align: left;
+}
+
+.pdf-report-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.pdf-report-x {
+    background: none;
+    border: none;
+    font-size: 1.5rem;
+    line-height: 1;
+    cursor: pointer;
+    color: var(--color-text-muted);
+    padding: 0 0.25rem;
+}
+
+.pdf-report-note {
+    margin: 0.5rem 0 0.9rem 0;
+    font-size: 0.85rem;
+    color: var(--color-text-muted);
+}
+
+/* The preview and the printed page are the same document, so the frame gets a
+   white page background rather than the app's own. */
+.pdf-report-frame {
+    flex: 1 1 auto;
+    width: 100%;
+    min-height: 260px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: #FFFFFF;
+}
+
+.pdf-report-actions {
+    margin-top: var(--spacing-lg);
+    flex-wrap: wrap;
+}
+
+@media (max-width: 700px) {
+    .pdf-report-card {
+        height: 92vh;
+    }
+    .pdf-report-note {
+        font-size: 0.8rem;
+    }
+}

@@ -89,7 +89,11 @@ export const PRO_FEATURES = {
         blurb: 'A short Monday summary of where you are against target, what moved last week and what you said you would do next. It arrives whether or not the app is open, which is the part browser reminders can never do.'
     },
     'pdf-export': {
-        shipped: false,
+        // Shipped 18 Aug 2026. Lives behind the PDF Report button on the Revenue
+        // screen: a self-contained HTML report shown in a preview and printed by
+        // the browser, where "Save as PDF" is a destination every modern browser
+        // already offers.
+        shipped: true,
         title: 'A report worth sending',
         blurb: 'Your executive report laid out properly with your logo, your numbers and your charts, ready to save as a PDF. For an accountant, a business partner, or the version of you who wants proof of the last ninety days.'
     },
@@ -357,6 +361,12 @@ export function canRememberChats() {
 // button and by the modal behind it.
 export function canRegenerateWeek() {
     return isProUser() && isFeatureLive('week-regen');
+}
+
+// Can this account generate the branded report? Same single-answer rule as the
+// four above, asked by the Revenue screen's button and by the modal behind it.
+export function canExportPdf() {
+    return isProUser() && isFeatureLive('pdf-export');
 }
 
 // A small "PRO" chip, for sitting next to a heading or a label.

@@ -3,7 +3,8 @@ import { renderNav } from '../components/nav.js';
 import { getStore, updateQuickOffers, addRevenueEntry, deleteRevenueEntry, getRevenueInsights, getFunnelInsights, getPipelineInsights, PIPELINE_STAGES, PIPELINE_PROBABILITIES, CONTACT_SOURCES, getChannelFunnel, NOT_ATTRIBUTED, addLeadEntry, deleteLeadEntry, addMetricSnapshot, deleteMetricSnapshot, getLocalDateString, getWeekStart, parseDateInput, formatAmount } from '../store.js';
 import { renderTooltip } from '../components/tooltip.js';
 import { showToast, showConfirm, rerenderScreen } from '../components/toast.js';
-import { proTeaser, proLock, proCardHeading, PRO_CARD_HEADING_STYLE, canUseLeadPipeline } from '../components/proGate.js';
+import { proTeaser, proLock, proCardHeading, PRO_CARD_HEADING_STYLE, canUseLeadPipeline, canExportPdf } from '../components/proGate.js';
+import { showPdfReportModal, rememberAiReport } from '../components/pdfReport.js';
 import { canConnectStripe, refreshImportedSales, getImportedSalesCache, fetchStripeConnection, syncStripeSales } from '../stripeImport.js';
 
 // Pipeline list state. Module level so it survives a re-render — delete an entry
@@ -196,7 +197,12 @@ export function renderRevenue() {
                         <button id="btn-report-csv" class="btn btn-outline btn-sm" style="display: flex; align-items: center; gap: 0.5rem;">
                             📊 Export CSV
                         </button>
-                        ${proLock('pdf-export', '📄 PDF Report')}
+                        ${canExportPdf() ? `
+                        <button id="btn-report-pdf" class="btn btn-outline btn-sm" style="display: flex; align-items: center; gap: 0.5rem;">
+                            📄 PDF Report
+                            ${renderTooltip("Your quarter laid out as a branded report: your logo, your numbers, the weekly chart, where the revenue came from and what is still open in your pipeline.", "It opens as a preview you can print — choose 'Save as PDF' as the destination to keep a copy. Generate the AI Executive Report first and its write-up is included.", "bottom")}
+                        </button>
+                        ` : proLock('pdf-export', '📄 PDF Report')}
                         <button id="btn-report-ai" class="btn btn-primary btn-sm" style="display: flex; align-items: center; gap: 0.5rem; background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark)); border: none; box-shadow: var(--shadow-sm);">
                             🤖 AI Executive Report
                             ${renderTooltip("A comprehensive, AI-generated analysis of your business's financial health, sales pipeline, and growth bottlenecks.", "It synthesizes your traffic, calls, conversions, and revenue into a clear strategy briefing and lists specific, high-priority tasks to help you optimize your funnel.", "bottom")}
@@ -1052,6 +1058,12 @@ window.generateAiReport = async function() {
 
         const reportText = data.choices[0].message.content;
         aiContent.innerHTML = window.marked.parse(reportText);
+
+        // Hand it to the branded report, so exporting after generating a summary
+        // sends the numbers and the write-up about them together rather than as
+        // two separate things the reader has to join up. Session-scoped: closing
+        // the tab forgets it, exactly as closing this modal always has.
+        rememberAiReport(reportText);
         
         // Enable download button
         if (btnDownload) {
@@ -1402,6 +1414,13 @@ function revenueAttachEvents() {
                 window.closeAiModal();
             }
         });
+    }
+
+    // The branded report (Pro item 8). The button only exists for accounts that
+    // pass canExportPdf(), and the modal checks the same rule again.
+    const btnReportPdf = document.getElementById('btn-report-pdf');
+    if (btnReportPdf) {
+        btnReportPdf.addEventListener('click', () => showPdfReportModal());
     }
 
     // CSV Export Logic

@@ -14,6 +14,9 @@ $files = @(
     "js\components\chatWidget.js",
     # After toast.js and aiService.js, both of which it calls at click time.
     "js\components\weekRegen.js",
+    # After store.js, toast.js and proGate.js, which it reads at click time, and
+    # before revenue.js, which imports its modal.
+    "js\components\pdfReport.js",
     "js\screens\welcome.js",
     "js\screens\wizard.js",
     "js\screens\dashboard.js",
