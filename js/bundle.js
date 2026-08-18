@@ -8943,6 +8943,7 @@ function renderRevenue() {
                         </button>
                         ${canExportPdf() ? `
                         <button id="btn-report-pdf" class="btn btn-outline btn-sm" style="display: flex; align-items: center; gap: 0.5rem;">
+                            ${proBadge()}
                             📄 PDF Report
                             ${renderTooltip("Your quarter laid out as a branded report: your logo, your numbers, the weekly chart, where the revenue came from and what is still open in your pipeline.", "It opens as a preview you can print — choose 'Save as PDF' as the destination to keep a copy. Generate the AI Executive Report first and its write-up is included.", "bottom")}
                         </button>

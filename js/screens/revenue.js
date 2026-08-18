@@ -3,7 +3,7 @@ import { renderNav } from '../components/nav.js';
 import { getStore, updateQuickOffers, addRevenueEntry, deleteRevenueEntry, getRevenueInsights, getFunnelInsights, getPipelineInsights, PIPELINE_STAGES, PIPELINE_PROBABILITIES, CONTACT_SOURCES, getChannelFunnel, NOT_ATTRIBUTED, addLeadEntry, deleteLeadEntry, addMetricSnapshot, deleteMetricSnapshot, getLocalDateString, getWeekStart, parseDateInput, formatAmount } from '../store.js';
 import { renderTooltip } from '../components/tooltip.js';
 import { showToast, showConfirm, rerenderScreen } from '../components/toast.js';
-import { proTeaser, proLock, proCardHeading, PRO_CARD_HEADING_STYLE, canUseLeadPipeline, canExportPdf } from '../components/proGate.js';
+import { proTeaser, proLock, proCardHeading, proBadge, PRO_CARD_HEADING_STYLE, canUseLeadPipeline, canExportPdf } from '../components/proGate.js';
 import { showPdfReportModal, rememberAiReport } from '../components/pdfReport.js';
 import { canConnectStripe, refreshImportedSales, getImportedSalesCache, fetchStripeConnection, syncStripeSales } from '../stripeImport.js';
 
@@ -199,6 +199,7 @@ export function renderRevenue() {
                         </button>
                         ${canExportPdf() ? `
                         <button id="btn-report-pdf" class="btn btn-outline btn-sm" style="display: flex; align-items: center; gap: 0.5rem;">
+                            ${proBadge()}
                             📄 PDF Report
                             ${renderTooltip("Your quarter laid out as a branded report: your logo, your numbers, the weekly chart, where the revenue came from and what is still open in your pipeline.", "It opens as a preview you can print — choose 'Save as PDF' as the destination to keep a copy. Generate the AI Executive Report first and its write-up is included.", "bottom")}
                         </button>

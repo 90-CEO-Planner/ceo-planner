@@ -587,6 +587,19 @@
     font-size: 0.6rem;
 }
 
+/* The chip inside a live Pro control — the unlocked twin of .pro-lock .pro-badge
+   above. Once a Pro feature ships, its button stops being a .pro-lock and becomes
+   an ordinary .btn, and the chip has to keep marking it as Pro on the plan that
+   paid for it. No colour override is needed here the way .pro-lock needs one:
+   .btn-outline is white glass, so the default pale yellow still reads.
+
+   flex-shrink is the load-bearing line. These buttons are flex rows with a gap,
+   sitting in a wrapping control strip, so without it the chip is the first thing
+   the browser squeezes and "PRO" collapses to a sliver at laptop widths. */
+.btn .pro-badge {
+    flex-shrink: 0;
+}
+
 /* Redo-one-week modal. Shares .confirm-overlay / .confirm-card with showConfirm()
    so it feels like the same app, and only widens the card — a week's preview is
    a focus line, three priorities and a triplet, which is cramped at 420px. */
