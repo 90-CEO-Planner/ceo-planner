@@ -24,6 +24,15 @@
     --color-text-muted: #64748B; 
     --color-border: rgba(255, 255, 255, 0.5); /* Frosty white border */
     --color-bg-main: #F8FAFC; /* Fallback */
+    /* The pale panel fill used behind inset blocks — progress tracks, spinners,
+       empty states, preview panels. Referenced in 34 places across 11 screens and
+       never actually defined until 18 Aug 2026, so every one of them rendered
+       transparent: the panels were there, just invisible against the page. */
+    --color-bg-light: #F1F5F9;
+    /* Same red as .btn-danger. Also never defined, which left three error
+       messages — including the "Executive AI Coach failed" warning on the Revenue
+       screen — rendering in ordinary body text, so a failure did not look like one. */
+    --color-error: #B42318;
     
     /* Glassmorphism Variables */
     --glass-bg: rgba(255, 255, 255, 0.65); /* Translucent white */

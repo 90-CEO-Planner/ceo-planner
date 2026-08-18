@@ -25,7 +25,7 @@
 
 // One line on purpose: build_bundle.ps1 strips imports with a single-line regex,
 // and a multi-line import survives it as loose syntax in the bundle.
-import { getStore, getRevenueInsights, getFunnelInsights, getPipelineInsights, getQuarterEnd, quarterRangeLabel, formatAmount, getWeekStart, getLocalDateString, PIPELINE_STAGES, PIPELINE_PROBABILITIES } from '../store.js';
+import { getStore, updateSettings, getRevenueInsights, getFunnelInsights, getPipelineInsights, getQuarterEnd, quarterRangeLabel, formatAmount, getWeekStart, getLocalDateString, PIPELINE_STAGES, PIPELINE_PROBABILITIES } from '../store.js';
 import { showToast } from './toast.js';
 import { canExportPdf, proBadge } from './proGate.js';
 
@@ -41,6 +41,55 @@ let lastAiReport = null;
 export function rememberAiReport(text) {
     if (typeof text !== 'string' || !text.trim()) return;
     lastAiReport = { text, at: new Date() };
+}
+
+// --- What goes in the report -------------------------------------------------
+//
+// The report used to print one fixed shape for everybody. It is sent to
+// different people for different reasons — an accountant wants the line items, a
+// business partner wants the summary — so the sections are switchable and the
+// choice is remembered.
+//
+// Everything the feature was *sold* on defaults to on, so an existing user's
+// report is byte-for-byte what it was before they ever open the options.
+// TRANSACTIONS is the exception and defaults to OFF: it is the one section that
+// can run to pages, and nobody asked for it in the report they already have.
+// Ticking it once is enough — the choice persists from then on.
+const REPORT_SECTIONS = [
+    { key: 'chart', label: 'Revenue by week' },
+    { key: 'funnel', label: 'The funnel' },
+    { key: 'sources', label: 'Revenue sources' },
+    { key: 'transactions', label: 'Every transaction' },
+    { key: 'pipeline', label: 'Open pipeline' },
+    { key: 'coach', label: "Coach's summary" }
+];
+
+const DEFAULT_REPORT_OPTIONS = {
+    chart: true,
+    funnel: true,
+    sources: true,
+    transactions: false,
+    pipeline: true,
+    coach: true
+};
+
+// Read the saved choices, filling anything absent from the defaults. A key that
+// has never been saved must come back as its default rather than undefined —
+// `if (options.funnel)` on an undefined key silently drops a promised section.
+function readReportOptions() {
+    const saved = getStore().settings?.reportOptions;
+    const out = { ...DEFAULT_REPORT_OPTIONS };
+    if (saved && typeof saved === 'object') {
+        REPORT_SECTIONS.forEach(({ key }) => {
+            if (typeof saved[key] === 'boolean') out[key] = saved[key];
+        });
+    }
+    return out;
+}
+
+function readPreparedFor() {
+    const value = getStore().settings?.reportPreparedFor;
+    return typeof value === 'string' ? value : '';
 }
 
 // User-entered text goes into a document that gets printed, saved and sent on.
@@ -200,7 +249,9 @@ function weeklyChartSvg(insights, store, colours, currency) {
 
 // --- The document itself -----------------------------------------------------
 
-function buildReportHtml() {
+function buildReportHtml(options, preparedFor) {
+    const opts = options || readReportOptions();
+    const preparedForLine = typeof preparedFor === 'string' ? preparedFor.trim() : readPreparedFor().trim();
     const store = getStore();
     const insights = getRevenueInsights();
     const funnel = getFunnelInsights();
@@ -324,22 +375,67 @@ function buildReportHtml() {
         const key = e.source || 'Not recorded';
         sourceTotals[key] = (sourceTotals[key] || 0) + (parseFloat(e.amount) || 0);
     });
+    // The share column carries a bar as well as the number. The blurb sells "your
+    // numbers and your charts" — plural — and until this existed the weekly chart
+    // was carrying that claim on its own. The bar is a plain div, not an SVG: it
+    // is a single rectangle in a table cell, which prints correctly without the
+    // fixed-height problem that made the weekly chart need SVG.
     const sourceRows = Object.keys(sourceTotals)
         .sort((a, b) => sourceTotals[b] - sourceTotals[a])
         .map(name => {
             const amount = sourceTotals[name];
-            const share = insights.totalRevenue > 0
-                ? `${((amount / insights.totalRevenue) * 100).toFixed(0)}%`
-                : '—';
-            return `<tr><td>${esc(name)}</td><td class="num">${money(amount)}</td><td class="num">${share}</td></tr>`;
+            const pct = insights.totalRevenue > 0 ? (amount / insights.totalRevenue) * 100 : 0;
+            const share = insights.totalRevenue > 0 ? `${pct.toFixed(0)}%` : '—';
+            const bar = insights.totalRevenue > 0
+                ? `<div class="share-track"><div class="share-fill" style="width: ${Math.max(1, Math.min(100, pct)).toFixed(1)}%;"></div></div>`
+                : '';
+            return `<tr><td>${esc(name)}</td><td class="num">${money(amount)}</td><td class="num share-cell">${share}${bar}</td></tr>`;
         }).join('');
 
-    const sourceSection = sourceRows ? `
+    const sourceSection = (opts.sources && sourceRows) ? `
         <section class="block">
             <h2>Where this quarter's revenue came from</h2>
             <table>
                 <thead><tr><th>Source</th><th class="num">Revenue</th><th class="num">Share</th></tr></thead>
                 <tbody>${sourceRows}</tbody>
+            </table>
+        </section>
+    ` : '';
+
+    // --- Every transaction ---
+    //
+    // The line items behind every aggregate above. Deliberately uncapped: the
+    // pipeline table cuts off at 20 because an open pipeline is a working list,
+    // but this is the audit trail, and a report that silently drops sales is not
+    // one you can hand to an accountant.
+    //
+    // Newest first, which is the order the Revenue screen shows them in, so the
+    // report and the screen can be read side by side.
+    const txSorted = (insights.quarterEntries || []).slice().sort((a, b) => {
+        const at = new Date(a.date).getTime();
+        const bt = new Date(b.date).getTime();
+        if (Number.isFinite(at) && Number.isFinite(bt)) return bt - at;
+        return 0;
+    });
+
+    const txRows = txSorted.map(e => `
+        <tr>
+            <td class="nowrap">${esc(shortDate(e.date))}</td>
+            <td>${esc(e.offer || '—')}</td>
+            <td>${esc(e.source || 'Not recorded')}</td>
+            <td class="note">${esc(e.notes || '')}</td>
+            <td class="num">${money(parseFloat(e.amount) || 0)}</td>
+        </tr>
+    `).join('');
+
+    const txSection = (opts.transactions && txRows) ? `
+        <section class="block page-break">
+            <h2>Every transaction</h2>
+            <p class="lede">${txSorted.length} sale${txSorted.length === 1 ? '' : 's'} dated inside ${esc(range)}, newest first. These are the entries every figure above is built from.</p>
+            <table class="tx-table">
+                <thead><tr><th>Date</th><th>Offer</th><th>Source</th><th>Note</th><th class="num">Amount</th></tr></thead>
+                <tbody>${txRows}</tbody>
+                <tfoot><tr><td colspan="4">Total</td><td class="num">${money(insights.totalRevenue)}</td></tr></tfoot>
             </table>
         </section>
     ` : '';
@@ -380,7 +476,7 @@ function buildReportHtml() {
         pipelineCaveats.push(`Showing the first ${shown.length} of ${openSorted.length} open deals.`);
     }
 
-    const pipelineSection = open.length === 0 ? '' : `
+    const pipelineSection = (!opts.pipeline || open.length === 0) ? '' : `
         <section class="block">
             <h2>Open pipeline</h2>
             <p class="lede">Money that might arrive. None of it is counted in the revenue figures above.</p>
@@ -399,7 +495,7 @@ function buildReportHtml() {
 
     // --- The coach's summary, if there is one this session ---
     let aiSection = '';
-    if (lastAiReport) {
+    if (opts.coach && lastAiReport) {
         let bodyHtml;
         try {
             bodyHtml = window.marked
@@ -417,7 +513,7 @@ function buildReportHtml() {
         `;
     }
 
-    const chart = weeklyChartSvg(insights, store, colours, currency);
+    const chart = opts.chart ? weeklyChartSvg(insights, store, colours, currency) : '';
     const chartSection = chart ? `
         <section class="block">
             <h2>Revenue by week</h2>
@@ -425,6 +521,16 @@ function buildReportHtml() {
                 ? '<p class="lede">Nothing logged in this quarter yet, so every week reads as zero.</p>'
                 : ''}
             ${chart}
+        </section>
+    ` : '';
+
+    const funnelSection = opts.funnel ? `
+        <section class="block">
+            <h2>The funnel</h2>
+            <table>
+                <thead><tr><th>Stage</th><th class="num">Figure</th><th>Note</th></tr></thead>
+                <tbody>${funnelRows}</tbody>
+            </table>
         </section>
     ` : '';
 
@@ -501,6 +607,30 @@ function buildReportHtml() {
     td.note { color: ${colours['text-muted']}; font-size: 11px; }
     tbody tr:nth-child(even) { background: #FAFCFD; }
 
+    .prepared-for { display: block; margin-top: 2px; font-weight: 600; color: ${colours['text-main']}; }
+
+    /* The share bar beside each revenue-source percentage. Sits under the number
+       in the same cell, so the column still reads as a column of figures. */
+    .share-cell { min-width: 86px; }
+    .share-track {
+        height: 5px; margin-top: 4px; border-radius: 999px;
+        background: #EEF2F6; overflow: hidden;
+    }
+    .share-fill { height: 100%; background: ${colours.primary}; border-radius: 999px; }
+
+    /* The transaction table can run past a page break, so unlike every other
+       block it is allowed to split — and its header repeats on each page, which
+       is what thead does in a print renderer once the table is not inside a
+       page-break-inside: avoid box. */
+    .tx-table { page-break-inside: auto; }
+    .tx-table thead { display: table-header-group; }
+    .tx-table tr { page-break-inside: avoid; }
+    .tx-table tfoot td {
+        border-top: 2px solid #E2E8F0; border-bottom: 0;
+        font-weight: 700; color: ${colours.black};
+    }
+    td.nowrap { white-space: nowrap; }
+
     .mini-kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 14px; }
     .mini { border-left: 3px solid ${colours['accent-dark']}; padding-left: 10px; }
     .mini span { display: block; font-size: 16px; font-weight: 700; color: ${colours.black}; }
@@ -532,6 +662,7 @@ function buildReportHtml() {
         <div class="masthead-meta">
             <strong>${esc(range)}</strong>
             Prepared ${esc(longDate(new Date()))}
+            ${preparedForLine ? `<span class="prepared-for">for ${esc(preparedForLine)}</span>` : ''}
         </div>
     </header>
 
@@ -550,15 +681,11 @@ function buildReportHtml() {
 
     ${chartSection}
 
-    <section class="block">
-        <h2>The funnel</h2>
-        <table>
-            <thead><tr><th>Stage</th><th class="num">Figure</th><th>Note</th></tr></thead>
-            <tbody>${funnelRows}</tbody>
-        </table>
-    </section>
+    ${funnelSection}
 
     ${sourceSection}
+
+    ${txSection}
 
     ${pipelineSection}
 
@@ -584,14 +711,43 @@ export function showPdfReportModal() {
     // exported and a future caller might not check.
     if (!canExportPdf()) return;
 
+    // Live state for this modal. Seeded from the saved choices, written back on
+    // every change, and passed into every rebuild — so the preview, the print and
+    // the next time the modal opens are all the same document.
+    const opts = readReportOptions();
+    let preparedFor = readPreparedFor();
+
     let html;
     try {
-        html = buildReportHtml();
+        html = buildReportHtml(opts, preparedFor);
     } catch (err) {
         console.error('Report build failed:', err);
         showToast("We couldn't build your report just now. Please try again.", 'error');
         return;
     }
+
+    // The coach's tickbox is only offered when there is a summary to include.
+    // Listing a switch that cannot do anything is worse than not listing it: the
+    // reader concludes the section is broken rather than absent.
+    const sectionsOffered = REPORT_SECTIONS.filter(sec => sec.key !== 'coach' || lastAiReport);
+
+    const optionsHtml = sectionsOffered.map(sec => `
+        <label class="pdf-report-opt">
+            <input type="checkbox" data-section="${sec.key}"${opts[sec.key] ? ' checked' : ''}>
+            <span>${esc(sec.label)}</span>
+        </label>
+    `).join('');
+
+    // Business name and logo come from the profile and cannot be edited here —
+    // but until this line existed there was no way to tell that from inside the
+    // report, so an account with neither set had no idea why its report was
+    // headed "My business".
+    const store = getStore();
+    const brandSet = !!(store.profile?.businessName || store.profile?.name) && !!store.profile?.logo;
+    const brandHint = brandSet ? '' : `
+        <p class="pdf-report-hint">Your business name and logo sit at the top of every report —
+        <a href="#settings" class="pdf-report-settings-link">add them in Settings</a>.</p>
+    `;
 
     const overlay = document.createElement('div');
     overlay.className = 'confirm-overlay';
@@ -604,6 +760,16 @@ export function showPdfReportModal() {
                 <button type="button" class="pdf-report-x" aria-label="Close">&times;</button>
             </div>
             <p class="pdf-report-note">Print it and choose <strong>Save as PDF</strong> as the destination. Everything below is exactly what comes out.</p>
+            <div class="pdf-report-options">
+                <p class="pdf-report-options-title">What goes in</p>
+                <div class="pdf-report-opts">${optionsHtml}</div>
+                <label class="pdf-report-prepared">
+                    <span>Prepared for <small>(optional)</small></span>
+                    <input type="text" class="form-control pdf-report-prepared-input" maxlength="80"
+                           placeholder="Your accountant, a partner, a lender" value="${esc(preparedFor)}">
+                </label>
+                ${brandHint}
+            </div>
             <iframe class="pdf-report-frame" title="Report preview"></iframe>
             <div class="confirm-actions pdf-report-actions">
                 <button type="button" class="btn btn-outline pdf-report-tab">Open in a new tab</button>
@@ -612,9 +778,15 @@ export function showPdfReportModal() {
         </div>
     `;
 
+    // Assigned once the prepared-for input exists; close() may run before then.
+    let flushPrepared = null;
+
     const previouslyFocused = document.activeElement;
     const close = () => {
         document.removeEventListener('keydown', onKeydown);
+        // Flush a half-typed "prepared for" rather than losing it to the debounce,
+        // and cancel the rebuild that would otherwise paint into a removed frame.
+        if (flushPrepared) flushPrepared();
         overlay.remove();
         if (previouslyFocused && typeof previouslyFocused.focus === 'function') {
             previouslyFocused.focus();
@@ -631,15 +803,75 @@ export function showPdfReportModal() {
     // base64 data URI makes that string enormous; document.write into a
     // same-origin about:blank frame sidesteps both problems.
     const frame = overlay.querySelector('.pdf-report-frame');
-    try {
-        const doc = frame.contentDocument || frame.contentWindow.document;
-        doc.open();
-        doc.write(html);
-        doc.close();
-    } catch (err) {
-        console.error('Report preview failed:', err);
-        showToast("We couldn't show the preview. Try 'Open in a new tab'.", 'error');
-    }
+
+    // One writer for the preview, used on open and on every option change, so
+    // the frame can never hold a document built from a different set of choices
+    // than the boxes are showing.
+    const paint = (docHtml) => {
+        try {
+            const doc = frame.contentDocument || frame.contentWindow.document;
+            doc.open();
+            doc.write(docHtml);
+            doc.close();
+            return true;
+        } catch (err) {
+            console.error('Report preview failed:', err);
+            showToast("We couldn't show the preview. Try 'Open in a new tab'.", 'error');
+            return false;
+        }
+    };
+
+    paint(html);
+
+    // Rebuild from the current choices. `html` is kept in step because it is what
+    // "Open in a new tab" and the print button hand to the browser — leaving it
+    // stale would print a document the user is not looking at, which is the one
+    // failure this feature cannot have.
+    const rebuild = () => {
+        try {
+            html = buildReportHtml(opts, preparedFor);
+        } catch (err) {
+            console.error('Report rebuild failed:', err);
+            showToast("We couldn't rebuild your report just now.", 'error');
+            return;
+        }
+        paint(html);
+    };
+
+    overlay.querySelectorAll('.pdf-report-opt input[type="checkbox"]').forEach(box => {
+        box.addEventListener('change', () => {
+            opts[box.dataset.section] = box.checked;
+            updateSettings({ reportOptions: { ...opts } });
+            rebuild();
+        });
+    });
+
+    // Debounced: this writes to the store, and the store upserts to Supabase on
+    // every save, so a save per keystroke would be a request per keystroke.
+    const preparedInput = overlay.querySelector('.pdf-report-prepared-input');
+    let preparedTimer = null;
+    let preparedDirty = false;
+    preparedInput.addEventListener('input', () => {
+        preparedFor = preparedInput.value;
+        preparedDirty = true;
+        window.clearTimeout(preparedTimer);
+        preparedTimer = window.setTimeout(() => {
+            preparedDirty = false;
+            updateSettings({ reportPreparedFor: preparedFor });
+            rebuild();
+        }, 400);
+    });
+
+    flushPrepared = () => {
+        window.clearTimeout(preparedTimer);
+        if (preparedDirty) {
+            preparedDirty = false;
+            updateSettings({ reportPreparedFor: preparedFor });
+        }
+    };
+
+    const settingsLink = overlay.querySelector('.pdf-report-settings-link');
+    if (settingsLink) settingsLink.addEventListener('click', () => close());
 
     overlay.querySelector('.pdf-report-x').addEventListener('click', close);
 

@@ -1509,6 +1509,83 @@
     color: var(--color-text-muted);
 }
 
+/* The options strip. Sits between the note and the preview so the cause is above
+   the effect: tick a box, watch the document below it change. It must not grow —
+   the preview is the point of the modal — so it stays at its natural height while
+   the frame takes the remaining space. */
+.pdf-report-options {
+    flex: 0 0 auto;
+    background: var(--color-bg-light);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: 0.75rem 0.9rem;
+    margin-bottom: 0.9rem;
+}
+
+.pdf-report-options-title {
+    margin: 0 0 0.5rem 0;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 700;
+    color: var(--color-text-muted);
+}
+
+.pdf-report-opts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.1rem;
+}
+
+.pdf-report-opt {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.85rem;
+    color: var(--color-text-main);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.pdf-report-opt input {
+    width: 15px;
+    height: 15px;
+    accent-color: var(--color-primary);
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.pdf-report-prepared {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-top: 0.7rem;
+    font-size: 0.85rem;
+    color: var(--color-text-main);
+}
+
+.pdf-report-prepared > span {
+    flex-shrink: 0;
+}
+
+.pdf-report-prepared small {
+    color: var(--color-text-muted);
+}
+
+.pdf-report-prepared-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 0.85rem;
+    padding: 0.35rem 0.6rem;
+    height: auto;
+}
+
+.pdf-report-hint {
+    margin: 0.6rem 0 0 0;
+    font-size: 0.78rem;
+    color: var(--color-text-muted);
+}
+
 /* The preview and the printed page are the same document, so the frame gets a
    white page background rather than the app's own. */
 .pdf-report-frame {
@@ -1531,5 +1608,16 @@
     }
     .pdf-report-note {
         font-size: 0.8rem;
+    }
+    /* The tickboxes go to one per line rather than wrapping mid-label, and the
+       prepared-for field stacks under its own label — side by side leaves the
+       input about 90px wide on a phone. */
+    .pdf-report-opts {
+        gap: 0.35rem 0.9rem;
+    }
+    .pdf-report-prepared {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.3rem;
     }
 }

@@ -3,14 +3,14 @@
 // index.html changes. Fetching is network-first, so a stale list does not break
 // normal loading, but it is what an offline user gets served, and serving a
 // bundle from before the card-free trial change would be worse than nothing.
-const CACHE_NAME = 'ceo-planner-cache-v74';
+const CACHE_NAME = 'ceo-planner-cache-v75';
 const urlsToCache = [
   './',
   './index.html',
-  './js/bundle.js?v=74',
-  './css/variables.css?v=16',
+  './js/bundle.js?v=75',
+  './css/variables.css?v=17',
   './css/styles.css?v=16',
-  './css/components.css?v=27',
+  './css/components.css?v=28',
   './favicon.ico',
   './apple-touch-icon.png',
   './icon-192.png',
