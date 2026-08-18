@@ -5,6 +5,10 @@
 // it — the screens refresh it and this just reads whatever is there. An empty
 // cache means "manual entries only", which is the pre-import behaviour.
 import { getImportedSalesCache } from './stripeImport.js';
+// proGate.js has no imports of its own, so this cannot cycle back. It is
+// concatenated after this file in the bundle, which is fine: quickOfferLimit is
+// a hoisted function declaration and is only called at save time.
+import { quickOfferLimit } from './components/proGate.js';
 
 const STORE_KEY = 'ceoPlanner_store';
 
@@ -292,8 +296,13 @@ export function updateRevenueSettings(settings) {
 
 export function updateQuickOffers(offers) {
     const store = getStore();
-    // Enforce base tier limit of 3
-    store.revenue.quickOffers = offers.slice(0, 3);
+    // Base holds three, Pro holds as many as it adds. The cap is on *adding*,
+    // not on holding: `existing` keeps an account that drops back to base from
+    // silently losing its fourth and fifth offers the next time it saves this
+    // form. It only ever ratchets down — clear a grandfathered offer's name and
+    // the room it occupied goes with it.
+    const existing = store.revenue?.quickOffers?.length || 0;
+    store.revenue.quickOffers = offers.slice(0, Math.max(quickOfferLimit(), existing));
     saveStore(store);
 }
 

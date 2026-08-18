@@ -75,7 +75,7 @@ The **Dashboard** is your everyday command center. It is designed to cut out the
 - **The CEO Snapshot:** A real-time glance at your Focus Score, Momentum, and Revenue generated this week. Your **Focus Score** is the percentage of your Daily 3 tasks you have ticked off during the current week — it updates by itself as you work, and nothing you fill in elsewhere changes it.
 - **Your Next Best Action:** The Executive AI Coach analyzes your recent plans and highlights the single most important action you need to take right now to maintain momentum or correct a slump.
 - **The Daily 3:** Your three core tasks for the day. Check them off as you complete them to build your daily streak.
-- **1-Tap Revenue Logging:** Log a new sale or lead instantly from the dashboard dropdown to track momentum in real-time.
+- **1-Tap Revenue Logging:** Log a new sale or lead instantly from the dashboard dropdown to track momentum in real-time. You set the offers up on the Revenue page, under the **⚡ 1-Tap** tab. The base plan holds three of them; on Pro there is an **Add another offer** button under the slots, so you can keep one for every offer you sell rather than rotating three.
 
 ---
 
@@ -597,6 +597,9 @@ window.isLockedOut = function isLockedOut(status) {
 // revenue figures at read time. store.js does not write to it and does not fetch
 // it — the screens refresh it and this just reads whatever is there. An empty
 // cache means "manual entries only", which is the pre-import behaviour.
+// proGate.js has no imports of its own, so this cannot cycle back. It is
+// concatenated after this file in the bundle, which is fine: quickOfferLimit is
+// a hoisted function declaration and is only called at save time.
 
 const STORE_KEY = 'ceoPlanner_store';
 
@@ -884,8 +887,13 @@ function updateRevenueSettings(settings) {
 
 function updateQuickOffers(offers) {
     const store = getStore();
-    // Enforce base tier limit of 3
-    store.revenue.quickOffers = offers.slice(0, 3);
+    // Base holds three, Pro holds as many as it adds. The cap is on *adding*,
+    // not on holding: `existing` keeps an account that drops back to base from
+    // silently losing its fourth and fifth offers the next time it saves this
+    // form. It only ever ratchets down — clear a grandfathered offer's name and
+    // the room it occupied goes with it.
+    const existing = store.revenue?.quickOffers?.length || 0;
+    store.revenue.quickOffers = offers.slice(0, Math.max(quickOfferLimit(), existing));
     saveStore(store);
 }
 
@@ -3539,7 +3547,11 @@ const PRO_FEATURES = {
         blurb: 'Your executive report laid out properly with your logo, your numbers and your charts, ready to save as a PDF. For an accountant, a business partner, or the version of you who wants proof of the last ninety days.'
     },
     'unlimited-offers': {
-        shipped: false,
+        // Shipped 18 Aug 2026. The 1-Tap settings form grows a slot at a time
+        // on Pro instead of being fixed at three. Base keeps the three it
+        // always had, and an account that drops back to base keeps whatever it
+        // had added rather than losing offers on the next save.
+        shipped: true,
         title: 'More than three quick offers',
         blurb: 'The quick-log buttons are capped at three offers on the base plan. Pro lifts the cap, which matters once you are selling a few different things and the one you sold today is never one of the three.'
     },
@@ -3808,6 +3820,26 @@ function canRegenerateWeek() {
 // four above, asked by the Revenue screen's button and by the modal behind it.
 function canExportPdf() {
     return isProUser() && isFeatureLive('pdf-export');
+}
+
+// How many 1-Tap quick offers the base plan holds. Three is what it has always
+// been — the cap at js/store.js was commented as a base-tier limit long before
+// there was a Pro tier to lift it for.
+const QUICK_OFFER_BASE_LIMIT = 3;
+
+// Can this account add quick offers beyond the base three? Same single-answer
+// rule as the five above, asked by the store when it saves, by the form that
+// draws the slots, and by the button that adds one.
+function canUseUnlimitedOffers() {
+    return isProUser() && isFeatureLive('unlimited-offers');
+}
+
+// The cap itself, as a number the callers can do arithmetic with. Infinity
+// rather than a large integer on purpose: "unlimited" is what the plan list
+// promises, and slice() and Math.max() both handle it correctly. Nothing is
+// rendered per-slot until a slot exists, so an uncapped ceiling costs nothing.
+function quickOfferLimit() {
+    return canUseUnlimitedOffers() ? Infinity : QUICK_OFFER_BASE_LIMIT;
 }
 
 // A small "PRO" chip, for sitting next to a heading or a label.
@@ -8999,6 +9031,33 @@ let activeLogTab = 'tab-rev';
 // the refresh-then-rerender pair from looping forever.
 let importedCountAtRender = 0;
 
+// How many 1-Tap offer slots the form is currently showing. Set by the render
+// from what is saved, then grown by the "Add another offer" button on Pro.
+//
+// The render is authoritative rather than this variable: an empty slot somebody
+// added and never filled disappears on the next re-render, which is the
+// predictable behaviour. The button itself does NOT re-render — it appends one
+// slot to the DOM, because rebuilding the form would wipe whatever is typed in
+// the other slots and not yet saved.
+let quickOfferSlots = QUICK_OFFER_BASE_LIMIT;
+
+// One slot, used by both the render and the Add button so the two cannot drift.
+// Fields are found by class rather than by an indexed id: appending a slot must
+// not depend on the indexes still lining up.
+function renderQuickOfferSlot(index, offer) {
+    const o = offer || { name: '', price: '', source: 'Instagram' };
+    return `
+        <div data-offer-slot style="background: var(--color-bg-light); padding: 0.75rem; border-radius: var(--radius-sm); margin-bottom: 0.75rem;">
+            <label style="font-size: 0.75rem; font-weight: 600; color: var(--color-text-main); display: block; margin-bottom: 0.25rem;">Slot ${index + 1}</label>
+            <input type="text" class="form-control qo-name" placeholder="Offer Name (e.g. Mastermind)" value="${escapeText(o.name)}" style="margin-bottom: 0.25rem; font-size: 0.8rem;">
+            <div style="display: flex; gap: 0.5rem;">
+                <input type="number" class="form-control qo-price" placeholder="Price" value="${escapeText(o.price)}" style="font-size: 0.8rem;" step="any">
+                <input type="text" class="form-control qo-source" placeholder="Default Source" value="${escapeText(o.source)}" style="font-size: 0.8rem;">
+            </div>
+        </div>
+    `;
+}
+
 function renderRevenue() {
     window.setScreenModule({ attachEvents: revenueAttachEvents });
     const store = getStore();
@@ -9488,24 +9547,30 @@ function renderRevenue() {
                        <!-- Quick Offers Settings Form -->
                        <form id="quick-offers-form" class="log-form" style="display: none;">
                           <p style="font-size: 0.8rem; color: var(--color-text-muted); margin-bottom: 1rem;">Setup your core products for 1-Tap entry on the Dashboard.</p>
-                          ${[0,1,2].map(i => {
-                              const o = (store.revenue?.quickOffers || [])[i] || {name: '', price: '', source: 'Instagram'};
-                              return `
-                              <div style="background: var(--color-bg-light); padding: 0.75rem; border-radius: var(--radius-sm); margin-bottom: 0.75rem;">
-                                  <label style="font-size: 0.75rem; font-weight: 600; color: var(--color-text-main); display: block; margin-bottom: 0.25rem;">Slot ${i+1}</label>
-                                  <input type="text" id="qo-name-${i}" placeholder="Offer Name (e.g. Mastermind)" value="${o.name}" class="form-control" style="margin-bottom: 0.25rem; font-size: 0.8rem;">
-                                  <div style="display: flex; gap: 0.5rem;">
-                                      <input type="number" id="qo-price-${i}" placeholder="Price" value="${o.price}" class="form-control" style="font-size: 0.8rem;" step="any">
-                                      <input type="text" id="qo-source-${i}" placeholder="Default Source" value="${o.source}" class="form-control" style="font-size: 0.8rem;">
-                                  </div>
-                              </div>
-                              `;
-                          }).join('')}
-                          ${proTeaser(
-                              'unlimited-offers',
-                              'Room for every offer you sell',
-                              'Three slots is the base limit. Pro lifts it, so today\'s sale is always one tap away.'
-                          )}
+                          <div id="quick-offer-slots">
+                          ${(() => {
+                              const saved = store.revenue?.quickOffers || [];
+                              // Never fewer than the base three, and never fewer
+                              // than what is already saved: an account that drops
+                              // back to base still sees and can edit the offers
+                              // it added while it had Pro.
+                              quickOfferSlots = Math.max(QUICK_OFFER_BASE_LIMIT, saved.length);
+                              return Array.from({ length: quickOfferSlots },
+                                  (_, i) => renderQuickOfferSlot(i, saved[i])).join('');
+                          })()}
+                          </div>
+                          ${canUseUnlimitedOffers()
+                              // Same shape as the Stripe and pipeline cards above:
+                              // proTeaser deletes itself once the account has the
+                              // feature, so the control it was advertising takes
+                              // its place rather than leaving a hole where the
+                              // useful thing should be.
+                              ? `<button type="button" id="add-quick-offer" class="btn btn-ghost btn-sm" style="width: 100%; border: 1px dashed var(--color-border); color: var(--color-text-muted); margin-bottom: 0.75rem;">+ Add another offer</button>`
+                              : proTeaser(
+                                  'unlimited-offers',
+                                  'Room for every offer you sell',
+                                  'Three slots is the base limit. Pro lifts it, so today\'s sale is always one tap away.'
+                              )}
                           <button type="submit" class="btn btn-outline" style="width: 100%; border-color: var(--color-accent); color: var(--color-accent-dark);">Save Quick Actions</button>
                        </form>
                    </div>
@@ -10302,19 +10367,38 @@ function revenueAttachEvents() {
         });
     }
 
+    // Add one more offer slot. Appends to the DOM rather than re-rendering the
+    // screen, because a re-render rebuilds the form from what is *saved* and
+    // would throw away anything typed into the other slots first.
+    const addOfferBtn = document.getElementById('add-quick-offer');
+    if (addOfferBtn) {
+        addOfferBtn.addEventListener('click', () => {
+            const slots = document.getElementById('quick-offer-slots');
+            if (!slots) return;
+            slots.insertAdjacentHTML('beforeend', renderQuickOfferSlot(quickOfferSlots, null));
+            quickOfferSlots += 1;
+            const added = slots.lastElementChild?.querySelector('.qo-name');
+            if (added) added.focus();
+        });
+    }
+
     const quickOffersForm = document.getElementById('quick-offers-form');
     if (quickOffersForm) {
         quickOffersForm.addEventListener('submit', (e) => {
             e.preventDefault();
+            // Read the slots that are actually on the page rather than counting
+            // to a fixed number: Pro can have added one since the render. Empty
+            // slots are dropped, as they always were, so the saved list stays
+            // dense and the 1-Tap dropdowns index straight into it.
             const offers = [];
-            for (let i = 0; i < 3; i++) {
-                const name = document.getElementById(`qo-name-${i}`).value.trim();
-                const price = document.getElementById(`qo-price-${i}`).value;
-                const source = document.getElementById(`qo-source-${i}`).value.trim();
+            document.querySelectorAll('#quick-offer-slots [data-offer-slot]').forEach(slot => {
+                const name = slot.querySelector('.qo-name').value.trim();
+                const price = slot.querySelector('.qo-price').value;
+                const source = slot.querySelector('.qo-source').value.trim();
                 if (name) {
                     offers.push({ name, price, source });
                 }
-            }
+            });
             updateQuickOffers(offers);
             showToast('1-Tap offers saved. They are ready on your Dashboard.');
             rerenderScreen();

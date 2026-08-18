@@ -74,7 +74,7 @@ The **Dashboard** is your everyday command center. It is designed to cut out the
 - **The CEO Snapshot:** A real-time glance at your Focus Score, Momentum, and Revenue generated this week. Your **Focus Score** is the percentage of your Daily 3 tasks you have ticked off during the current week — it updates by itself as you work, and nothing you fill in elsewhere changes it.
 - **Your Next Best Action:** The Executive AI Coach analyzes your recent plans and highlights the single most important action you need to take right now to maintain momentum or correct a slump.
 - **The Daily 3:** Your three core tasks for the day. Check them off as you complete them to build your daily streak.
-- **1-Tap Revenue Logging:** Log a new sale or lead instantly from the dashboard dropdown to track momentum in real-time.
+- **1-Tap Revenue Logging:** Log a new sale or lead instantly from the dashboard dropdown to track momentum in real-time. You set the offers up on the Revenue page, under the **⚡ 1-Tap** tab. The base plan holds three of them; on Pro there is an **Add another offer** button under the slots, so you can keep one for every offer you sell rather than rotating three.
 
 ---
 

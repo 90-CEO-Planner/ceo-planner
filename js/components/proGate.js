@@ -98,7 +98,11 @@ export const PRO_FEATURES = {
         blurb: 'Your executive report laid out properly with your logo, your numbers and your charts, ready to save as a PDF. For an accountant, a business partner, or the version of you who wants proof of the last ninety days.'
     },
     'unlimited-offers': {
-        shipped: false,
+        // Shipped 18 Aug 2026. The 1-Tap settings form grows a slot at a time
+        // on Pro instead of being fixed at three. Base keeps the three it
+        // always had, and an account that drops back to base keeps whatever it
+        // had added rather than losing offers on the next save.
+        shipped: true,
         title: 'More than three quick offers',
         blurb: 'The quick-log buttons are capped at three offers on the base plan. Pro lifts the cap, which matters once you are selling a few different things and the one you sold today is never one of the three.'
     },
@@ -367,6 +371,26 @@ export function canRegenerateWeek() {
 // four above, asked by the Revenue screen's button and by the modal behind it.
 export function canExportPdf() {
     return isProUser() && isFeatureLive('pdf-export');
+}
+
+// How many 1-Tap quick offers the base plan holds. Three is what it has always
+// been — the cap at js/store.js was commented as a base-tier limit long before
+// there was a Pro tier to lift it for.
+export const QUICK_OFFER_BASE_LIMIT = 3;
+
+// Can this account add quick offers beyond the base three? Same single-answer
+// rule as the five above, asked by the store when it saves, by the form that
+// draws the slots, and by the button that adds one.
+export function canUseUnlimitedOffers() {
+    return isProUser() && isFeatureLive('unlimited-offers');
+}
+
+// The cap itself, as a number the callers can do arithmetic with. Infinity
+// rather than a large integer on purpose: "unlimited" is what the plan list
+// promises, and slice() and Math.max() both handle it correctly. Nothing is
+// rendered per-slot until a slot exists, so an uncapped ceiling costs nothing.
+export function quickOfferLimit() {
+    return canUseUnlimitedOffers() ? Infinity : QUICK_OFFER_BASE_LIMIT;
 }
 
 // A small "PRO" chip, for sitting next to a heading or a label.
