@@ -84,7 +84,12 @@ export const PRO_FEATURES = {
         blurb: 'Something changed in week five and the plan needs to bend. Regenerate that single week instead of the whole quarter, and leave everything you have already done exactly as it is.'
     },
     'email-digest': {
-        shipped: false,
+        // Shipped 18 Aug 2026, the session both Loops workflows went Active and
+        // the Monday cron was switched on. Flipping this is what makes the
+        // Settings opt-out appear: until now canUseEmailDigest() was false, so
+        // the screen showed the teaser and nobody receiving a digest had a way
+        // to stop it inside the app.
+        shipped: true,
         title: 'Your week, in your inbox',
         blurb: 'A short Monday summary of where you are against target, what moved last week and what you said you would do next. It arrives whether or not the app is open, which is the part browser reminders can never do.'
     },
