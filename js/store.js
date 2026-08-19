@@ -182,7 +182,10 @@ const defaultState = {
     monthlyThemes: { month1: '', month2: '', month3: '' },
     // What the Monday email would say, rebuilt at most hourly while the app
     // is open. The cron cannot run the app's maths, so the app leaves it ready.
-    digestSnapshot: null
+    digestSnapshot: null,
+    // The coach's written read on the quarter, as generated on the Revenue
+    // screen. { text, at, quarterStartDate } or null. See saveAiReport().
+    aiReport: null
 };
 
 export function getStore() {
@@ -1957,6 +1960,57 @@ export function clearCoachChat() {
     const store = getStore();
     store.coachChat = [];
     saveStore(store);
+}
+
+// The AI Executive Report, kept so it survives closing the modal.
+//
+// It used to live in a module variable in pdfReport.js, which meant the branded
+// report's "Coach's summary" section existed only in the browser session that
+// generated it. Close the modal, come back, and the section was silently gone —
+// while the feature blurb still said your report came with the write-up. True in
+// the session that made it, quietly untrue afterwards.
+//
+// Stored rather than cached, so it also survives a reload and reaches the user's
+// other devices, which the store sync gives for free.
+const AI_REPORT_MAX_CHARS = 20000;
+
+export function saveAiReport(text) {
+    if (typeof text !== 'string' || !text.trim()) return null;
+
+    const store = getStore();
+    store.aiReport = {
+        // Capped. The store is one JSON document upserted to Supabase on every
+        // save, so an unbounded field on it is everyone's problem, not just the
+        // problem of whoever generated a very long report.
+        text: text.slice(0, AI_REPORT_MAX_CHARS),
+        at: new Date().toISOString(),
+        // Which quarter it was written about. This is the honest half of the
+        // feature -- see getAiReport().
+        quarterStartDate: store.quarterStartDate || ''
+    };
+    saveStore(store);
+    return store.aiReport;
+}
+
+// Returns the report only if it is about the quarter the app is currently in.
+//
+// A summary written in March describes numbers that were archived at the quarter
+// reset. Printing it alongside this quarter's figures would put a confident
+// narrative next to data it was never about — which is worse than the gap this
+// whole change exists to close, because a missing section is obvious and a wrong
+// one reads as authoritative.
+//
+// Checked at read time rather than cleared at reset: one rule, in one place,
+// that cannot be missed by some future code path that starts a quarter without
+// going through the reset screen.
+export function getAiReport() {
+    const store = getStore();
+    const report = store.aiReport;
+
+    if (!report || typeof report.text !== 'string' || !report.text.trim()) return null;
+    if ((report.quarterStartDate || '') !== (store.quarterStartDate || '')) return null;
+
+    return report;
 }
 
 function calculateStreak(reviews) {

@@ -101,6 +101,23 @@ function buildSystemPrompt() {
         dailyActionsContext = todaysLog.map(t => `${t.text} (${t.done ? 'Done' : 'Pending'})`).join(' | ');
     }
 
+// ⚠️ DO NOT hardcode instructions about where things live in the app. There used
+// to be a numbered instruction here telling the coach that cancelling was under
+// Settings, in a "Billing & Subscription" section, behind a "Manage Subscription
+// / Cancel" button.
+//
+// Every part of that was wrong by 19 Aug 2026. Billing had moved to the Account
+// screen, there is no section by that name anywhere in Settings, and the button
+// reads "Manage billing, invoices or cancel". So the coach was confidently
+// sending people to scroll through the wrong screen for something that did not
+// exist -- and doing it to the one group least able to shrug it off, since
+// somebody asking how to cancel is already unhappy.
+//
+// It was deleted rather than corrected. USER_GUIDE.md already described billing
+// correctly and is kept up to date as the app changes; a second copy of the same
+// facts in a prompt is a copy that nobody remembers to update. The guide is now
+// named as the single source of truth, and the coach is told to say it does not
+// know rather than invent a screen name.
     let prompt = `You are an elite, highly-paid Chief Operating Officer and Executive Coach. You speak directly, concisely, and with extreme strategic clarity. You do NOT use fluffy language, emojis, or polite pleasantries. You get straight to the point.
 You are advising ${ceoName}, the CEO of ${bizName}.
 
@@ -127,8 +144,7 @@ Instructions:
 5. If they are behind on revenue, aggressively pivot them to direct sales/marketing actions.
 6. Avoid repetition. Be concise. Use bullet points for micro-tasks. NEVER provide generic business advice; always tie your critiques back to their specific bottleneck or revenue target.
 7. Hyper-Personalization: You MUST tailor your tactical advice (such as content prompts, marketing hooks, sales angles, or email outlines) specifically to their Business Model/Type, Industry/Niche, and Target Audience. Do NOT output generic placeholders or advice lists like "Topic: Address a common misconception about coaching" or "Hook: Begin with engaging language". Instead, write concrete, custom topic ideas, actual hook copy, and specific content topics matching their industry and ideal client's specific pain points (e.g. if their niche is 'Business Coaching' and their audience is 'female founders making $3k-10k/mo', write hook examples directly touching on scaling past $3k/mo, outsourcing busy work, or sales close anxiety). Make them feel like this plan was written custom by a human CMO.
-8. Subscription Cancellation: If the user asks how to cancel their subscription or update billing details, tell them to navigate to Settings, scroll down to the 'Billing & Subscription' section, and click the 'Manage Subscription / Cancel' button to redirect to the Stripe Customer Portal.
-9. App Assistance: If the user asks how the app works, how to use specific features (like Monday plans, Daily 3, logging sales, Friday reviews, exporting CSV, or reset data), guide them using this official app guide:
+8. App Assistance: If the user asks how the app works, how to use specific features (like Monday plans, Daily 3, logging sales, connecting Stripe or PayPal, Friday reviews, exporting CSV, billing and cancelling, or reset data), answer from the official app guide below. It is the single source of truth about this app: if it and your own assumptions disagree, the guide is right. If the guide genuinely does not cover something, say so plainly rather than guessing at a screen name or a button label.
 ${USER_GUIDE_TEXT}`;
 
     return prompt;

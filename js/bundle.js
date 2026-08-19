@@ -16,6 +16,7 @@ By balancing long-term vision with short-term, needle-moving execution, the CEO 
 6. [The Weekly CEO Review (Friday)](#the-weekly-ceo-review)
 7. [The Executive AI Coach & Executive Reports](#the-executive-ai-coach--executive-reports)
 8. [Managing Your Data](#managing-your-data)
+9. [Your Account and Plan](#your-account-and-plan)
 
 ---
 
@@ -89,6 +90,23 @@ The **Revenue** dashboard provides a comprehensive Analytics command center, rep
 - **Monthly Snapshots:** View comparative data across months to see if your metrics are growing or shrinking relative to the previous period.
 - **Data Export:** Need your raw data for taxes or a team member? Click **Export CSV** to instantly download your entire financial history into a spreadsheet.
 
+**Importing your sales automatically (Pro):**
+If you take payments through Stripe or PayPal, connect them on the **Account** page and your sales appear here on their own, with nothing to log by hand. You set the connection up from your side: a read-only key for Stripe, a developer app for PayPal. The app only ever **reads** your payment history — it never moves money, issues a refund or changes anything in your account. Disconnect whenever you like and the sales already imported stay with you.
+
+Imported sales sit alongside the ones you enter yourself. If one looks like a sale you had already logged, both are shown and the possible duplicate is flagged, rather than one of them quietly disappearing.
+
+**Sales taken in another currency:**
+If a payment arrived in a currency different to the one set in Settings, it is shown but **not counted** until you give it an exchange rate. That is deliberate. A guessed rate produces a quarter total that is confidently wrong, which is worse than a gap you can see. Settings shows a box for each currency you have actually been paid in, with a link to look up the day's rate, and once you set one those sales count — including ones imported before you set it.
+
+**Matching what you sold to your own offers:**
+Payment processors name things their own way, which is rarely what you call them. On the **Account** page, under "What you sold", match each product to one of your offers once and every sale of it counts under your name for it from then on. Without that, imported sales and hand-logged ones sit in separate rows in your breakdowns and never add up together. "Keep as is" is always an option, and stops you being asked again.
+
+**Your lead pipeline (Pro):**
+The **Pipeline** tab holds named contacts rather than just counts: who they are, where they came from, what they might be worth, what stage they are at and when to follow up. It also shows who has gone quiet. These feed your funnel figures alongside the bulk lead numbers you log on the Revenue tab.
+
+**Comparing quarters (Pro):**
+The **History** tab compares this quarter with the ones before it. The quarter you are in is measured against where the previous one stood **on the same day**, not against its finished total, so you are never told you are behind simply because the quarter has not ended yet.
+
 ---
 
 ## 6. The Weekly CEO Review
@@ -118,6 +136,12 @@ The app functions as your objective Board of Directors, providing dynamic insigh
 - **Dynamic Coaching Engine:** The engine evaluates your recent activity (Visibility vs. Offers vs. Follow-ups) alongside your actual revenue data.
 - **AI Executive Report:** From the Revenue tab, click **AI Executive Report**. The system will scan your entire pipeline, calculate your conversion bottlenecks, and generate a brutally honest strategic briefing telling you exactly what to fix in your funnel. You can instantly download this report as a text file.
 - **Notepad / Chat:** Visit the Notepad tab or use the floating Executive AI Coach bubble to chat directly with your Executive AI Coach regarding your business bottlenecks.
+
+**The branded report (Pro):**
+Separate from the text file above, the **PDF Report** button on the Revenue tab lays your quarter out as a document worth sending: your logo and business name, the weekly chart, where the revenue came from, and what is still open in your pipeline. You choose which sections go in, and there is a "Prepared for" line for whoever is receiving it. It opens as a preview that you print — choose **Save as PDF** as the destination to keep a copy. If you generated an AI Executive Report first, its write-up is included, and it is kept, so it is still there when you come back to it later.
+
+**The Monday email (Pro):**
+Pro accounts get a short digest by email on Monday mornings: where you stand against your quarter, what you planned for the week and one thing worth focusing on. You can switch it off in Settings.
 
 **Does your coach remember the conversation?**
 On the base plan the chat lasts as long as the page does. Refresh, close the tab or move to another device and it starts again from the beginning.
@@ -162,6 +186,9 @@ The Account page shows the plan you are on and what it includes. New accounts st
 
 **Billing:**
 Everything to do with money lives on the Billing card in **Account** — updating your card, changing your billing address, downloading invoices and cancelling. It opens Stripe's own secure page, so your card details never pass through this app. While you are on the free trial there is nothing to pay and nothing to cancel; that button takes you to the plan picker instead.
+
+**Changing your plan:**
+That same Billing button is also where you move between Base and Pro. Moving **up** takes effect straight away, and you only pay the difference for the rest of the period you have already paid for — Stripe shows you that exact figure before anything is charged. Moving **down** takes effect at your next renewal date instead, so you keep what you have paid for until it runs out. Nothing you have logged is ever deleted by a plan change; features that are not on your plan simply pause, and come back if you move up again.
 
 **Changing your password:**
 On the Account page, "Change password" emails you a link to set a new one. The app never lets a signed-in browser set a password directly, so someone who finds your laptop open cannot lock you out of your own account.
@@ -1415,7 +1442,10 @@ const defaultState = {
     monthlyThemes: { month1: '', month2: '', month3: '' },
     // What the Monday email would say, rebuilt at most hourly while the app
     // is open. The cron cannot run the app's maths, so the app leaves it ready.
-    digestSnapshot: null
+    digestSnapshot: null,
+    // The coach's written read on the quarter, as generated on the Revenue
+    // screen. { text, at, quarterStartDate } or null. See saveAiReport().
+    aiReport: null
 };
 
 function getStore() {
@@ -3192,6 +3222,57 @@ function clearCoachChat() {
     saveStore(store);
 }
 
+// The AI Executive Report, kept so it survives closing the modal.
+//
+// It used to live in a module variable in pdfReport.js, which meant the branded
+// report's "Coach's summary" section existed only in the browser session that
+// generated it. Close the modal, come back, and the section was silently gone —
+// while the feature blurb still said your report came with the write-up. True in
+// the session that made it, quietly untrue afterwards.
+//
+// Stored rather than cached, so it also survives a reload and reaches the user's
+// other devices, which the store sync gives for free.
+const AI_REPORT_MAX_CHARS = 20000;
+
+function saveAiReport(text) {
+    if (typeof text !== 'string' || !text.trim()) return null;
+
+    const store = getStore();
+    store.aiReport = {
+        // Capped. The store is one JSON document upserted to Supabase on every
+        // save, so an unbounded field on it is everyone's problem, not just the
+        // problem of whoever generated a very long report.
+        text: text.slice(0, AI_REPORT_MAX_CHARS),
+        at: new Date().toISOString(),
+        // Which quarter it was written about. This is the honest half of the
+        // feature -- see getAiReport().
+        quarterStartDate: store.quarterStartDate || ''
+    };
+    saveStore(store);
+    return store.aiReport;
+}
+
+// Returns the report only if it is about the quarter the app is currently in.
+//
+// A summary written in March describes numbers that were archived at the quarter
+// reset. Printing it alongside this quarter's figures would put a confident
+// narrative next to data it was never about — which is worse than the gap this
+// whole change exists to close, because a missing section is obvious and a wrong
+// one reads as authoritative.
+//
+// Checked at read time rather than cleared at reset: one rule, in one place,
+// that cannot be missed by some future code path that starts a quarter without
+// going through the reset screen.
+function getAiReport() {
+    const store = getStore();
+    const report = store.aiReport;
+
+    if (!report || typeof report.text !== 'string' || !report.text.trim()) return null;
+    if ((report.quarterStartDate || '') !== (store.quarterStartDate || '')) return null;
+
+    return report;
+}
+
 function calculateStreak(reviews) {
     if (!reviews || reviews.length === 0) return 0;
 
@@ -3837,6 +3918,23 @@ function buildSystemPrompt() {
         dailyActionsContext = todaysLog.map(t => `${t.text} (${t.done ? 'Done' : 'Pending'})`).join(' | ');
     }
 
+// ⚠️ DO NOT hardcode instructions about where things live in the app. There used
+// to be a numbered instruction here telling the coach that cancelling was under
+// Settings, in a "Billing & Subscription" section, behind a "Manage Subscription
+// / Cancel" button.
+//
+// Every part of that was wrong by 19 Aug 2026. Billing had moved to the Account
+// screen, there is no section by that name anywhere in Settings, and the button
+// reads "Manage billing, invoices or cancel". So the coach was confidently
+// sending people to scroll through the wrong screen for something that did not
+// exist -- and doing it to the one group least able to shrug it off, since
+// somebody asking how to cancel is already unhappy.
+//
+// It was deleted rather than corrected. USER_GUIDE.md already described billing
+// correctly and is kept up to date as the app changes; a second copy of the same
+// facts in a prompt is a copy that nobody remembers to update. The guide is now
+// named as the single source of truth, and the coach is told to say it does not
+// know rather than invent a screen name.
     let prompt = `You are an elite, highly-paid Chief Operating Officer and Executive Coach. You speak directly, concisely, and with extreme strategic clarity. You do NOT use fluffy language, emojis, or polite pleasantries. You get straight to the point.
 You are advising ${ceoName}, the CEO of ${bizName}.
 
@@ -3863,8 +3961,7 @@ Instructions:
 5. If they are behind on revenue, aggressively pivot them to direct sales/marketing actions.
 6. Avoid repetition. Be concise. Use bullet points for micro-tasks. NEVER provide generic business advice; always tie your critiques back to their specific bottleneck or revenue target.
 7. Hyper-Personalization: You MUST tailor your tactical advice (such as content prompts, marketing hooks, sales angles, or email outlines) specifically to their Business Model/Type, Industry/Niche, and Target Audience. Do NOT output generic placeholders or advice lists like "Topic: Address a common misconception about coaching" or "Hook: Begin with engaging language". Instead, write concrete, custom topic ideas, actual hook copy, and specific content topics matching their industry and ideal client's specific pain points (e.g. if their niche is 'Business Coaching' and their audience is 'female founders making $3k-10k/mo', write hook examples directly touching on scaling past $3k/mo, outsourcing busy work, or sales close anxiety). Make them feel like this plan was written custom by a human CMO.
-8. Subscription Cancellation: If the user asks how to cancel their subscription or update billing details, tell them to navigate to Settings, scroll down to the 'Billing & Subscription' section, and click the 'Manage Subscription / Cancel' button to redirect to the Stripe Customer Portal.
-9. App Assistance: If the user asks how the app works, how to use specific features (like Monday plans, Daily 3, logging sales, Friday reviews, exporting CSV, or reset data), guide them using this official app guide:
+8. App Assistance: If the user asks how the app works, how to use specific features (like Monday plans, Daily 3, logging sales, connecting Stripe or PayPal, Friday reviews, exporting CSV, billing and cancelling, or reset data), answer from the official app guide below. It is the single source of truth about this app: if it and your own assumptions disagree, the guide is right. If the guide genuinely does not cover something, say so plainly rather than guessing at a screen name or a button label.
 ${USER_GUIDE_TEXT}`;
 
     return prompt;
@@ -6702,18 +6799,18 @@ function showWeekRegenModal(preselectId) {
 // One line on purpose: build_bundle.ps1 strips imports with a single-line regex,
 // and a multi-line import survives it as loose syntax in the bundle.
 
-// The coach's written summary, if one was generated in this browser session.
+// The coach's written summary.
 //
-// Deliberately session-scoped rather than stored. Persisting reports is a real
-// idea and it is written down as the base-tier answer to "my report vanished
-// when I closed the modal" — it is not this feature. What this does is make the
-// two halves of the Executive Report meet: generate the AI summary, then export,
-// and the narrative rides along with the numbers it was written about.
-let lastAiReport = null;
-
+// This used to be a module variable, and so lived only in the browser session
+// that generated it: close the modal and the "Coach's summary" section quietly
+// stopped existing, while the feature blurb went on saying your report came with
+// the write-up. It now goes in the store, which means it survives a reload and
+// reaches the user's other devices for free.
+//
+// The rule about WHICH report is safe to print lives in getAiReport() -- one
+// written about a quarter that has since been reset is not returned at all.
 function rememberAiReport(text) {
-    if (typeof text !== 'string' || !text.trim()) return;
-    lastAiReport = { text, at: new Date() };
+    saveAiReport(text);
 }
 
 // --- What goes in the report -------------------------------------------------
@@ -7166,21 +7263,22 @@ function buildReportHtml(options, preparedFor) {
         </section>
     `;
 
-    // --- The coach's summary, if there is one this session ---
+    // --- The coach's summary, if there is one for THIS quarter ---
     let aiSection = '';
-    if (opts.coach && lastAiReport) {
+    const savedReport = getAiReport();
+    if (opts.coach && savedReport) {
         let bodyHtml;
         try {
             bodyHtml = window.marked
-                ? window.marked.parse(lastAiReport.text)
-                : `<pre class="plain">${esc(lastAiReport.text)}</pre>`;
+                ? window.marked.parse(savedReport.text)
+                : `<pre class="plain">${esc(savedReport.text)}</pre>`;
         } catch (err) {
-            bodyHtml = `<pre class="plain">${esc(lastAiReport.text)}</pre>`;
+            bodyHtml = `<pre class="plain">${esc(savedReport.text)}</pre>`;
         }
         aiSection = `
             <section class="block page-break">
                 <h2>The coach's read on this quarter</h2>
-                <p class="lede">Generated ${esc(longDate(lastAiReport.at))} from the numbers in this report.</p>
+                <p class="lede">Generated ${esc(longDate(savedReport.at))} from the numbers in this report.</p>
                 <div class="prose">${bodyHtml}</div>
             </section>
         `;
@@ -7402,7 +7500,7 @@ function showPdfReportModal() {
     // The coach's tickbox is only offered when there is a summary to include.
     // Listing a switch that cannot do anything is worse than not listing it: the
     // reader concludes the section is broken rather than absent.
-    const sectionsOffered = REPORT_SECTIONS.filter(sec => sec.key !== 'coach' || lastAiReport);
+    const sectionsOffered = REPORT_SECTIONS.filter(sec => sec.key !== 'coach' || getAiReport());
 
     const optionsHtml = sectionsOffered.map(sec => `
         <label class="pdf-report-opt">
@@ -11323,8 +11421,9 @@ window.generateAiReport = async function() {
 
         // Hand it to the branded report, so exporting after generating a summary
         // sends the numbers and the write-up about them together rather than as
-        // two separate things the reader has to join up. Session-scoped: closing
-        // the tab forgets it, exactly as closing this modal always has.
+        // two separate things the reader has to join up. Saved to the store since
+        // 19 Aug 2026, so it survives closing this modal and reaches the user's
+        // other devices -- it used to be forgotten the moment the modal closed.
         rememberAiReport(reportText);
         
         // Enable download button
@@ -14468,25 +14567,50 @@ function renderConnectionsCard() {
     const showPayPal = canConnectPayPal();
     if (!showStripe && !showPayPal) return '';
 
-    // The promise is the same for both processors, so it is made once at the top
-    // rather than repeated per section. "Read-only" is the load-bearing word and
-    // it is true of both, though it is guaranteed differently: Stripe by the
-    // shape of the key, PayPal by the permissions on the app. The per-processor
-    // detail belongs in each section, not here.
+    // ⚠️ THE TWO PROCESSORS DO NOT MAKE THE SAME PROMISE. Do not merge these back
+    // into one sentence.
+    //
+    // This block used to say both connect "read-only, so they can see payments
+    // but can never move money, issue a refund, or change anything in your
+    // account", on the stated reasoning that read-only was "true of both, though
+    // guaranteed differently: Stripe by the shape of the key, PayPal by the
+    // permissions on the app".
+    //
+    // **The first live PayPal connection disproved that half.** It came back
+    // holding 28 scopes, including `payments/refund`, `payments/payouts`,
+    // `vault/credit-card` and `billing-agreements` — see `granted_scopes` on
+    // `paypal_connections`, stored verbatim for exactly this reason. The import
+    // never calls any of them, but the old sentence was about what the credential
+    // CAN do, and for PayPal it was simply untrue.
+    //
+    // That is the worst kind of copy to get wrong: it is about money and
+    // permissions, a user can check it in thirty seconds in their own PayPal
+    // dashboard, and finding it false is the sort of thing that costs the whole
+    // product its credibility rather than just this card's.
+    //
+    // So the promise is now stated as what WE do — only ever read — and Stripe's
+    // stronger guarantee is claimed only for Stripe, where it is real: a
+    // restricted key is read-only by construction and cannot be talked into
+    // anything else.
     const intro = showStripe && showPayPal
-        ? `Connect Stripe or PayPal and your sales are imported here automatically. Both connect
-           <strong>read-only</strong>, so they can see payments but can never move money, issue a
-           refund, or change anything in your account. Connect either, or both. You can disconnect
-           at any time and your imported sales stay with you.`
+        ? `Connect Stripe or PayPal and your sales are imported here automatically.
+           <strong>We only ever read your payment history</strong> — nothing here can move money,
+           issue a refund, or change anything in your account. Your Stripe key is read-only by
+           construction, so it could not do more even if it tried. PayPal does not offer that:
+           it grants apps a broad set of permissions whichever one you ask for, so there the limit
+           is what we do rather than what the credential could. Connect either, or both. You can
+           disconnect at any time and your imported sales stay with you.`
         : showStripe
             ? `Connect Stripe and your sales are imported here automatically. You give this a
                <strong>read-only key</strong> that you create yourself, so it can see payments
                but can never move money, issue a refund, or change anything in your Stripe
                account. You can disconnect at any time and your imported sales stay with you.`
-            : `Connect PayPal and your sales are imported here automatically. It connects
-               <strong>read-only</strong>, so it can see payments but can never move money, issue a
-               refund, or change anything in your PayPal account. You can disconnect at any time
-               and your imported sales stay with you.`;
+            : `Connect PayPal and your sales are imported here automatically.
+               <strong>We only ever read your payment history</strong> — the import never moves
+               money, issues a refund, or changes anything in your account. Worth knowing that
+               PayPal grants apps a broad set of permissions whichever one you ask for, so unlike
+               Stripe the credential itself is not limited to reading. The limit is what we do with
+               it. You can disconnect at any time and your imported sales stay with you.`;
 
     // Each processor gets its own heading only when both are on screen. With one
     // connected the heading is noise; with two, an unlabelled pair of panels is
@@ -15211,16 +15335,30 @@ async function paintPayPalConnection() {
         ? ` <span style="color: #B54708;">(sandbox app, so this will only ever import test payments)</span>`
         : '';
 
-    // Said out loud rather than assumed, because PayPal cannot promise it the
-    // way Stripe can. A restricted Stripe key is read-only by construction; a
-    // PayPal app is read-only only if its Features list says so, and the user is
-    // the one who ticked those boxes. If their app can also take payments they
-    // are entitled to know that the credential they handed over can do it.
+    // Said out loud rather than assumed, because PayPal cannot promise it the way
+    // Stripe can. If the credential someone handed over can also move money, they
+    // are entitled to know.
+    //
+    // ⚠️ This used to end "create a new app with only Transaction Search ticked
+    // and reconnect". That instruction was removed on 19 Aug 2026 because we do
+    // not know it works, and telling somebody to go and do a fiddly thing in a
+    // developer dashboard that may be impossible is worse than telling them
+    // nothing. What is actually known:
+    //
+    //   * The first live connection was granted 28 scopes when one was asked for.
+    //   * Removing features from an existing app is refused by PayPal outright —
+    //     two attempts, errors `c8a0c3d0bffc5` and `37e65bf6c6cca`.
+    //   * Whether a BRAND NEW app with only Transaction Search behaves any
+    //     differently has never been tested. That is the open question.
+    //
+    // Put the instruction back only if that test shows a fresh app really does
+    // come back read-only. Until then this states the fact and stops.
     const scopeNote = conn.read_only === false
         ? `<p style="margin: 0 0 1rem 0; color: #B54708; line-height: 1.5;">
-               This app has more than read-only access to your PayPal account. The import only ever
-               reads, but if you would rather the credential could do nothing else, create a new app
-               with only <strong>Transaction Search</strong> ticked and reconnect.
+               This app has more than read-only access to your PayPal account. That is PayPal's
+               doing rather than yours — it grants a broad set of permissions to any app, whichever
+               one you ask for. <strong>The import only ever reads</strong>, and your credentials are
+               stored where the browser cannot reach them. Disconnecting removes them entirely.
            </p>`
         : '';
 

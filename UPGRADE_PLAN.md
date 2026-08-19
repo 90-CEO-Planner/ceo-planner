@@ -61,20 +61,24 @@ upserts to the live `user_data` row on every save.
    transactions, none imported, all correctly). The positive half is not: the
    31-day windowing, the T00xx/T11xx filter and the refund matching have never
    met an actual sale. Check the figures against PayPal's own dashboard.
-7. **The AI Executive Report does not survive closing the modal.** `lastAiReport`
-   is session-scoped while the tooltip says the write-up is included — true in
-   the session that generated it, silently not true afterwards. Confirm the gap,
-   then decide whether to fix it or change the tooltip.
+7. **The AI Executive Report now persists — check it actually does.** Fixed
+   19 Aug 2026 (v91). Generate an Executive Report on the Revenue screen, close
+   the modal, **reload the page**, then open the PDF Report modal: "Coach's
+   summary" should still be offered and still print, dated when it was
+   generated. Then check the guard: it must NOT appear after a quarter reset.
 
 **Copy that may be lying**
 
-8. **The PayPal Account card tells users to create a read-only app.** If a
-   genuinely read-only PayPal app turns out to be impossible (two attempts have
-   failed to save), that copy is instructing people to do something that does not
-   work and must change. This is a copy fix waiting on an answer, not a test.
-9. **Emailing the branded report** is deliberately not built, and is cheaper than
-   first planned — a link in an event property rather than an attachment. It
-   needs the digest workflow proven in the wild first.
+8. ~~**The PayPal Account card tells users to create a read-only app.**~~ ✅
+   **Copy fixed 19 Aug 2026 (v92)** without waiting for the answer — the card was
+   also claiming PayPal "can never move money", which the 28 granted scopes
+   disprove. What remains is the experiment itself: **create a brand new PayPal
+   app with only Transaction Search ticked**, connect it, and read back
+   `granted_scopes`. Reminder set for 26 Aug.
+9. **Emailing the branded report** is deliberately not built. It needs the digest
+   workflow proven in the wild first, and as of 19 Aug that cron had never fired.
+   It also has an unresolved fork over who the recipient is — a link only works
+   for the signed-in user, not for an accountant. Reminder set for 25 Aug.
 
 **Settings**
 
@@ -1609,13 +1613,42 @@ blocked the new exchange-rate inputs, which is how it surfaced.
    "Pro item 1, sub-item 3" below for what shipped.
 2. ~~**Product to offer matching**~~ ✅ **Done 19 Aug 2026** — see "Pro item 1,
    sub-item 2" below.
-3. **Persist generated AI reports.** `lastAiReport` is session-scoped, so the
-   branded report loses its AI write-up once the modal is closed — while the
-   tooltip still says the write-up is included. Roughly 30 lines, no new
-   infrastructure.
-4. **Email the branded report**, alongside the digest workflow it shares plumbing
-   with. Deliberately last, and now cheaper than first planned: a link in an
-   event property rather than an attachment.
+3. ~~**Persist generated AI reports.**~~ ✅ **Done 19 Aug 2026, bundle v91.**
+   `lastAiReport` was a module variable in `pdfReport.js`, so the branded
+   report's "Coach's summary" existed only in the session that generated it:
+   close the modal, come back, and the section was silently gone while the
+   Revenue tooltip still promised it. It now lives in the store as
+   `store.aiReport` — `saveAiReport()` / `getAiReport()` in
+   [js/store.js](js/store.js), beside `saveCoachChat()` which it deliberately
+   mirrors — so it survives a reload and reaches the user's other devices for
+   free, because the store already syncs.
+
+   Three details worth keeping:
+
+   - **`getAiReport()` withholds a report written about a different quarter.**
+     A summary from March describes numbers archived at the quarter reset;
+     printing it beside this quarter's figures would put a confident narrative
+     next to data it was never about, which is *worse* than the missing section
+     this change fixes — a gap is obvious, a wrong section reads as
+     authoritative. Checked at read time rather than cleared at reset, so one
+     rule in one place covers any future path that starts a quarter without
+     going through the reset screen. The text is withheld, not destroyed.
+   - **Capped at 20,000 characters.** The store is one JSON document upserted to
+     Supabase on every save, so an unbounded field on it is everyone's problem.
+   - The Revenue tooltip ("Generate the AI Executive Report first and its
+     write-up is included") needed no change — it is now permanently true
+     instead of true only within a session.
+
+   Verified by 19 assertions in node driving the real `getStore()`/`saveStore()`
+   through a stub localStorage, including a genuine reload round-trip in a fresh
+   context, the quarter-reset guard in both directions, rubbish input, the
+   20,000 cap, and that no `lastAiReport` module variable survives anywhere.
+4. **Email the branded report** — still parked, reaffirmed 19 Aug 2026, with a
+   reminder set for **25 Aug**. The digest cron had never fired as of 19 Aug
+   (first send due Monday 24 Aug), so the workflow this was parked behind has
+   proven nothing yet. There is also an unresolved fork over **who receives it**,
+   which decides whether this is small or large — see "Not started, and
+   deliberately" under Pro item 7.
 
 ### The testing that is owed, and is its own job
 
@@ -3746,11 +3779,35 @@ wizard link is a constant.
 10. Flip `shipped: true` on `email-digest` in `proGate.js` in the same session it
    ships, and add `canUseEmailDigest()` beside the other five gates.
 
-### Not started, and deliberately
+### Not started, and deliberately — reaffirmed 19 Aug 2026
 
 Emailing the branded PDF report still belongs with this item, for the reason it
-always did — but it needs the workflow proven first. It is now *easier* than the
-old plan assumed: an event property carrying a link, rather than an attachment.
+always did — but it needs the workflow proven first.
+
+**Checked 19 Aug 2026 and it still is not proven.** The cron job is active on
+`0 7 * * 1`, and `cron.job_run_details` is **empty** — it has never fired once.
+The first real send is Monday 24 Aug, to a single recipient (Jen's own address).
+Jen was offered the choice and chose to keep this parked. **Reminder set for
+Tuesday 25 Aug 2026** to check that run and pick this back up.
+
+#### ⚠️ The design fork, raised 19 Aug and deliberately NOT resolved
+
+"An event property carrying a link, rather than an attachment" is cheaper than
+the old plan assumed — but only for one of the two things this feature could
+mean, and the plan never said which.
+
+The branded report is generated **entirely client-side**, in an iframe, from
+localStorage. There is no server-rendered copy and no URL for it. So:
+
+| What it means | What it costs |
+|---|---|
+| **"Email me my report"** — a link back into the app | Cheap. No new infrastructure. But the recipient must be the user, signed in. |
+| **"Send my report to my accountant"** | The report has to exist outside the browser: server-side render, storage, and a signed URL that works without a login. Much bigger — and it puts the user's business figures on a shareable link. |
+
+A link cannot be forwarded to somebody without an account; they would land on a
+sign-in screen. Attachments were the original plan precisely because they survive
+being forwarded. **Settle this before writing any code** — it decides whether
+this is an afternoon or a project.
 
 ---
 
@@ -4138,17 +4195,57 @@ available features are governed by *account eligibility*. Note this is only
 about REMOVING features — Transaction Search itself saved fine originally, which
 is why the import reads transactions correctly.
 
-⚠️ If this turns out to be a hard PayPal limit, the Account card copy MUST
-change: it currently tells the user to "create a new app with only Transaction
-Search ticked and reconnect", which would be advising something impossible.
+⚠️ **The copy was changed anyway, 19 Aug 2026 (v92), without waiting for the
+answer.** Two things were wrong on the live site and neither depended on the open
+question:
 
-Last thing worth trying is a **brand new app with only Transaction Search ticked**,
-rather than editing an existing one: features are chosen at creation, which
-sidesteps this save path entirely and also avoids the nine-hour propagation
-delay. If a fresh app STILL grants payouts and refund scopes, PayPal does not
-permit a read-only REST app at all — record that as the final answer, leave
-`REFUSE_WRITE_SCOPES` false permanently, and treat the Account card's warning as
-a standing statement of fact rather than a temporary note.
+1. **The card claimed something false about money.** The Connected accounts
+   intro said both processors "connect read-only, so they can see payments but
+   can never move money, issue a refund, or change anything in your account" —
+   on the stated reasoning that read-only was true of both, "guaranteed
+   differently: Stripe by the shape of the key, PayPal by the permissions on the
+   app". The 28 scopes disprove the PayPal half outright. The import never calls
+   them, but the sentence was about what the credential CAN do.
+
+   This is the worst kind of copy to get wrong: it is about money and
+   permissions, and a user can check it in thirty seconds in their own PayPal
+   dashboard. The promise is now stated as **what we do** — only ever read — and
+   "read-only by construction" is claimed only for Stripe, where it is true.
+
+2. **The scope warning told users to do something that may be impossible.** It
+   ended "create a new app with only Transaction Search ticked and reconnect".
+   Removing features from an existing app is *known* to fail, and whether a fresh
+   app helps has never been tested, so the instruction was withdrawn rather than
+   left pointing at a fiddly dead end. The warning now states the fact, says the
+   import only ever reads, and notes the credential is out of the browser's reach
+   and removed entirely on disconnect.
+
+Verified by 11 assertions over the user-facing strings, with comments filtered
+out so the test reads what ships rather than what the file says about itself.
+
+#### The one experiment still owed — 5 minutes, and only Jen can run it
+
+A **brand new app with only Transaction Search ticked from creation**, rather
+than editing an existing one: features are chosen at creation, which sidesteps
+the save path that failed and also avoids the nine-hour propagation delay.
+
+Then look at what came back:
+
+```sql
+select read_only, granted_scopes from paypal_connections;
+```
+
+- **If a fresh app STILL grants payouts and refund scopes**, PayPal does not
+  permit a read-only REST app at all. Record it as the final answer, leave
+  `REFUSE_WRITE_SCOPES` false permanently, and the Account card copy as rewritten
+  on 19 Aug becomes a standing statement of fact. Nothing further to build.
+- **If a fresh app comes back read-only**, put the instruction back on the scope
+  warning — "create a new app with only Transaction Search ticked and reconnect"
+  — because it would then be advice that works, and consider whether
+  `REFUSE_WRITE_SCOPES` should become true for new connections.
+
+This is **not** a time-based park like the report email. It is one dashboard task
+waiting on a person. **Reminder set for 26 Aug 2026** so it does not slip.
 
 ### Flipped live before the positive path was tested (Jen's call, 19 Aug 2026)
 

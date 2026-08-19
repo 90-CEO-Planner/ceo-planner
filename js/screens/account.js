@@ -292,25 +292,50 @@ function renderConnectionsCard() {
     const showPayPal = canConnectPayPal();
     if (!showStripe && !showPayPal) return '';
 
-    // The promise is the same for both processors, so it is made once at the top
-    // rather than repeated per section. "Read-only" is the load-bearing word and
-    // it is true of both, though it is guaranteed differently: Stripe by the
-    // shape of the key, PayPal by the permissions on the app. The per-processor
-    // detail belongs in each section, not here.
+    // ⚠️ THE TWO PROCESSORS DO NOT MAKE THE SAME PROMISE. Do not merge these back
+    // into one sentence.
+    //
+    // This block used to say both connect "read-only, so they can see payments
+    // but can never move money, issue a refund, or change anything in your
+    // account", on the stated reasoning that read-only was "true of both, though
+    // guaranteed differently: Stripe by the shape of the key, PayPal by the
+    // permissions on the app".
+    //
+    // **The first live PayPal connection disproved that half.** It came back
+    // holding 28 scopes, including `payments/refund`, `payments/payouts`,
+    // `vault/credit-card` and `billing-agreements` — see `granted_scopes` on
+    // `paypal_connections`, stored verbatim for exactly this reason. The import
+    // never calls any of them, but the old sentence was about what the credential
+    // CAN do, and for PayPal it was simply untrue.
+    //
+    // That is the worst kind of copy to get wrong: it is about money and
+    // permissions, a user can check it in thirty seconds in their own PayPal
+    // dashboard, and finding it false is the sort of thing that costs the whole
+    // product its credibility rather than just this card's.
+    //
+    // So the promise is now stated as what WE do — only ever read — and Stripe's
+    // stronger guarantee is claimed only for Stripe, where it is real: a
+    // restricted key is read-only by construction and cannot be talked into
+    // anything else.
     const intro = showStripe && showPayPal
-        ? `Connect Stripe or PayPal and your sales are imported here automatically. Both connect
-           <strong>read-only</strong>, so they can see payments but can never move money, issue a
-           refund, or change anything in your account. Connect either, or both. You can disconnect
-           at any time and your imported sales stay with you.`
+        ? `Connect Stripe or PayPal and your sales are imported here automatically.
+           <strong>We only ever read your payment history</strong> — nothing here can move money,
+           issue a refund, or change anything in your account. Your Stripe key is read-only by
+           construction, so it could not do more even if it tried. PayPal does not offer that:
+           it grants apps a broad set of permissions whichever one you ask for, so there the limit
+           is what we do rather than what the credential could. Connect either, or both. You can
+           disconnect at any time and your imported sales stay with you.`
         : showStripe
             ? `Connect Stripe and your sales are imported here automatically. You give this a
                <strong>read-only key</strong> that you create yourself, so it can see payments
                but can never move money, issue a refund, or change anything in your Stripe
                account. You can disconnect at any time and your imported sales stay with you.`
-            : `Connect PayPal and your sales are imported here automatically. It connects
-               <strong>read-only</strong>, so it can see payments but can never move money, issue a
-               refund, or change anything in your PayPal account. You can disconnect at any time
-               and your imported sales stay with you.`;
+            : `Connect PayPal and your sales are imported here automatically.
+               <strong>We only ever read your payment history</strong> — the import never moves
+               money, issues a refund, or changes anything in your account. Worth knowing that
+               PayPal grants apps a broad set of permissions whichever one you ask for, so unlike
+               Stripe the credential itself is not limited to reading. The limit is what we do with
+               it. You can disconnect at any time and your imported sales stay with you.`;
 
     // Each processor gets its own heading only when both are on screen. With one
     // connected the heading is noise; with two, an unlabelled pair of panels is
@@ -1035,16 +1060,30 @@ async function paintPayPalConnection() {
         ? ` <span style="color: #B54708;">(sandbox app, so this will only ever import test payments)</span>`
         : '';
 
-    // Said out loud rather than assumed, because PayPal cannot promise it the
-    // way Stripe can. A restricted Stripe key is read-only by construction; a
-    // PayPal app is read-only only if its Features list says so, and the user is
-    // the one who ticked those boxes. If their app can also take payments they
-    // are entitled to know that the credential they handed over can do it.
+    // Said out loud rather than assumed, because PayPal cannot promise it the way
+    // Stripe can. If the credential someone handed over can also move money, they
+    // are entitled to know.
+    //
+    // ⚠️ This used to end "create a new app with only Transaction Search ticked
+    // and reconnect". That instruction was removed on 19 Aug 2026 because we do
+    // not know it works, and telling somebody to go and do a fiddly thing in a
+    // developer dashboard that may be impossible is worse than telling them
+    // nothing. What is actually known:
+    //
+    //   * The first live connection was granted 28 scopes when one was asked for.
+    //   * Removing features from an existing app is refused by PayPal outright —
+    //     two attempts, errors `c8a0c3d0bffc5` and `37e65bf6c6cca`.
+    //   * Whether a BRAND NEW app with only Transaction Search behaves any
+    //     differently has never been tested. That is the open question.
+    //
+    // Put the instruction back only if that test shows a fresh app really does
+    // come back read-only. Until then this states the fact and stops.
     const scopeNote = conn.read_only === false
         ? `<p style="margin: 0 0 1rem 0; color: #B54708; line-height: 1.5;">
-               This app has more than read-only access to your PayPal account. The import only ever
-               reads, but if you would rather the credential could do nothing else, create a new app
-               with only <strong>Transaction Search</strong> ticked and reconnect.
+               This app has more than read-only access to your PayPal account. That is PayPal's
+               doing rather than yours — it grants a broad set of permissions to any app, whichever
+               one you ask for. <strong>The import only ever reads</strong>, and your credentials are
+               stored where the browser cannot reach them. Disconnecting removes them entirely.
            </p>`
         : '';
 

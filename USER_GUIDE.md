@@ -15,6 +15,7 @@ By balancing long-term vision with short-term, needle-moving execution, the CEO 
 6. [The Weekly CEO Review (Friday)](#the-weekly-ceo-review)
 7. [The Executive AI Coach & Executive Reports](#the-executive-ai-coach--executive-reports)
 8. [Managing Your Data](#managing-your-data)
+9. [Your Account and Plan](#your-account-and-plan)
 
 ---
 
@@ -88,6 +89,23 @@ The **Revenue** dashboard provides a comprehensive Analytics command center, rep
 - **Monthly Snapshots:** View comparative data across months to see if your metrics are growing or shrinking relative to the previous period.
 - **Data Export:** Need your raw data for taxes or a team member? Click **Export CSV** to instantly download your entire financial history into a spreadsheet.
 
+**Importing your sales automatically (Pro):**
+If you take payments through Stripe or PayPal, connect them on the **Account** page and your sales appear here on their own, with nothing to log by hand. You set the connection up from your side: a read-only key for Stripe, a developer app for PayPal. The app only ever **reads** your payment history — it never moves money, issues a refund or changes anything in your account. Disconnect whenever you like and the sales already imported stay with you.
+
+Imported sales sit alongside the ones you enter yourself. If one looks like a sale you had already logged, both are shown and the possible duplicate is flagged, rather than one of them quietly disappearing.
+
+**Sales taken in another currency:**
+If a payment arrived in a currency different to the one set in Settings, it is shown but **not counted** until you give it an exchange rate. That is deliberate. A guessed rate produces a quarter total that is confidently wrong, which is worse than a gap you can see. Settings shows a box for each currency you have actually been paid in, with a link to look up the day's rate, and once you set one those sales count — including ones imported before you set it.
+
+**Matching what you sold to your own offers:**
+Payment processors name things their own way, which is rarely what you call them. On the **Account** page, under "What you sold", match each product to one of your offers once and every sale of it counts under your name for it from then on. Without that, imported sales and hand-logged ones sit in separate rows in your breakdowns and never add up together. "Keep as is" is always an option, and stops you being asked again.
+
+**Your lead pipeline (Pro):**
+The **Pipeline** tab holds named contacts rather than just counts: who they are, where they came from, what they might be worth, what stage they are at and when to follow up. It also shows who has gone quiet. These feed your funnel figures alongside the bulk lead numbers you log on the Revenue tab.
+
+**Comparing quarters (Pro):**
+The **History** tab compares this quarter with the ones before it. The quarter you are in is measured against where the previous one stood **on the same day**, not against its finished total, so you are never told you are behind simply because the quarter has not ended yet.
+
 ---
 
 ## 6. The Weekly CEO Review
@@ -117,6 +135,12 @@ The app functions as your objective Board of Directors, providing dynamic insigh
 - **Dynamic Coaching Engine:** The engine evaluates your recent activity (Visibility vs. Offers vs. Follow-ups) alongside your actual revenue data.
 - **AI Executive Report:** From the Revenue tab, click **AI Executive Report**. The system will scan your entire pipeline, calculate your conversion bottlenecks, and generate a brutally honest strategic briefing telling you exactly what to fix in your funnel. You can instantly download this report as a text file.
 - **Notepad / Chat:** Visit the Notepad tab or use the floating Executive AI Coach bubble to chat directly with your Executive AI Coach regarding your business bottlenecks.
+
+**The branded report (Pro):**
+Separate from the text file above, the **PDF Report** button on the Revenue tab lays your quarter out as a document worth sending: your logo and business name, the weekly chart, where the revenue came from, and what is still open in your pipeline. You choose which sections go in, and there is a "Prepared for" line for whoever is receiving it. It opens as a preview that you print — choose **Save as PDF** as the destination to keep a copy. If you generated an AI Executive Report first, its write-up is included, and it is kept, so it is still there when you come back to it later.
+
+**The Monday email (Pro):**
+Pro accounts get a short digest by email on Monday mornings: where you stand against your quarter, what you planned for the week and one thing worth focusing on. You can switch it off in Settings.
 
 **Does your coach remember the conversation?**
 On the base plan the chat lasts as long as the page does. Refresh, close the tab or move to another device and it starts again from the beginning.
@@ -161,6 +185,9 @@ The Account page shows the plan you are on and what it includes. New accounts st
 
 **Billing:**
 Everything to do with money lives on the Billing card in **Account** — updating your card, changing your billing address, downloading invoices and cancelling. It opens Stripe's own secure page, so your card details never pass through this app. While you are on the free trial there is nothing to pay and nothing to cancel; that button takes you to the plan picker instead.
+
+**Changing your plan:**
+That same Billing button is also where you move between Base and Pro. Moving **up** takes effect straight away, and you only pay the difference for the rest of the period you have already paid for — Stripe shows you that exact figure before anything is charged. Moving **down** takes effect at your next renewal date instead, so you keep what you have paid for until it runs out. Nothing you have logged is ever deleted by a plan change; features that are not on your plan simply pause, and come back if you move up again.
 
 **Changing your password:**
 On the Account page, "Change password" emails you a link to set a new one. The app never lets a signed-in browser set a password directly, so someone who finds your laptop open cannot lock you out of your own account.

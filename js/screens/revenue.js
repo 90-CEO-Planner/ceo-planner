@@ -1165,8 +1165,9 @@ window.generateAiReport = async function() {
 
         // Hand it to the branded report, so exporting after generating a summary
         // sends the numbers and the write-up about them together rather than as
-        // two separate things the reader has to join up. Session-scoped: closing
-        // the tab forgets it, exactly as closing this modal always has.
+        // two separate things the reader has to join up. Saved to the store since
+        // 19 Aug 2026, so it survives closing this modal and reaches the user's
+        // other devices -- it used to be forgotten the moment the modal closed.
         rememberAiReport(reportText);
         
         // Enable download button

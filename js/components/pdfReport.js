@@ -25,22 +25,22 @@
 
 // One line on purpose: build_bundle.ps1 strips imports with a single-line regex,
 // and a multi-line import survives it as loose syntax in the bundle.
-import { getStore, updateSettings, getRevenueInsights, getFunnelInsights, getPipelineInsights, getQuarterEnd, quarterRangeLabel, formatAmount, getWeekStart, getLocalDateString, PIPELINE_STAGES, PIPELINE_PROBABILITIES } from '../store.js';
+import { getStore, updateSettings, getRevenueInsights, getFunnelInsights, getPipelineInsights, getQuarterEnd, quarterRangeLabel, formatAmount, getWeekStart, getLocalDateString, saveAiReport, getAiReport, PIPELINE_STAGES, PIPELINE_PROBABILITIES } from '../store.js';
 import { showToast } from './toast.js';
 import { canExportPdf, proBadge } from './proGate.js';
 
-// The coach's written summary, if one was generated in this browser session.
+// The coach's written summary.
 //
-// Deliberately session-scoped rather than stored. Persisting reports is a real
-// idea and it is written down as the base-tier answer to "my report vanished
-// when I closed the modal" — it is not this feature. What this does is make the
-// two halves of the Executive Report meet: generate the AI summary, then export,
-// and the narrative rides along with the numbers it was written about.
-let lastAiReport = null;
-
+// This used to be a module variable, and so lived only in the browser session
+// that generated it: close the modal and the "Coach's summary" section quietly
+// stopped existing, while the feature blurb went on saying your report came with
+// the write-up. It now goes in the store, which means it survives a reload and
+// reaches the user's other devices for free.
+//
+// The rule about WHICH report is safe to print lives in getAiReport() -- one
+// written about a quarter that has since been reset is not returned at all.
 export function rememberAiReport(text) {
-    if (typeof text !== 'string' || !text.trim()) return;
-    lastAiReport = { text, at: new Date() };
+    saveAiReport(text);
 }
 
 // --- What goes in the report -------------------------------------------------
@@ -493,21 +493,22 @@ function buildReportHtml(options, preparedFor) {
         </section>
     `;
 
-    // --- The coach's summary, if there is one this session ---
+    // --- The coach's summary, if there is one for THIS quarter ---
     let aiSection = '';
-    if (opts.coach && lastAiReport) {
+    const savedReport = getAiReport();
+    if (opts.coach && savedReport) {
         let bodyHtml;
         try {
             bodyHtml = window.marked
-                ? window.marked.parse(lastAiReport.text)
-                : `<pre class="plain">${esc(lastAiReport.text)}</pre>`;
+                ? window.marked.parse(savedReport.text)
+                : `<pre class="plain">${esc(savedReport.text)}</pre>`;
         } catch (err) {
-            bodyHtml = `<pre class="plain">${esc(lastAiReport.text)}</pre>`;
+            bodyHtml = `<pre class="plain">${esc(savedReport.text)}</pre>`;
         }
         aiSection = `
             <section class="block page-break">
                 <h2>The coach's read on this quarter</h2>
-                <p class="lede">Generated ${esc(longDate(lastAiReport.at))} from the numbers in this report.</p>
+                <p class="lede">Generated ${esc(longDate(savedReport.at))} from the numbers in this report.</p>
                 <div class="prose">${bodyHtml}</div>
             </section>
         `;
@@ -729,7 +730,7 @@ export function showPdfReportModal() {
     // The coach's tickbox is only offered when there is a summary to include.
     // Listing a switch that cannot do anything is worse than not listing it: the
     // reader concludes the section is broken rather than absent.
-    const sectionsOffered = REPORT_SECTIONS.filter(sec => sec.key !== 'coach' || lastAiReport);
+    const sectionsOffered = REPORT_SECTIONS.filter(sec => sec.key !== 'coach' || getAiReport());
 
     const optionsHtml = sectionsOffered.map(sec => `
         <label class="pdf-report-opt">
