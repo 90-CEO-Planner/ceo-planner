@@ -13572,6 +13572,34 @@ function historyAttachEvents() {
 //
 // So the section appearing at all is itself the signal that something needs
 // attention, and the empty state below is the one the user is meant to act on.
+// "Look up today's rate", pre-filled with this exact currency pair.
+//
+// The app deliberately fetches no exchange rates — no external dependency, no
+// rates moving underneath a report that has already gone out. That decision
+// stands, and this does not weaken it: we are pointing at a search, not calling
+// one. Nothing here can drift, fail, or change a stored figure.
+//
+// It exists because of what the empty box was actually asking. Somebody with no
+// number in their head either leaves the app to find one, or guesses — and the
+// guess is the dangerous outcome, because a made-up rate produces exactly the
+// confidently wrong total this whole feature was built to prevent. One click,
+// copy the number, back.
+//
+// ⚠️ `target="_blank"` is load-bearing, not decoration. Settings is one long
+// form saved by a single button at the bottom; navigating away in the same tab
+// would throw away every other change the user had made and not yet saved.
+// `rel="noopener noreferrer"` because any link opening a new tab gets it.
+function rateLookupLink(code, base) {
+    const query = encodeURIComponent(`1 ${code} in ${base}`);
+    return `
+        <a href="https://www.google.com/search?q=${query}"
+           target="_blank" rel="noopener noreferrer"
+           style="font-size:0.75rem;color:var(--color-primary-dark);text-decoration:underline;white-space:nowrap;">
+            Look up today's rate
+        </a>
+    `;
+}
+
 function renderConversionRates(store) {
     const base = baseCurrencyCode(store);
     const baseSymbol = store.settings?.currency || '$';
@@ -13598,9 +13626,12 @@ function renderConversionRates(store) {
                            style="padding-left:2.25rem;width:100%;"
                            aria-label="Conversion rate from ${code} to ${base}">
                 </div>
-                ${rate === null
-                    ? `<span style="font-size:0.75rem;font-weight:600;color:#B54708;background:#FFFAEB;padding:0.15rem 0.5rem;border-radius:4px;white-space:nowrap;">not counted yet</span>`
-                    : `<span style="font-size:0.75rem;color:var(--color-text-muted);white-space:nowrap;">${symbol}100 = ${baseSymbol}${(100 * rate).toFixed(2)}</span>`}
+                <span style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+                    ${rate === null
+                        ? `<span style="font-size:0.75rem;font-weight:600;color:#B54708;background:#FFFAEB;padding:0.15rem 0.5rem;border-radius:4px;white-space:nowrap;">not counted yet</span>`
+                        : `<span style="font-size:0.75rem;color:var(--color-text-muted);white-space:nowrap;">${symbol}100 = ${baseSymbol}${(100 * rate).toFixed(2)}</span>`}
+                    ${rateLookupLink(code, base)}
+                </span>
             </div>
         `;
     }).join('');
@@ -13616,8 +13647,9 @@ function renderConversionRates(store) {
         </p>
         ${rows}
         <span class="form-helper">
-            Your rate, not a live market one, so your figures stay put and a report you sent
-            last month still adds up today. Change it whenever you like.
+            Use whatever your bookkeeping uses — the rate on the day the money landed, or the
+            one your accountant works to. Once you set it, it stays put, so figures you have
+            already reported to someone don't move underneath you. Change it whenever you like.
         </span>
     </div>
     `;
