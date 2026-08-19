@@ -46,12 +46,17 @@ window.CEO_CHECKOUT_PRO_ANNUAL = 'https://buy.stripe.com/14A7sK6Ud4IH9Tifoe18c0b
 // What each plan costs, kept next to the links so the price on screen and the
 // price actually charged cannot drift apart.
 //
-// These are deliberately hardcoded in dollars and do NOT read
-// store.settings.currency. That setting is for displaying the user's OWN
-// revenue; these are what Stripe will charge, and Stripe charges USD.
+// These are deliberately in dollars and do NOT read store.settings.currency.
+// That setting is for displaying the user's OWN revenue; these are what Stripe
+// will charge, and Stripe charges USD.
+//
+// Numbers rather than strings on purpose. The annual saving is worked out from
+// them by planPricing() in proGate — writing "save $117" by hand next to a price
+// is how a screen ends up quoting a discount that stopped being true.
 window.CEO_PLAN_PRICING = {
-    base: { monthly: '$17', annual: '$147' },
-    pro: { monthly: '$37', annual: '$327' }
+    currency: '$',
+    base: { monthly: 17, annual: 147 },
+    pro: { monthly: 37, annual: 327 }
 };
 
 // Reads the user's real subscription state from the database and caches it locally.

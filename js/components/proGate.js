@@ -205,6 +205,47 @@ export function baseFeatures() {
     ];
 }
 
+// What a plan costs, and what the yearly option actually saves.
+//
+// Jen, 19 Aug 2026: the trial-end screen offered a yearly price and said nothing
+// about why anyone would pick it. $147 against $17 a month is $57 saved and over
+// three months free, and none of that was on the screen.
+//
+// Everything here is DERIVED from window.CEO_PLAN_PRICING. Nothing about the
+// discount is written down twice, so changing a price in one place changes the
+// saving, the percentage and the months-free line together. A hand-typed
+// "save $117" beside a price that later moved is a promise the checkout will
+// not honour.
+export function planPricing(tier) {
+    const table = window.CEO_PLAN_PRICING || {};
+    const plan = table[tier];
+    if (!plan) return null;
+
+    const symbol = table.currency || '$';
+    const twelveMonths = plan.monthly * 12;
+    const saving = twelveMonths - plan.annual;
+
+    // How many months of the yearly price you are simply not paying for.
+    const monthsFree = plan.monthly > 0 ? saving / plan.monthly : 0;
+    const wholeMonthsFree = Math.floor(monthsFree);
+
+    return {
+        monthly: `${symbol}${plan.monthly}`,
+        annual: `${symbol}${plan.annual}`,
+        // Null rather than zero when a yearly price saves nothing, so the caller
+        // renders no line at all instead of "save $0".
+        saving: saving > 0 ? `${symbol}${saving}` : null,
+        percent: twelveMonths > 0 ? Math.round((saving / twelveMonths) * 100) : 0,
+        // "over 3 months" rather than "3.2 months". Rounded down and hedged
+        // upward, so the number said out loud is never more than is true.
+        monthsFree: wholeMonthsFree >= 1
+            ? (monthsFree - wholeMonthsFree >= 0.1
+                ? `over ${wholeMonthsFree} months free`
+                : `${wholeMonthsFree} months free`)
+            : null
+    };
+}
+
 // The nine Pro features in plan-list order. `overview` is deliberately absent —
 // it is the "all of Pro" description used by the nav, not a feature.
 export const PRO_FEATURE_KEYS = [

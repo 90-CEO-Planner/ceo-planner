@@ -222,12 +222,17 @@ window.CEO_CHECKOUT_PRO_ANNUAL = 'https://buy.stripe.com/14A7sK6Ud4IH9Tifoe18c0b
 // What each plan costs, kept next to the links so the price on screen and the
 // price actually charged cannot drift apart.
 //
-// These are deliberately hardcoded in dollars and do NOT read
-// store.settings.currency. That setting is for displaying the user's OWN
-// revenue; these are what Stripe will charge, and Stripe charges USD.
+// These are deliberately in dollars and do NOT read store.settings.currency.
+// That setting is for displaying the user's OWN revenue; these are what Stripe
+// will charge, and Stripe charges USD.
+//
+// Numbers rather than strings on purpose. The annual saving is worked out from
+// them by planPricing() in proGate — writing "save $117" by hand next to a price
+// is how a screen ends up quoting a discount that stopped being true.
 window.CEO_PLAN_PRICING = {
-    base: { monthly: '$17', annual: '$147' },
-    pro: { monthly: '$37', annual: '$327' }
+    currency: '$',
+    base: { monthly: 17, annual: 147 },
+    pro: { monthly: 37, annual: 327 }
 };
 
 // Reads the user's real subscription state from the database and caches it locally.
@@ -4093,6 +4098,47 @@ function baseFeatures() {
         { text: 'CSV export of everything you log' },
         { text: 'Executive reports on demand' }
     ];
+}
+
+// What a plan costs, and what the yearly option actually saves.
+//
+// Jen, 19 Aug 2026: the trial-end screen offered a yearly price and said nothing
+// about why anyone would pick it. $147 against $17 a month is $57 saved and over
+// three months free, and none of that was on the screen.
+//
+// Everything here is DERIVED from window.CEO_PLAN_PRICING. Nothing about the
+// discount is written down twice, so changing a price in one place changes the
+// saving, the percentage and the months-free line together. A hand-typed
+// "save $117" beside a price that later moved is a promise the checkout will
+// not honour.
+function planPricing(tier) {
+    const table = window.CEO_PLAN_PRICING || {};
+    const plan = table[tier];
+    if (!plan) return null;
+
+    const symbol = table.currency || '$';
+    const twelveMonths = plan.monthly * 12;
+    const saving = twelveMonths - plan.annual;
+
+    // How many months of the yearly price you are simply not paying for.
+    const monthsFree = plan.monthly > 0 ? saving / plan.monthly : 0;
+    const wholeMonthsFree = Math.floor(monthsFree);
+
+    return {
+        monthly: `${symbol}${plan.monthly}`,
+        annual: `${symbol}${plan.annual}`,
+        // Null rather than zero when a yearly price saves nothing, so the caller
+        // renders no line at all instead of "save $0".
+        saving: saving > 0 ? `${symbol}${saving}` : null,
+        percent: twelveMonths > 0 ? Math.round((saving / twelveMonths) * 100) : 0,
+        // "over 3 months" rather than "3.2 months". Rounded down and hedged
+        // upward, so the number said out loud is never more than is true.
+        monthsFree: wholeMonthsFree >= 1
+            ? (monthsFree - wholeMonthsFree >= 0.1
+                ? `over ${wholeMonthsFree} months free`
+                : `${wholeMonthsFree} months free`)
+            : null
+    };
 }
 
 // The nine Pro features in plan-list order. `overview` is deliberately absent —
@@ -16340,8 +16386,31 @@ function liveProFeatureTitles() {
         .filter(Boolean);
 }
 
+// The price block both panels use. Identical wording on each, because the
+// yearly saving reading differently on Pro and Base would look like one of them
+// was the special offer.
+function planPriceBlock(tier) {
+    const price = planPricing(tier);
+    if (!price) return '';
+
+    const savingLine = price.saving
+        ? `<span style="display:block;color:var(--color-primary-dark);font-weight:600;margin-top:0.15rem;">
+               Save ${price.saving} a year${price.monthsFree ? `, ${price.monthsFree}` : ''}
+           </span>`
+        : '';
+
+    return `
+        <p style="font-size:0.95rem;color:var(--color-black);font-weight:600;margin:0 0 0.25rem;">
+            ${price.monthly}/month
+        </p>
+        <p style="font-size:0.8rem;color:var(--color-text-muted);margin:0 0 1rem;line-height:1.45;">
+            or ${price.annual} a year
+            ${savingLine}
+        </p>
+    `;
+}
+
 function renderProPanel() {
-    const price = window.CEO_PLAN_PRICING.pro;
     const rows = liveProFeatureTitles().map(t => planFeatureRow(t, false)).join('');
 
     return `
@@ -16351,12 +16420,7 @@ function renderProPanel() {
             </div>
 
             <h3 style="font-size:1.15rem;color:var(--color-black);margin:0.4rem 0 0.25rem;">CEO Planner Pro</h3>
-            <p style="font-size:0.95rem;color:var(--color-black);font-weight:600;margin:0 0 0.25rem;">
-                ${price.monthly}/month
-            </p>
-            <p style="font-size:0.8rem;color:var(--color-text-muted);margin:0 0 1rem;">
-                or ${price.annual} a year
-            </p>
+            ${planPriceBlock('pro')}
 
             <p style="font-size:0.8rem;color:var(--color-text-muted);margin:0 0 0.75rem;text-align:left;">
                 Everything in Base, plus the parts you have had all fortnight:
@@ -16374,7 +16438,6 @@ function renderProPanel() {
 }
 
 function renderBasePanel() {
-    const price = window.CEO_PLAN_PRICING.base;
     const rows = baseFeatures().map(f => planFeatureRow(f.text, false)).join('');
     const lost = liveProFeatureTitles();
 
@@ -16397,12 +16460,7 @@ function renderBasePanel() {
     return `
         <div style="flex:1 1 260px;min-width:0;border:1px solid rgba(0,0,0,0.12);border-radius:16px;padding:1.5rem;background:rgba(255,255,255,0.35);">
             <h3 style="font-size:1.15rem;color:var(--color-black);margin:0.4rem 0 0.25rem;">CEO Planner</h3>
-            <p style="font-size:0.95rem;color:var(--color-black);font-weight:600;margin:0 0 0.25rem;">
-                ${price.monthly}/month
-            </p>
-            <p style="font-size:0.8rem;color:var(--color-text-muted);margin:0 0 1rem;">
-                or ${price.annual} a year
-            </p>
+            ${planPriceBlock('base')}
 
             <p style="font-size:0.8rem;color:var(--color-text-muted);margin:0 0 0.75rem;text-align:left;">
                 The essentials, and they stay yours:

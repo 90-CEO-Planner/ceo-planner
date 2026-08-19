@@ -1,6 +1,6 @@
 // billing.js
 import { showToast, rerenderScreen } from '../components/toast.js';
-import { baseFeatures, PRO_FEATURE_KEYS, PRO_FEATURES, isFeatureLive, trialTimeLeftPhrase } from '../components/proGate.js';
+import { baseFeatures, PRO_FEATURE_KEYS, PRO_FEATURES, isFeatureLive, trialTimeLeftPhrase, planPricing } from '../components/proGate.js';
 
 // Checkout happens on Stripe's own page and the account is upgraded by a webhook
 // firing somewhere else entirely, so there is a window of a few seconds where the
@@ -121,8 +121,31 @@ function liveProFeatureTitles() {
         .filter(Boolean);
 }
 
+// The price block both panels use. Identical wording on each, because the
+// yearly saving reading differently on Pro and Base would look like one of them
+// was the special offer.
+function planPriceBlock(tier) {
+    const price = planPricing(tier);
+    if (!price) return '';
+
+    const savingLine = price.saving
+        ? `<span style="display:block;color:var(--color-primary-dark);font-weight:600;margin-top:0.15rem;">
+               Save ${price.saving} a year${price.monthsFree ? `, ${price.monthsFree}` : ''}
+           </span>`
+        : '';
+
+    return `
+        <p style="font-size:0.95rem;color:var(--color-black);font-weight:600;margin:0 0 0.25rem;">
+            ${price.monthly}/month
+        </p>
+        <p style="font-size:0.8rem;color:var(--color-text-muted);margin:0 0 1rem;line-height:1.45;">
+            or ${price.annual} a year
+            ${savingLine}
+        </p>
+    `;
+}
+
 function renderProPanel() {
-    const price = window.CEO_PLAN_PRICING.pro;
     const rows = liveProFeatureTitles().map(t => planFeatureRow(t, false)).join('');
 
     return `
@@ -132,12 +155,7 @@ function renderProPanel() {
             </div>
 
             <h3 style="font-size:1.15rem;color:var(--color-black);margin:0.4rem 0 0.25rem;">CEO Planner Pro</h3>
-            <p style="font-size:0.95rem;color:var(--color-black);font-weight:600;margin:0 0 0.25rem;">
-                ${price.monthly}/month
-            </p>
-            <p style="font-size:0.8rem;color:var(--color-text-muted);margin:0 0 1rem;">
-                or ${price.annual} a year
-            </p>
+            ${planPriceBlock('pro')}
 
             <p style="font-size:0.8rem;color:var(--color-text-muted);margin:0 0 0.75rem;text-align:left;">
                 Everything in Base, plus the parts you have had all fortnight:
@@ -155,7 +173,6 @@ function renderProPanel() {
 }
 
 function renderBasePanel() {
-    const price = window.CEO_PLAN_PRICING.base;
     const rows = baseFeatures().map(f => planFeatureRow(f.text, false)).join('');
     const lost = liveProFeatureTitles();
 
@@ -178,12 +195,7 @@ function renderBasePanel() {
     return `
         <div style="flex:1 1 260px;min-width:0;border:1px solid rgba(0,0,0,0.12);border-radius:16px;padding:1.5rem;background:rgba(255,255,255,0.35);">
             <h3 style="font-size:1.15rem;color:var(--color-black);margin:0.4rem 0 0.25rem;">CEO Planner</h3>
-            <p style="font-size:0.95rem;color:var(--color-black);font-weight:600;margin:0 0 0.25rem;">
-                ${price.monthly}/month
-            </p>
-            <p style="font-size:0.8rem;color:var(--color-text-muted);margin:0 0 1rem;">
-                or ${price.annual} a year
-            </p>
+            ${planPriceBlock('base')}
 
             <p style="font-size:0.8rem;color:var(--color-text-muted);margin:0 0 0.75rem;text-align:left;">
                 The essentials, and they stay yours:
