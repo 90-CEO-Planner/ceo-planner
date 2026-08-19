@@ -207,9 +207,18 @@ serve(async (req) => {
 
       // Update Supabase profiles table. Once Stripe is governing this customer,
       // clear the app-managed trial clock so it can't expire under a payer.
+      //
+      // Only for 'active'. A NULL clock used to mean "unlimited"; since 19 Aug
+      // 2026 it means the opposite, so writing NULL onto a row that is still
+      // 'trialing' would lock the customer out on the spot. A Stripe trial gets
+      // Stripe's own end date copied across instead, and if Stripe somehow
+      // reports a trial with no end, the column is left untouched rather than
+      // blanked — the existing app clock is a safer floor than nothing.
       const profileUpdate: Record<string, any> = { subscription_status: status }
-      if (status === 'active' || status === 'trialing') {
+      if (status === 'active') {
         profileUpdate.trial_ends_at = null
+      } else if (status === 'trialing' && subscription.trial_end) {
+        profileUpdate.trial_ends_at = new Date(subscription.trial_end * 1000).toISOString()
       }
 
       await supabaseAdmin

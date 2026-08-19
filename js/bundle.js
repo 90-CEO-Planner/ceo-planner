@@ -219,16 +219,17 @@ window.refreshAccessState = async function refreshAccessState() {
 
         let { data: profile, error } = await window.db
             .from('profiles')
-            .select('subscription_status, trial_ends_at, plan_tier')
+            .select('subscription_status, trial_ends_at, plan_tier, comp_pro')
             .eq('id', session.user.id)
             .maybeSingle();
 
-        // `plan_tier` is newer than some deployed databases. Postgres answers
-        // 42703 (undefined_column) if the migration hasn't been run yet. Without
-        // this retry, shipping the bundle before the migration would make every
-        // access check fail and nothing would ever revalidate a trial again.
-        if (error && (error.code === '42703' || /plan_tier/.test(error.message || ''))) {
-            console.warn('profiles.plan_tier is missing — run the plan_tier migration. Treating this account as base.');
+        // `plan_tier` and `comp_pro` are newer than some deployed databases.
+        // Postgres answers 42703 (undefined_column) if the migration hasn't been
+        // run yet. Without this retry, shipping the bundle before the migration
+        // would make every access check fail and nothing would ever revalidate a
+        // trial again.
+        if (error && (error.code === '42703' || /plan_tier|comp_pro/.test(error.message || ''))) {
+            console.warn('profiles.plan_tier / comp_pro are missing — run the migrations. Treating this account as base.');
             ({ data: profile, error } = await window.db
                 .from('profiles')
                 .select('subscription_status, trial_ends_at')
@@ -248,17 +249,29 @@ window.refreshAccessState = async function refreshAccessState() {
             localStorage.setItem('ceo_sub_status', 'incomplete');
             localStorage.removeItem('ceo_trial_ends_at');
             localStorage.removeItem('ceo_plan_tier');
-            return { status: 'incomplete', daysLeft: 0, trialEndsAt: null, tier: 'base' };
+            localStorage.removeItem('ceo_comp_pro');
+            return { status: 'incomplete', daysLeft: 0, trialEndsAt: null, tier: 'base', compPro: false };
         }
 
         const trialEndsAt = profile.trial_ends_at ? new Date(profile.trial_ends_at) : null;
+        const compPro = profile.comp_pro === true;
         let status = profile.subscription_status || 'incomplete';
         let daysLeft = null;
 
-        if (status === 'trialing' && trialEndsAt) {
-            const msLeft = trialEndsAt.getTime() - Date.now();
-            daysLeft = Math.max(0, Math.ceil(msLeft / 86400000));
-            if (msLeft <= 0) status = 'trial_expired';
+        // A trial with no end date used to skip this check entirely, which is how
+        // every account ended up on a free trial that never expired. A missing
+        // clock now means the trial is over, not that it runs forever — the
+        // migration on 19 Aug 2026 backfilled every real one, and nothing writes
+        // a NULL onto a trialing row any more.
+        if (status === 'trialing') {
+            if (!trialEndsAt) {
+                status = 'trial_expired';
+                daysLeft = 0;
+            } else {
+                const msLeft = trialEndsAt.getTime() - Date.now();
+                daysLeft = Math.max(0, Math.ceil(msLeft / 86400000));
+                if (msLeft <= 0) status = 'trial_expired';
+            }
         }
 
         // Which feature set they get. The 14-day trial deliberately runs on Pro:
@@ -269,7 +282,13 @@ window.refreshAccessState = async function refreshAccessState() {
         // off this. Anyone locked out resolves to base; they see the paywall
         // rather than any of this.
         let tier = 'base';
-        if (status === 'trialing') {
+        if (compPro) {
+            // A comp is Pro whatever the subscription says, and whatever they
+            // pay for. Jen sets it by hand; nothing in the Stripe or PayPal path
+            // writes this column, which is the whole reason it isn't plan_tier —
+            // the webhook would overwrite that the moment they bought Base.
+            tier = 'pro';
+        } else if (status === 'trialing') {
             tier = 'pro';
         } else if (status === 'active') {
             tier = profile.plan_tier === 'pro' ? 'pro' : 'base';
@@ -277,13 +296,21 @@ window.refreshAccessState = async function refreshAccessState() {
 
         localStorage.setItem('ceo_sub_status', status);
         localStorage.setItem('ceo_plan_tier', tier);
+        // Read by isLockedOut(), so a comped account never meets the paywall
+        // even once its trial clock has run out. Mirrors account_access() in the
+        // database, which is what actually enforces this server side.
+        if (compPro) {
+            localStorage.setItem('ceo_comp_pro', 'true');
+        } else {
+            localStorage.removeItem('ceo_comp_pro');
+        }
         if (trialEndsAt) {
             localStorage.setItem('ceo_trial_ends_at', trialEndsAt.toISOString());
         } else {
             localStorage.removeItem('ceo_trial_ends_at');
         }
 
-        return { status, daysLeft, trialEndsAt, tier };
+        return { status, daysLeft, trialEndsAt, tier, compPro };
     } catch (err) {
         console.warn('Could not refresh access state:', err.message);
         return null;
@@ -474,7 +501,7 @@ window.reconcileAuthState = async function reconcileAuthState() {
 
     console.warn('[CEO Planner] Locally signed in, but this browser has no Supabase session. Sending you to sign in again.');
 
-    ['ceo_auth', 'ceo_sub_status', 'ceo_plan_tier', 'ceo_trial_ends_at']
+    ['ceo_auth', 'ceo_sub_status', 'ceo_plan_tier', 'ceo_comp_pro', 'ceo_trial_ends_at']
         .forEach(key => localStorage.removeItem(key));
 
     window.location.hash = '#/login';
@@ -586,6 +613,15 @@ window.invokeChat = async function invokeChat(messages, options = {}) {
 // The statuses that lock someone out of the app.
 window.CEO_LOCKED_STATUSES = ['incomplete', 'past_due', 'canceled', 'unpaid', 'trial_expired'];
 window.isLockedOut = function isLockedOut(status) {
+    // A comped account is never locked out, whatever its subscription says.
+    // The flag is set by hand in the database and cached by refreshAccessState;
+    // account_access() enforces the same rule server side, so a tampered local
+    // value buys nothing but the shape of a screen.
+    //
+    // Deliberately NOT done by rewriting the status to 'active': a comped
+    // account whose trial has lapsed should still be able to open #/billing and
+    // subscribe, and app.js sends 'active' accounts away from that screen.
+    if (localStorage.getItem('ceo_comp_pro') === 'true') return false;
     return window.CEO_LOCKED_STATUSES.includes(status);
 };
 
@@ -4194,7 +4230,14 @@ function warnIfAllowanceLow(allowance) {
 
 // True while the account is inside the app-managed 14-day trial, which is the
 // only state where someone has Pro without paying for it.
+//
+// A comped account is excluded even while its subscription still reads
+// 'trialing'. Its Pro does not run out, so every piece of trial framing this
+// gates — the "14 days left" pill in the nav, the trial wording on the plan
+// card, the shorter coach context window — would be telling a customer she is
+// about to lose something she is not.
 function isProTrial() {
+    if (localStorage.getItem('ceo_comp_pro') === 'true') return false;
     return localStorage.getItem('ceo_sub_status') === 'trialing' && isProUser();
 }
 
@@ -5163,6 +5206,8 @@ async function signOutAndClear() {
     localStorage.removeItem('ceo_sub_status');
     localStorage.removeItem('ceo_trial_ends_at');
     localStorage.removeItem('ceo_plan_tier');
+    // Left behind, this would comp whoever signs in on this browser next.
+    localStorage.removeItem('ceo_comp_pro');
     localStorage.removeItem('ceoPlanner_store');
     // Suggestions written about one business must not greet the next person to
     // sign in on this browser, and neither must their AI usage count.
@@ -16381,6 +16426,7 @@ function billingAttachEvents() {
             localStorage.removeItem('ceo_sub_status');
             localStorage.removeItem('ceo_trial_ends_at');
             localStorage.removeItem('ceo_plan_tier');
+            localStorage.removeItem('ceo_comp_pro');
             localStorage.removeItem('ceoPlanner_store');
             window.location.hash = '#/login';
             window.location.reload();

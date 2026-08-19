@@ -18,6 +18,8 @@ export async function signOutAndClear() {
     localStorage.removeItem('ceo_sub_status');
     localStorage.removeItem('ceo_trial_ends_at');
     localStorage.removeItem('ceo_plan_tier');
+    // Left behind, this would comp whoever signs in on this browser next.
+    localStorage.removeItem('ceo_comp_pro');
     localStorage.removeItem('ceoPlanner_store');
     // Suggestions written about one business must not greet the next person to
     // sign in on this browser, and neither must their AI usage count.

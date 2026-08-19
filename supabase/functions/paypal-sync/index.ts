@@ -177,17 +177,30 @@ Deno.serve(async (req) => {
 
     // Importing is a Pro feature, and this is where that is actually enforced.
     // The client-side gate is presentation only.
-    const { data: profile } = await supabaseAdmin
+    //
+    // This used to compute the rule inline, which made it the THIRD definition
+    // of "is this account Pro" and the only one that disagreed: it read
+    // 'trialing' as Pro without ever looking at trial_ends_at, so a lapsed trial
+    // could still import, and it knew nothing about comp_pro, so a comped
+    // account got Pro everywhere except here. is_pro_account() is the one
+    // definition; it wraps account_access(). Never re-inline it.
+    const { data: profileRow } = await supabaseAdmin
       .from('profiles')
-      .select('subscription_status, plan_tier')
+      .select('id')
       .eq('id', user.id)
       .maybeSingle()
 
-    if (!profile) return json({ error: 'Account not fully set up. Contact support.' }, 403)
+    if (!profileRow) return json({ error: 'Account not fully set up. Contact support.' }, 403)
 
-    const onTrial = profile.subscription_status === 'trialing'
-    const isPro = profile.subscription_status === 'active' && profile.plan_tier === 'pro'
-    if (!onTrial && !isPro) {
+    const { data: isPro, error: proError } = await supabaseAdmin
+      .rpc('is_pro_account', { p_user_id: user.id })
+
+    if (proError) {
+      console.error(`is_pro_account failed for ${user.id}: ${proError.message}`)
+      return json({ error: 'Could not check your plan. Try again in a moment.' }, 503)
+    }
+
+    if (!isPro) {
       return json({ error: 'Importing sales is part of Pro.' }, 402)
     }
 

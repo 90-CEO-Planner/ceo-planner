@@ -275,6 +275,7 @@ function billingAttachEvents() {
             localStorage.removeItem('ceo_sub_status');
             localStorage.removeItem('ceo_trial_ends_at');
             localStorage.removeItem('ceo_plan_tier');
+            localStorage.removeItem('ceo_comp_pro');
             localStorage.removeItem('ceoPlanner_store');
             window.location.hash = '#/login';
             window.location.reload();

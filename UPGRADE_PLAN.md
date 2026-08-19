@@ -22,115 +22,133 @@ same shape as Batch 7, covering everything built across the whole programme.
 Do not start it early and do not fold it into a feature session. It is its own
 piece of work, and its value comes from running against the finished thing.
 
-### 🔴 1. TRIALS NEVER END — fix this first (found 19 Aug 2026)
+### ✅ 1. TRIALS NEVER END — FIXED 19 Aug 2026
 
-**Every account is on a free trial that never expires, so nobody has ever been
-asked to pay.** Jen flagged this as the top priority and it belongs above every
-other item on this list.
+**Was:** every account was on a free trial that never expired, so nobody had ever
+been asked to pay. `profiles.trial_ends_at` had no column default and nothing on
+the signup path set it until the trigger was corrected on 13 Aug, so 11 of 13
+rows were NULL — and every access check read NULL as "no end date, no expiry".
+Derina, the one real customer, was 62 days into a 14-day trial. Zero accounts had
+ever reached `trial_expired`.
 
-**The evidence.** 11 of 13 accounts have `trial_ends_at = NULL`, including:
+`plan_tier` being `'base'` on every row was the other half: trials were the only
+thing granting Pro, so expiring them without a comp mechanism would have taken
+Pro off every account at once. Both landed together, as required.
 
-| Account | Signed up | Days on a "14-day" trial |
-|---------|-----------|--------------------------|
-| `derina@ntlworld.com` — **the one real customer** | 18 Jun 2026 | 62 |
-| `jeanette.spencer29@hotmail.co.uk` | 16 May 2026 | 95 |
-| `hello@thewomensentrepreneurialnetwork.com` | 23 May 2026 | 88 |
+#### What shipped
 
-Zero accounts have ever reached `trial_expired`.
+**Database** — `supabase/migrations/20260819_trial_expiry_and_comp_pro.sql`,
+applied live as migrations `trial_expiry_and_comp_pro` and
+`lock_down_access_gate_rpcs`. `supabase/setup.sql` updated to match for a fresh
+install.
 
-**The cause.** `profiles.trial_ends_at` is declared in
-[supabase/setup.sql](supabase/setup.sql) with **no default**, and nothing on the
-signup path ever sets it — `signup-sync` only reads it, and `stripe-webhook`
-only clears it. So every profile is created with NULL.
+- `trial_ends_at` now defaults to `now() + 14 days`.
+- New `profiles.comp_pro boolean not null default false`.
+- Backfill: 14 days **from the fix date** for the 11 NULL trialing rows, so they
+  all end 2 Sept 2026. `test_paywall@example.com` was skipped deliberately — it
+  is `past_due`, and a trial date would have handed it access back.
+- `derina@ntlworld.com` set `comp_pro = true`.
+- `account_access()`: a NULL `trial_ends_at` on a `trialing` row now **denies**;
+  `comp_pro` grants access and tier `'pro'` outright.
+- `has_active_access()` was still carrying its own copy of the rule, NULL hole
+  and all. It is now a one-line wrapper around `account_access()`.
+- `handle_new_user()`: the Stripe-first branch used to insert a NULL clock on the
+  reasoning that "Stripe owns their billing clock". Safe only while NULL meant
+  unlimited — it now means denied, so that branch would have locked out a
+  customer who paid before registering. It stamps 14 days unless the status is
+  already `active`.
+- `account_access()` and `is_pro_account()` were executable by `anon` and
+  `authenticated`. Both take a user id and run SECURITY DEFINER, so anyone with
+  the public anon key could ask about somebody else's account. Now service role
+  only. Nothing in the browser calls either.
 
-`refreshAccessState()` in [js/supabaseClient.js](js/supabaseClient.js) then only
-expires a trial when `trial_ends_at` is truthy:
+**Edge functions** — all three deployed via MCP.
 
-```
-const trialEndsAt = profile.trial_ends_at ? new Date(profile.trial_ends_at) : null;
-if (trialEndsAt) { ... if (msLeft <= 0) status = 'trial_expired'; }
-```
+- `stripe-sync` (v11) and `paypal-sync` (v3): the duplicate inline gate is gone,
+  replaced by an `is_pro_account()` RPC. That inline copy was the only one that
+  disagreed with the canonical rule — it read `trialing` as Pro without ever
+  looking at `trial_ends_at`, so a lapsed trial could still import.
+- `stripe-webhook` (v18): it nulled `trial_ends_at` for `trialing` **and**
+  `active`. Under the new rule that would lock a Stripe-trial customer out on the
+  spot. It now nulls only for `active`, copies Stripe's own `trial_end` across
+  for a Stripe trial, and leaves the column untouched if Stripe reports a trial
+  with no end date.
 
-NULL skips the check entirely, `status` stays `trialing`, and `tier` resolves to
-`pro`. **Result: unlimited free Pro, forever, for everyone.** The digest query in
-`20260818_digest_recipients.sql` treats NULL the same way, so those accounts also
-keep receiving the Monday email indefinitely.
+**Client** — `js/supabaseClient.js`, `js/components/proGate.js`,
+`js/components/nav.js`, `js/screens/billing.js`; bundle rebuilt at **v83**
+(`index.html`, `sw.js` `CACHE_NAME` and `?v=` all bumped), and every changed file
+synced into `github_deployment/` and hash-verified.
 
-**Two decisions before any code is written — both Jen's, not Claude's:**
+- `refreshAccessState()` selects `comp_pro`, treats a missing trial clock as
+  expired rather than infinite, and caches `ceo_comp_pro`.
+- `isLockedOut()` returns false for a comped account. Deliberately **not** done
+  by rewriting the status to `'active'`: a comped account whose clock has run out
+  should still be able to open `#/billing` and subscribe, and `app.js` sends
+  `active` accounts away from that screen.
+- `isProTrial()` excludes a comped account, so Derina gets no "14 days left" pill
+  and no trial wording on the plan card for something that is not going to end.
+- `ceo_comp_pro` is cleared on both sign-out paths and by `reconcileAuthState()`.
+  Left behind, it would comp whoever signed in on that browser next.
 
-1. **What happens to the 11 existing accounts?** Backfilling `trial_ends_at` from
-   `created_at + 14 days` would expire almost all of them *the moment it ships*,
-   including Derina, who would lose access without warning after 62 days of
-   having it. A grace window (e.g. 14 days from the fix date) is kinder and is
-   probably the right answer, but it is a business call.
-2. **Does the paywall actually work when it fires?** It has never fired for a
-   real account. `test_paywall@example.com` is `past_due`, which is a different
-   code path from `trial_expired`.
+#### Verified
 
-**Then the fix**, roughly: set `trial_ends_at` at profile creation (a column
-default of `now() + interval '14 days'` plus a backfill), and confirm
-`refreshAccessState()` flips a lapsed account to base rather than locking it out
-of its own data. Verify against a real account whose trial is set to expire
-within minutes, not by reasoning about the code.
+Against the live database, on real rows, before and after:
 
-⚠️ Related and NOT the same bug: `plan_tier` is `'base'` on every row in the
-database, so a server-side gate on `plan_tier = 'pro'` matches nobody. Today that
-is masked, because `trialing` resolves to Pro on its own. **Fixing trials without
-fixing this would take Pro away from every account at once.** Both have to land
-together.
+| Case | has_access | tier | is_pro |
+|------|-----------|------|--------|
+| Before the migration, all 13 accounts | 12 true | all pro | 12 |
+| After the migration, all 13 accounts | 12 true | all pro | 12 |
+| Trial set 1 minute in the past | **false** | — | **false** |
+| NULL clock on a trialing row | **false** | — | **false** |
+| comp_pro + `active` + `plan_tier='base'` | true | **pro** | **true** |
 
-#### The agreed fix — APPROVED 19 Aug 2026, ready to implement
+`consume_ai_quota` returns `no_access` for the expired trial and consumes nothing.
+The last row is Derina's exact future state: paying Base, still Pro, and the
+webhook cannot overwrite it. The test row (`test@example.com`) was restored.
 
-Do this as a dedicated session. It touches auth, billing and access control,
-which is where a mistake locks real people out of their own data.
+The client half was exercised by running the real `refreshAccessState()` and
+`isLockedOut()` out of `js/supabaseClient.js` under a stub in node — a live
+trial, an expired one, a NULL clock, active base, active pro, past_due, and all
+three of Derina's states. All nine behave as the table above.
 
-**Decisions CONFIRMED by Jen 19 Aug 2026 — do not reopen these:**
-- Grace window runs from the **fix date**, not from signup, and **everyone
-  getting 14 more days is explicitly fine**. Derina is the only real customer,
-  so the blast radius of the backfill is one person and she is being comped
-  anyway. Backfilling from `created_at` would have expired her instantly.
-- **Derina gets Pro permanently** via `comp_pro`, while paying Base. Jen
-  approved this specific mechanism, not just the intent.
+Both sync functions and the webhook were smoke-tested over HTTP after deploying
+and answer from their own bodies (401 / 400), so nothing failed to boot.
 
-**Why not just set `plan_tier = 'pro'` for her:** `stripe-webhook` writes that
-column, so the moment she subscribes to Base it would silently overwrite the
-comp. It needs a flag nothing in the payment path touches.
+#### Who is comped
 
-**⚠️ There are TWO Pro gates and they disagree.** `account_access()` is the
-canonical SQL one, but `stripe-sync` and `paypal-sync` each do their own inline
-`subscription_status === 'active' && plan_tier === 'pro'`. A comped account
-would get Pro everywhere EXCEPT sales importing. Fixing this is part of the job,
-not a nice-to-have.
+Two accounts, both set by hand, both agreed 19 Aug 2026:
 
-1. **Migration.**
-   ```sql
-   alter table profiles
-     alter column trial_ends_at set default (timezone('utc', now()) + interval '14 days');
-   alter table profiles
-     add column if not exists comp_pro boolean not null default false;
-   update profiles set trial_ends_at = timezone('utc', now()) + interval '14 days'
-     where trial_ends_at is null and subscription_status = 'trialing';
-   update profiles set comp_pro = true
-     where id = (select id from auth.users where email = 'derina@ntlworld.com');
-   ```
-2. **`account_access()`**: `comp_pro` grants `has_access` and tier `'pro'`; a NULL
-   `trial_ends_at` must stop meaning infinite access. Decide explicitly what a
-   NULL should do after the backfill — denying outright is safer than granting,
-   but check it cannot lock anyone out of data they own.
-3. **`refreshAccessState()`** in [js/supabaseClient.js](js/supabaseClient.js):
-   select and honour `comp_pro`.
-4. **Both sync functions** call `is_pro_account()` instead of their inline check,
-   killing the duplicate gate for good.
-5. **Do NOT fix trials without `plan_tier`.** Every row is `'base'`; today that is
-   masked because `trialing` resolves to Pro on its own. Fix one without the
-   other and every account loses Pro at once.
+| Account | Why |
+|---------|-----|
+| `derina@ntlworld.com` | The one real customer. Pro permanently while paying Base. |
+| `hello@thewomensentrepreneurialnetwork.com` | Jen's own account. Migration `comp_pro_jen_owner_account`. |
 
-**Verification — must be on a real account, not by reading the code:** set a test
-profile's `trial_ends_at` two minutes out and watch it flip to expired. Then
-confirm the paywall it lands on actually works: **it has never fired for any real
-account.** `test_paywall@example.com` is `past_due`, which is a DIFFERENT code
-path from `trial_expired`. That path has to be exercised before the grace window
-closes, not after.
+Everything else was left on the 2 Sept clock deliberately — the owner of the
+product losing access to the product is not a useful test of the paywall, and
+the remaining accounts still serve that purpose.
+
+#### ⚠️ One thing left: the paywall has still never fired
+
+Every check above proves an account is correctly *refused*. None proves the
+screen it lands on behaves. `test_paywall@example.com` is `past_due`, which is a
+**different code path** from `trial_expired`. This needs a browser and a
+signed-in account, which is why it could not be done here.
+
+**It is now scheduled to happen by itself**, on accounts nobody minds:
+
+| Account | Trial ends |
+|---------|-----------|
+| `hello+ceoplannertest@thewomensentrepreneurialnetwork.com` | 27 Aug 2026 |
+| `hello+consultant@thewomensentrepreneurialnetwork.com` | 28 Aug 2026 |
+
+Sign in on the first one on 27 Aug and watch what it does. To see it sooner,
+set that profile's `trial_ends_at` two minutes out instead of waiting.
+
+**The v83 bundle must be live before 2 Sept.** The backfill alone is enough to
+make even the old v82 client expire a trial correctly — it reads `trial_ends_at`
+itself, and every row now has one. What v82 does **not** know about is
+`comp_pro`. So if the push has not happened by 2 Sept, the database will grant
+Derina and Jen access while their browsers show them the paywall.
 
 ### 2. PayPal scope reduction — parked 19 Aug 2026
 

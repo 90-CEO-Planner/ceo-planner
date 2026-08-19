@@ -13,9 +13,20 @@ create table public.profiles (
   -- so a locked feature is always something the user has already had rather
   -- than something they have never seen.
   plan_tier text not null default 'base' check (plan_tier in ('base', 'pro')),
-  -- End of the app-managed 14-day free trial. NULL means the account is not on
-  -- an app trial, either because Stripe governs it or because it is grandfathered.
-  trial_ends_at timestamp with time zone,
+  -- End of the app-managed 14-day free trial.
+  --
+  -- The default is load-bearing. This column had none until 19 Aug 2026 and
+  -- nothing on the signup path set it, so every profile was created NULL — and
+  -- every access check read NULL as "no end date, so no expiry". The result was
+  -- unlimited free Pro for everyone, forever. A NULL now DENIES access on a
+  -- trialing row, so nothing may write one onto a trial. See
+  -- migrations/20260819_trial_expiry_and_comp_pro.sql.
+  trial_ends_at timestamp with time zone default (timezone('utc', now()) + interval '14 days'),
+  -- Manually granted Pro, independent of what was paid for. Nothing in the
+  -- Stripe or PayPal path writes this column, which is exactly the point: a
+  -- comp written into plan_tier would be overwritten by the webhook the moment
+  -- the person subscribed to Base. Set by hand only.
+  comp_pro boolean not null default false,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
@@ -66,10 +77,12 @@ as $$
   select coalesce(
     (
       select
-        p.subscription_status = 'active'
+        coalesce(p.comp_pro, false)
+        or p.subscription_status = 'active'
         or (
           p.subscription_status = 'trialing'
-          and (p.trial_ends_at is null or p.trial_ends_at > timezone('utc', now()))
+          and p.trial_ends_at is not null
+          and p.trial_ends_at > timezone('utc', now())
         )
       from public.profiles p
       where p.id = p_user_id
@@ -77,6 +90,11 @@ as $$
     false
   );
 $$;
+
+-- NOTE: once migrations/20260818_account_access.sql and
+-- 20260819_trial_expiry_and_comp_pro.sql have run, this function is replaced by
+-- a one-line wrapper around account_access(), which is the single definition of
+-- the rule above. The copy here only has to be right for a fresh install.
 
 -- Grants are set together further down, after all the functions exist.
 
@@ -331,9 +349,20 @@ begin
   where lower(email) = lower(new.email);
   
   if found then
-    -- Came through Stripe first. Stripe owns their billing clock, so no app trial.
+    -- Came through Stripe first. A paying customer needs no app trial clock and
+    -- is never read against one. Anyone else gets a real date: a NULL clock on a
+    -- trialing row means NO access since 19 Aug 2026, so writing one here would
+    -- lock out a customer who paid before registering. If Stripe is genuinely
+    -- governing their trial, the webhook overwrites this with Stripe's own
+    -- trial_end.
     insert into public.profiles (id, email, stripe_customer_id, subscription_status, trial_ends_at)
-    values (new.id, new.email, matching_customer_id, coalesce(matching_status, 'trialing'), null);
+    values (
+      new.id, new.email, matching_customer_id, coalesce(matching_status, 'trialing'),
+      case
+        when coalesce(matching_status, 'trialing') = 'active' then null
+        else timezone('utc', now()) + interval '14 days'
+      end
+    );
 
     -- Consume/delete from allowed_signups
     delete from public.allowed_signups where lower(email) = lower(new.email);

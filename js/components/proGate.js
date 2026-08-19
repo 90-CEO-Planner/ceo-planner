@@ -361,7 +361,14 @@ export function warnIfAllowanceLow(allowance) {
 
 // True while the account is inside the app-managed 14-day trial, which is the
 // only state where someone has Pro without paying for it.
+//
+// A comped account is excluded even while its subscription still reads
+// 'trialing'. Its Pro does not run out, so every piece of trial framing this
+// gates — the "14 days left" pill in the nav, the trial wording on the plan
+// card, the shorter coach context window — would be telling a customer she is
+// about to lose something she is not.
 export function isProTrial() {
+    if (localStorage.getItem('ceo_comp_pro') === 'true') return false;
     return localStorage.getItem('ceo_sub_status') === 'trialing' && isProUser();
 }
 
