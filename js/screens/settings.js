@@ -3,18 +3,72 @@ import { renderNav } from '../components/nav.js';
 import { getStore, updateProfile, updateGoals, updateRevenueSettings, updateLeadGoal, updateSettings, REMINDER_WEEKLY, REMINDER_DAILY, REMINDER_FRIDAY, REMINDER_SNAPSHOT } from '../store.js';
 import { showToast, rerenderScreen } from '../components/toast.js';
 import { proTeaser, canUseEmailDigest, proCardHeading, PRO_CARD_HEADING_STYLE } from '../components/proGate.js';
+import { CURRENCIES, currencyCodeFor, currencySymbolFor, baseCurrencyCode, conversionRateFor, foreignCurrenciesPresent } from '../currency.js';
+import { refreshImportedSales, getImportedSalesCache } from '../importedSales.js';
 
-// Must stay identical to CURRENCIES in wizard.js. The wizard was the only place
-// currency could ever be set, so anyone who accepted the default $ by mistake had
-// no way back — and the symbol in that wizard field was invisible at the time.
-const SETTINGS_CURRENCIES = [
-    { value: '£', label: '£  British Pound (GBP)' },
-    { value: '$', label: '$  US Dollar (USD)' },
-    { value: '€', label: '€  Euro (EUR)' },
-    { value: 'A$', label: 'A$  Australian Dollar (AUD)' },
-    { value: 'C$', label: 'C$  Canadian Dollar (CAD)' },
-    { value: 'R', label: 'R  South African Rand (ZAR)' }
-];
+// This used to be a second copy of the wizard's list, headed "must stay identical
+// to CURRENCIES in wizard.js". Both now read the one in js/currency.js, which
+// also holds the ISO code each symbol maps to -- see the note there.
+
+// Conversion rates for imported sales taken in another currency.
+//
+// Shown ONLY for currencies that actually appear in this user's imported sales.
+// A fixed grid of six boxes would ask everybody to think about the Rand, and the
+// overwhelming majority of accounts import nothing at all — for them this whole
+// section is absent, which is correct: there is nothing to convert.
+//
+// So the section appearing at all is itself the signal that something needs
+// attention, and the empty state below is the one the user is meant to act on.
+function renderConversionRates(store) {
+    const base = baseCurrencyCode(store);
+    const baseSymbol = store.settings?.currency || '$';
+    const codes = foreignCurrenciesPresent(getImportedSalesCache(), base);
+    if (codes.length === 0) return '';
+
+    const rows = codes.map(code => {
+        const rate = conversionRateFor(store, code, base);
+        const symbol = currencySymbolFor(code);
+        // Deliberately blank rather than pre-filled with a guess. An empty box
+        // reads as "we need this from you"; a plausible-looking number reads as
+        // settled, and nobody checks a number that looks settled.
+        const value = rate === null ? '' : rate;
+        return `
+            <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.6rem;flex-wrap:wrap;">
+                <span style="font-weight:600;color:var(--color-black);white-space:nowrap;">1 ${code} =</span>
+                <div style="position:relative;display:flex;align-items:center;flex:1 1 120px;min-width:110px;">
+                    <span style="position:absolute;left:0.75rem;z-index:1;font-weight:600;color:var(--color-text-muted);">${baseSymbol}</span>
+                    <input type="number" step="0.0001" min="0"
+                           class="form-input conversion-rate-input"
+                           data-code="${code}"
+                           value="${value}"
+                           placeholder="0.00"
+                           style="padding-left:2.25rem;width:100%;"
+                           aria-label="Conversion rate from ${code} to ${base}">
+                </div>
+                ${rate === null
+                    ? `<span style="font-size:0.75rem;font-weight:600;color:#B54708;background:#FFFAEB;padding:0.15rem 0.5rem;border-radius:4px;white-space:nowrap;">not counted yet</span>`
+                    : `<span style="font-size:0.75rem;color:var(--color-text-muted);white-space:nowrap;">${symbol}100 = ${baseSymbol}${(100 * rate).toFixed(2)}</span>`}
+            </div>
+        `;
+    }).join('');
+
+    return `
+    <div class="form-group mb-4" style="border:1px solid var(--color-border);border-radius:12px;padding:1rem;background:var(--color-bg-light);">
+        <label class="form-label" style="font-weight: 600;">Exchange rates for imported sales</label>
+        <p style="color:var(--color-text-muted);font-size:0.85rem;line-height:1.6;margin:0 0 0.9rem;">
+            Some of your imported payments came in a different currency to the one above.
+            Set the rate you want to use and they will count towards your quarter.
+            <strong>Until you do, they are shown but not counted</strong> — we would rather
+            leave a visible gap than quietly add a number that is wrong.
+        </p>
+        ${rows}
+        <span class="form-helper">
+            Your rate, not a live market one, so your figures stay put and a report you sent
+            last month still adds up today. Change it whenever you like.
+        </span>
+    </div>
+    `;
+}
 
 export function renderSettings() {
     // We bind the event listeners after HTML is rendered using setScreenModule
@@ -160,10 +214,11 @@ export function renderSettings() {
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Currency</label>
                 <select id="set-currency" class="form-select">
-                    ${SETTINGS_CURRENCIES.map(c => `<option value="${c.value}" ${(store.settings?.currency || '$') === c.value ? 'selected' : ''}>${c.label}</option>`).join('')}
+                    ${CURRENCIES.map(c => `<option value="${c.symbol}" ${(store.settings?.currency || '$') === c.symbol ? 'selected' : ''}>${c.label}</option>`).join('')}
                 </select>
                 <span class="form-helper">Used everywhere money appears. Changing it relabels your figures, it does not convert them.</span>
             </div>
+            ${renderConversionRates(store)}
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Quarterly Revenue Goal</label>
                 <div style="position: relative; display: flex; align-items: center;">
@@ -294,6 +349,20 @@ export function renderSettings() {
 }
 
 function settingsAttachEvents() {
+    // The exchange-rate section is built from the imported-sales cache, and on a
+    // cold load straight to #/settings that cache is empty — so without this the
+    // section would be invisible to the one person who most needs it: somebody
+    // who has just been told on the Revenue screen that their sales are not
+    // being counted, and has come here to fix it.
+    //
+    // Same re-render guard as the Revenue screen, and for the same reason:
+    // rerenderScreen fires hashchange, which runs attachEvents, which lands back
+    // here. Only repaint when the count actually changed.
+    const importedCountAtRender = getImportedSalesCache().length;
+    refreshImportedSales().then(sales => {
+        if (sales.length !== importedCountAtRender) rerenderScreen();
+    }).catch(() => { /* the rest of Settings works fine without it */ });
+
     // Saved the moment it is flipped rather than on form submit: it sits above
     // the reminder checkboxes, which also save themselves, so a switch here that
     // needed a separate Save press would be the odd one out.
@@ -407,6 +476,37 @@ function settingsAttachEvents() {
 
             const currency = document.getElementById('set-currency')?.value;
             if (currency) updateSettings({ currency });
+
+            // Exchange rates, stamped with the currency they convert INTO.
+            //
+            // Read against the currency selected in this same submit, not the
+            // one that was in the store when the page rendered — somebody who
+            // switches from pounds to euros and types a rate in one go means
+            // "this many euros", and storing it as sterling would make it wrong
+            // the moment it was saved.
+            //
+            // A blank or non-positive box removes the rate rather than storing a
+            // zero. Zero is a rate, and it is the one that would silently value
+            // every foreign sale at nothing; absent is the state that puts the
+            // "not counted yet" warning back on screen where the user can see it.
+            const rateInputs = Array.from(document.querySelectorAll('.conversion-rate-input'));
+            if (rateInputs.length) {
+                const intoBase = currencyCodeFor(currency || getStore().settings?.currency || '$');
+                const conversionRates = { ...(getStore().settings?.conversionRates || {}) };
+
+                rateInputs.forEach(input => {
+                    const code = input.dataset.code;
+                    if (!code) return;
+                    const value = parseFloat(input.value);
+                    if (Number.isFinite(value) && value > 0) {
+                        conversionRates[code] = { rate: value, base: intoBase };
+                    } else {
+                        delete conversionRates[code];
+                    }
+                });
+
+                updateSettings({ conversionRates });
+            }
 
             // Left alone rather than coerced to 0 if the field is somehow absent,
             // so a missing input can never silently wipe a price the user set.

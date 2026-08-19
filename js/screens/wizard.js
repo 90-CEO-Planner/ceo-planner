@@ -1,5 +1,6 @@
 // wizard.js
 import { getStore, updateGoals, updateProfile, applyGeneratedPlan, updateSettings, updateRevenueSettings, updateLeadGoal, startNewQuarter } from '../store.js';
+import { CURRENCIES } from '../currency.js';
 import { showToast } from '../components/toast.js';
 import { generate90DayActionPlan } from '../aiService.js';
 
@@ -26,14 +27,12 @@ const BUSINESS_STAGES = [
 ];
 
 // Symbol is what the rest of the app renders, so the value is the symbol itself.
-const CURRENCIES = [
-    { value: '£', label: '£  British Pound (GBP)' },
-    { value: '$', label: '$  US Dollar (USD)' },
-    { value: '€', label: '€  Euro (EUR)' },
-    { value: 'A$', label: 'A$  Australian Dollar (AUD)' },
-    { value: 'C$', label: 'C$  Canadian Dollar (CAD)' },
-    { value: 'R', label: 'R  South African Rand (ZAR)' }
-];
+// The list lives in js/currency.js now. It used to be duplicated here and in
+// settings.js, with a comment on each copy asking the next person to keep them
+// identical -- which is not a mechanism. It matters more since imported sales
+// arrived: currency.js maps each symbol to the ISO code a payment processor
+// reports, so a symbol offered here but missing there is a sale that cannot be
+// converted.
 
 // Send the wizard back to its first step. Quarter Reset routes to #/wizard without
 // a page reload, so this module's currentStep survives — someone who reset in the
@@ -257,7 +256,7 @@ function renderStepContent() {
                 <div class="form-group mb-4">
                     <label class="form-label" style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; display: block;">Which currency do you work in?</label>
                     <select class="form-input" id="set-currency" required style="border-radius: 8px; padding: 0.75rem; width: 100%;">
-                        ${CURRENCIES.map(c => `<option value="${c.value}" ${cur === c.value ? 'selected' : ''}>${c.label}</option>`).join('')}
+                        ${CURRENCIES.map(c => `<option value="${c.symbol}" ${cur === c.symbol ? 'selected' : ''}>${c.label}</option>`).join('')}
                     </select>
                 </div>
 

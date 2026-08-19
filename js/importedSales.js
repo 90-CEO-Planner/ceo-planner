@@ -128,6 +128,15 @@ function toEntryShape(row) {
         amount: refunded ? 0 : gross,
         grossAmount: gross,
         refunded,
+        // The ISO code the processor reported, carried through untranslated.
+        //
+        // This column was selected from the database from the beginning and then
+        // dropped here, which is precisely how a $17 charge came to be added to a
+        // sterling quarter as £17. Conversion happens at READ time in
+        // mergeImportedSales(), not here: the rate lives in the store and the
+        // user can change it, so baking a converted figure into the cache would
+        // leave every screen quoting the old rate until the next sync.
+        currency: String(row.currency || '').toUpperCase(),
         // The human label, which is what the Source Attribution breakdown groups
         // and displays.
         source: label,

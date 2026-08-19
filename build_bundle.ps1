@@ -1,5 +1,9 @@
 $files = @(
     "js\supabaseClient.js",
+    # Before store.js, which converts imported foreign sales at read time, and
+    # before importedSales.js and both screens that render a rate. It imports
+    # nothing itself, so it is safe this early.
+    "js\currency.js",
     # Before store.js, which calls getImportedSalesCache() at read time, and
     # before both processor files, which call fetchConnectionRow() and share its
     # session handling. This is the one source for sales imported from anywhere.

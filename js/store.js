@@ -6,6 +6,10 @@
 // it — the screens refresh it and this just reads whatever is there. An empty
 // cache means "manual entries only", which is the pre-import behaviour.
 import { getImportedSalesCache } from './importedSales.js';
+// Translates the processor's ISO code into the user's own currency at read time,
+// and refuses to guess when no rate has been set. Concatenated before this file
+// in the bundle; it imports nothing, so it cannot cycle back.
+import { baseCurrencyCode, convertImportedEntry, unconvertedSummary } from './currency.js';
 // proGate.js has no imports of its own, so this cannot cycle back. It is
 // concatenated after this file in the bundle, which is fine: quickOfferLimit is
 // a hoisted function declaration and is only called at save time.
@@ -135,7 +139,15 @@ const defaultState = {
     contacts: [], // Array of { id, name, source, offer, value, stage, reached, followUpDate, notes }
     metrics: [], // Array of { id, date, traffic, calls, social }
     settings: {
-        currency: '$'
+        currency: '$',
+        // Rates for turning imported foreign sales into `currency`, keyed by the
+        // processor's ISO code: { USD: { rate: 0.79, base: 'GBP' } }.
+        //
+        // Set by hand in Settings and deliberately never fetched from an FX API
+        // — no external dependency, no rates moving underneath a report that has
+        // already been sent. An absent or stale-based rate means the sale is
+        // flagged and excluded from totals, never estimated. See js/currency.js.
+        conversionRates: {}
     },
     // ISO timestamp for the start of the active 90-day quarter. Set on wizard
     // completion and on quarter reset. Pace and projection maths measure from
@@ -386,8 +398,22 @@ export function deleteMetricSnapshot(id) {
 // which covers a payment logged the morning after it landed. Deliberately strict:
 // a false flag on two genuinely separate £47 sales in one week is more annoying
 // than a missed one.
-function mergeImportedSales(manualEntries, importedEntries) {
+function mergeImportedSales(manualEntries, importedEntries, store) {
     if (!importedEntries || importedEntries.length === 0) return manualEntries;
+
+    // Convert BEFORE anything else looks at an amount.
+    //
+    // Order matters here and is not obvious. The duplicate check below compares
+    // imported amounts against hand-logged ones, and hand-logged amounts are
+    // always in the user's own currency — so comparing an unconverted $17
+    // against a logged £17 would call them the same sale. Converting first puts
+    // both sides in one currency before any comparison is made.
+    //
+    // A sale in a currency with no rate set comes back with amount 0 and
+    // `needsRate`, so it is excluded from every total rather than guessed at.
+    // See js/currency.js for why that is the right failure.
+    const base = baseCurrencyCode(store);
+    const converted = importedEntries.map(e => convertImportedEntry(e, base, store));
 
     const DAY = 24 * 60 * 60 * 1000;
     const manualStamps = manualEntries.map(e => ({
@@ -395,7 +421,7 @@ function mergeImportedSales(manualEntries, importedEntries) {
         amount: parseFloat(e.amount) || 0
     }));
 
-    const flagged = importedEntries.map(imported => {
+    const flagged = converted.map(imported => {
         const time = new Date(imported.date).getTime();
         const amount = imported.grossAmount != null ? imported.grossAmount : imported.amount;
         const looksLikeDuplicate = manualStamps.some(m =>
@@ -1094,7 +1120,7 @@ export function getRevenueInsights() {
     // Merging at this single point means the totals, the quarter progress, the
     // conversion rates, the CSV export and the AI Coach's context all pick them
     // up without each needing to know the feature exists.
-    const entries = mergeImportedSales(rev.entries || [], getImportedSalesCache());
+    const entries = mergeImportedSales(rev.entries || [], getImportedSalesCache(), store);
 
     // The subset that belongs to the active quarter. Entries dated before the
     // quarter began — history someone typed in at onboarding, or an import — used
@@ -1289,6 +1315,17 @@ export function getRevenueInsights() {
         // deliberately excluded from totalRevenue, progress and the projection.
         revenueBeforeQuarter,
         quarterEntryCount: quarterEntries.length,
+        // Imported sales in a currency with no conversion rate set. They are
+        // counted as zero in every figure above — deliberately, because a
+        // guessed rate produces a total that is confidently wrong, which is
+        // worse than an admitted gap.
+        //
+        // Computed here rather than on the Revenue screen so that the screen
+        // showing the warning and the maths acting on it can never disagree
+        // about how many sales are affected. [[read-from-single-source]]
+        //
+        // [{ code, symbol, count, originalTotal }], commonest currency first.
+        unconvertedSales: unconvertedSummary(entries),
         // The entries themselves, for anything that needs to break the quarter
         // down rather than total it. `entries` above is every sale ever logged,
         // so a breakdown built from it produces shares that do not divide into

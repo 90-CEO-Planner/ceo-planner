@@ -368,28 +368,96 @@ the source under stubs in node.
 
 Bundle `node --check`ed after the rebuild.
 
-#### ⚠️ One thing that cannot be checked without a real customer
+#### The live test, and the two bugs it found (19 Aug 2026)
 
-**The portal configuration has never actually been created.** It is built on the
-first real call, and that call needs a signed-in account with a
-`stripe_customer_id` — which is nobody today, because there are still **zero**
-accounts with `subscription_status = 'active'`.
+The configuration is built on the first real call, and that call needs a
+signed-in account with a `stripe_customer_id` — which is nobody, because there
+are still **zero** accounts with `subscription_status = 'active'`. So it was
+forced: Jen's own profile was flipped to `active` for the length of one button
+press and put straight back. Nothing else on the row was touched, and `comp_pro`
+kept her on Pro throughout. It found two things that no amount of reading would
+have.
 
-Live mode has requirements a sandbox does not, chiefly a privacy policy and terms
-URL either on the configuration or as account defaults in the Stripe dashboard.
-So the creation is written **not to throw**: if Stripe refuses, the function logs
-the exact message, falls back to the account default configuration — card,
-invoices and cancel all still work — and returns `config_failed` for an upgrade
-rather than a 500.
-
-After the first person presses either button, check it landed:
+**1. `STRIPE_SECRET_KEY` in Supabase was not a Stripe key.** The first press
+returned the generic 502, and the logs said why:
 
 ```
-Supabase → Edge Functions → stripe-portal → Logs
+Invalid API Key provided: mk_1L6gs***************Dvcf
 ```
 
-A line reading `Created the CEO Planner portal configuration: bpc_…` means it
-worked. A line beginning `Could not create` names the field Stripe wants.
+Stripe secret keys are `sk_live_…` and restricted keys are `rk_live_…`. `mk_` is
+neither — most likely a credential belonging to the third-party checkout platform
+on this account (the `ca_HMR7Te…` one). **This was pre-existing and had nothing
+to do with the portal work.** It had simply never mattered, because almost
+nothing had ever called the Stripe API with it:
+
+- `stripe-webhook` verifies signatures with `STRIPE_WEBHOOK_SECRET`, a different
+  secret, and reads tier from the event payload inline. Both fine.
+- Its one API call is `stripe.prices.retrieve()` at line 79 — the backstop for
+  when a payload carries no usable metadata. That is inside a `try/catch`, so
+  nothing ever crashed; the net was just silently dead. Had it fired, a Pro
+  customer would have been written as `base`: a $37 charge with Base features,
+  the exact failure item 2 was built to prevent.
+- `stripe-sync` uses each customer's own `rk_` key, never ours. Unaffected.
+- The payment links are Stripe-hosted. Unaffected.
+
+Jen replaced it with a proper `sk_live_` key (Stripe → Create a secret key →
+**"Powering an integration you built"**). The second press then behaved exactly
+as predicted — the blue `no_customer` toast, because `cus_placeholder2` is not a
+real Stripe customer — and the configuration was created:
+**`bpc_1U6D9sAnrDOsqkV3hVpLjeFC`**.
+
+**2. Stripe defaults `adjustable_quantity` to ON, and rev 1 shipped with it.**
+Reading the created configuration back showed:
+
+```
+"adjustable_quantity": { "enabled": true, "minimum": 1, "maximum": null }
+```
+
+On a single-seat product that is a quantity stepper on the plan-switch screen. A
+customer who nudged it to 2 would pay **$74 a month for one account** — and
+nothing would flag it, because the webhook writes the tier and never looks at
+quantity. Caught before any customer had reached the portal.
+
+Fixed in **rev 2**, which also introduced the mechanism that made the fix
+deliverable at all:
+
+**`CONFIG_REV`.** The configuration is created once and then lives in Stripe, so
+without a version stamp an edit to `configurationBody()` would never reach the
+live portal — the function would find the old configuration, decide its job was
+done, and serve sessions built to the old rules. It now compares `metadata.rev`
+and, on a mismatch, **updates in place** rather than creating a second
+configuration. `configurationBody()` is shared by create and update so the two
+cannot drift. **Bump `CONFIG_REV` whenever you change that function.**
+
+#### Verified against live Stripe
+
+`bpc_1U6D9sAnrDOsqkV3hVpLjeFC`, read back after the rev 2 update
+(`metadata.rev = "2"`, `updated` timestamp moved):
+
+| Field | Value |
+|-------|-------|
+| `products` | the 2 planner products only, all 4 correct price ids |
+| `adjustable_quantity` | **`enabled: false`** on both |
+| `proration_behavior` | `always_invoice` |
+| `schedule_at_period_end.conditions` | `decreasing_item_amount`, `shortening_interval` |
+| `subscription_cancel.mode` | `at_period_end` |
+| `is_default` / `login_page` | `false` / disabled — the account default is untouched |
+
+`products` is only returned when you ask for it:
+`expand[]=features.subscription_update.products`. Without that it is absent from
+the response and looks unset, which is misleading — check it that way or not at
+all.
+
+Also verified: 13 assertions on `configurationBody()` and its form encoding, run
+in node.
+
+#### Still not proven, and cannot be until someone buys
+
+The **session** half. `cus_placeholder2` is not a real customer, so no portal has
+ever actually opened, and no plan switch has been prorated. That needs one real
+Base subscriber and is the natural first item for the end-to-end test at the top
+of this file.
 
 ### 4. PayPal scope reduction — parked 19 Aug 2026
 
@@ -1437,71 +1505,43 @@ composite in this session — so the *visual* layout of the card is unverified.
 
 ---
 
-## START HERE next session (rewritten 18 Aug 2026, after Pro item 8)
+## START HERE next session (rewritten 19 Aug 2026, after the billing portal)
 
-**The backend is fully deployed.** Items 5, 6 and 8 needed no migration and no
-new edge function; item 6 calls `chat` with a smaller payload than the 90-day
-plan already sends, and item 8 makes no network call at all. Only the app is
-outstanding.
+**Everything above this line in Phase 2 is built and live.** Items 1-10 are done,
+the trial/paywall work is done, Pro is purchasable, and the billing portal ships
+the upgrade path. The bundle is **v86** and confirmed live; the Supabase functions
+are deployed. Nothing is waiting to be pushed as of the end of that session.
 
-1. **Push. `github_deployment/` is synced and waiting.** Root and the deployment
-   copy were compared file-by-file on 18 Aug 2026 and are identical: **bundle v76 /
-   components.css v28 / variables.css v17**, carrying item 8 (branded report), the
-   PRO chip on the PDF Report button, the report customisation pass below, and
-   item 9 (unlimited quick offers). Nothing else is outstanding on either side.
-   The CSS versions are unchanged on purpose — item 9 added no CSS.
+The previous version of this section, written 18 Aug, said `imported_sales` was
+empty and no Stripe key had ever been connected. **Both were untrue by 19 Aug** —
+there are 8 real Stripe rows ($275, all USD) on Jen's own account. It also told
+the reader to push v76. Corrected here so nobody acts on it again; the underlying
+lesson is the one this file keeps relearning, which is that a "next session" note
+rots faster than anything else in the document.
 
-   ✅ **v75 has landed.** Checked live on 18 Aug 2026: the site serves
-   `bundle.js?v=76`'s predecessor, v75, and the live bundle really does contain
-   `Every transaction` and `'pdf-export'` with `shipped: true`. So item 8 is out
-   there working — the "still Jen's to do" note below has been done. What is
-   waiting now is **v76 only**, which is item 9.
+### What is actually left, in the order it is worth doing
 
-   `README.md` differs between the two trees **on purpose** — the deployment one is
-   the real deployment readme, the root one is a stray Supabase CLI readme. Do not
-   "fix" it by copying root over it.
+1. ~~**Currency handling for imported sales**~~ ✅ **Done 19 Aug 2026** — see
+   "Pro item 1, sub-item 3" below for what shipped.
+2. **Product to offer matching** — Pro item 1, sub-item 2. Not built. One-time
+   friction by design; low stakes next to the above.
+3. **Persist generated AI reports.** `lastAiReport` is session-scoped, so the
+   branded report loses its AI write-up once the modal is closed — while the
+   tooltip still says the write-up is included. Roughly 30 lines, no new
+   infrastructure.
+4. **Email the branded report**, alongside the digest workflow it shares plumbing
+   with. Deliberately last, and now cheaper than first planned: a link in an
+   event property rather than an attachment.
 
-   ⚠️ **This gap is why Jen saw "This one is still being built" on the Pro
-   modal for a feature that was finished.** `isFeatureLive('pdf-export')` reads
-   the `shipped` flag out of the *running* bundle, so an unshipped feature and an
-   unbuilt one are indistinguishable from the browser. The modal was telling the
-   truth about the live site. Check the trees before believing a screenshot.
+### The testing that is owed, and is its own job
 
-2. **Verify the push properly.** Read the `?v=` the live `index.html` requests,
-   *and* grep the live bundle for a symbol only the new code has. The push that
-   looked fine and shipped nothing failed because this check was never run:
-
-   ```bash
-   curl -s https://app.thewomensentrepreneurialnetwork.com/ | grep -o 'bundle\.js?v=[0-9]*'
-   ```
-
-   Expect `bundle.js?v=76`. Anything lower means it has not landed. Then grep the
-   live bundle for `Add another offer` — that string arrived in v76, so it is the
-   one thing a stale-file push cannot fake. (`Every transaction` is the same test
-   for v75, if you need to tell v75 from v74.) A second tell: live
-   `css/variables.css` must define `--color-bg-light`, which only exists from v17.
-   A third, cheaper one: the live `proGate` blocks for both `'pdf-export'` and
-   `'unlimited-offers'` must read `shipped: true`.
-3. **First real-session run of live AI.** Everything above the transport is
-   verified; the transport itself was stubbed, because testing it needs a
-   signed-in account. Open the dashboard, the Weekly Plan and the Notepad on a
-   Pro account and confirm the model output actually parses and reads well.
-   Watch `ai_usage` for the call count — it should tick up by two on a first
-   dashboard load and stay flat on a second. **Rewrite one week while you are
-   there** (item 6) and read what comes back: the test that matters is whether
-   it is a genuinely different week or the old one reworded.
-4. **Connect Jen's own Stripe** with a restricted key and run a sync. Nothing has
-   ever been tested end to end — `imported_sales` is empty and no key has been
-   connected. `stripe-connect` **v8 is deployed** (16 Aug 2026, `verify_jwt: true`,
-   smoke-tested). Expect Derina's subscriptions to name "CEOPlanner" and the "Your
-   store" charges to fall back to their description.
-5. **Pro item 7 (weekly email digest) is the live one.** v76 is confirmed live,
-   so items 8 and 9 are both shipped and nothing is waiting to be pushed. Item 7
-   is designed, its two hard unknowns are settled, and the Loops side is started —
-   read "Phase 2 — Item 7" above before touching anything, particularly the two
-   ⚠️ blocks: it is **not** a transactional email, and the server-side Pro gate
-   **would email nobody** if written the obvious way. The build list is at the end
-   of that section. Item 10 (PayPal) is then the last thing in Phase 2.
+Not to be folded into a feature session — see the PENDING block at the top of
+this file. In short: the paywall screen has still never been reached by a real
+expiring trial (two accounts are scheduled to do it by themselves, 27 and 28 Aug);
+the coach-memory checks in "item 5" need a real signed-in account; a real PayPal
+sale has never been imported, so the positive path of that filter is unproven;
+and no Stripe billing portal has ever actually **opened**, because no account has
+a real `stripe_customer_id` with a live planner subscription.
 
 **Check for a reply from Stripe support** (question sent 14 Aug 2026, see
 "Connection UX"). It does not block any of the above.
@@ -1665,7 +1705,97 @@ an existing quick offer or "keep as is". Automatic thereafter.
 once — not *sales*, which never stop arriving. The cost does not grow with use,
 and Stripe product names are often internal in a way her offer names are not.
 
-### 3. Currency: flag, never guess
+### 3. Currency: flag, never guess ✅ DONE 19 Aug 2026, bundle v87
+
+Built exactly to the spec below. What shipped:
+
+**New [js/currency.js](js/currency.js)** — added to `build_bundle.ps1` before
+`store.js`. It owns the symbol↔ISO mapping, rate lookup, per-entry conversion and
+the summary the warning is built from.
+
+**The root cause was one dropped field.** `imported_sales.currency` was selected
+from the database and then silently discarded by `toEntryShape()` in
+`importedSales.js`, so by the time a sale reached the maths there was nothing left
+to say what money it was in. `mergeImportedSales()` concatenated, `totalRevenue`
+summed, and a $17 charge went into a sterling quarter as £17.
+
+**Conversion happens at READ time**, inside `mergeImportedSales()`, not at fetch
+time. The rate lives in the store and the user can change it; baking a converted
+figure into the imported-sales cache would leave every screen quoting the old rate
+until the next sync.
+
+**Order inside that function is load-bearing.** Conversion runs *before* the
+duplicate check, because that check compares imported amounts against hand-logged
+ones and hand-logged amounts are always in the user's own currency. Unconverted,
+a $100 import would have been flagged as "possibly the same sale" as a £100 manual
+entry. Both directions are covered by tests.
+
+**Rates are stamped with the currency they convert INTO:**
+
+```
+settings.conversionRates = { USD: { rate: 0.79, base: 'GBP' } }
+```
+
+The `base` is not decoration. Without it, somebody who sets "1 USD = 0.79" while
+working in pounds and later switches the app to euros keeps the 0.79 and gets euro
+totals computed at a sterling rate — wrong, and invisible. **A rate whose base no
+longer matches is treated as not set**, so the sale is flagged and the user is
+asked again. Flag-never-guess applies to our own stale data too.
+
+**No rate means `amount` is forced to 0** — excluded from every figure — with the
+original kept on `originalAmount` / `originalCurrency` and `needsRate` set. The row
+still appears in the feed showing what the customer actually paid, in their own
+currency, because a sale that vanishes reads as data loss. Same reasoning that
+keeps a refunded charge visible at zero.
+
+**`getRevenueInsights()` returns `unconvertedSales`** — `[{code, symbol, count,
+originalTotal}]` — so the Revenue banner and the maths cannot disagree about how
+many sales are affected. [[read-from-single-source]]. Refunded rows are left out
+of that count: they contribute zero either way, and the prompt only keeps its
+force while every line in it is true.
+
+**Settings** grows an exchange-rate box per foreign currency **actually present in
+that user's imported sales**. Most accounts import nothing and see no section at
+all; the section appearing is itself the signal. Boxes are left blank rather than
+pre-filled — a plausible-looking number reads as settled, and nobody checks a
+number that looks settled. A blank or non-positive value deletes the rate rather
+than storing zero, since zero is a rate and it is the one that values every
+foreign sale at nothing.
+
+**Two things fixed on the way, both pre-existing:**
+
+- **The currency list was duplicated** in `wizard.js` and `settings.js`, each
+  carrying a comment asking the next person to keep them identical — which is not
+  a mechanism. Both now read `CURRENCIES` from `currency.js`, which also holds the
+  ISO code, so a symbol offered in a dropdown but unknown to the converter is now
+  impossible.
+- **Every imported sale was badged `STRIPE`**, hardcoded — including PayPal ones,
+  since item 10 shipped. It now reads the entry's own `source`.
+
+#### Verified
+
+**74 assertions**, run against the real functions under stubs in node — including
+`getRevenueInsights()` itself, put through the same transform `build_bundle.ps1`
+applies, so it is the shipping code rather than a reimplementation.
+
+- 40 on `currency.js`: every symbol↔code pair, unknown-symbol fallback, and rate
+  validity (missing, zero, negative, non-numeric, **stale base**, legacy bare
+  number, lowercase code). Conversion for same-currency, missing-currency, rated,
+  unrated and refunded; 2dp rounding; and that the input is never mutated.
+- 14 on the totals: two USD sales excluded from a sterling total and reported;
+  the same two counted once a rate exists; **the single-currency case unchanged**
+  (USD sales in a USD account still total normally, and a row with no currency
+  recorded still counts, so nothing already on screen moved); mixed manual +
+  converted + unrated; stale base; refunds; and both directions of the duplicate
+  check.
+- 20 on the two new render paths: the Settings section absent when there is
+  nothing to convert, a box per currency with the right `data-code`, blank vs
+  filled, the stale-base rate reading as unset; and the banner's singular/plural
+  and its "A, B and C" joining.
+
+Bundle `node --check`ed, v87, both trees synced and hash-verified.
+
+#### The original spec, kept
 
 Jen's own charges are **USD** while her app currency is **£**, so this is hit on
 the first import, not hypothetically.
@@ -3886,25 +4016,34 @@ income rather than inventing it.
 
 ### What is NOT done
 
-`PAYPAL_LIVE` is `false`, so no user sees any of this yet. That is the same
-discipline Stripe shipped under and for the same reason: **three things in
-`paypal-sync` have never met the live API** — the 31-day windowing, the
-T00xx/T11xx filter, and the refund matching. Each looks perfect in review and is
-exactly the kind of thing only real data disproves.
+> **This section was rewritten 19 Aug 2026.** It used to say `PAYPAL_LIVE` is
+> `false` and list four steps to finish item 10. All four are done, and the flag
+> it named no longer exists. Checked in code, not assumed:
+>
+> - The switch is **`PAYPAL_IMPORT_LIVE` in
+>   [js/components/proGate.js](js/components/proGate.js), and it is `true`.**
+>   `paypalImport.js` used to declare a second `PAYPAL_LIVE` of its own; that was
+>   deleted rather than left to disagree with the first.
+> - The "(PayPal coming soon)" strings are gone. `IMPORT_SOON_NOTE` is now
+>   derived from the flag and resolves to an empty string, so there is no copy
+>   left to forget about.
+> - `applyPayPalPreviewParam()` and the `ceo_paypal_preview` escape hatch were
+>   both removed when the flag went true.
+> - The migration and both functions are deployed, and a real PayPal account has
+>   been connected.
 
-**To finish item 10:**
+**What genuinely remains is one thing, and it is a test, not a build.**
 
-1. Deploy `supabase/migrations/20260819_paypal_import.sql` and the two functions.
-2. Connect a real PayPal account via `?paypal_preview=1` and import real sales.
-3. Check the figures against PayPal's own dashboard — especially that no
-   withdrawal or fee has been counted as a sale, and that a refunded sale reads as
-   refunded.
-4. Flip `PAYPAL_LIVE` to `true` and delete the three "(PayPal coming soon)"
-   strings (two in `js/components/proGate.js`, one in `js/screens/revenue.js`).
-   Delete `applyPayPalPreviewParam()` at the same time.
+Three things in `paypal-sync` have still never met a live *sale*: the 31-day
+windowing, the T00xx/T11xx filter and the refund matching. The 19 Aug connection
+scanned 24 transactions and correctly imported **none** of them, which proves the
+exclusion half thoroughly (see the section above) and the positive half not at
+all. Jen chose to flip the flag before that had happened, knowingly.
 
-Until step 4, the "coming soon" copy stays honest, which is the whole point of the
-warning under item 1.
+So the outstanding check is: **take one real PayPal sale, import it, and read the
+figures against PayPal's own dashboard** — that no withdrawal or fee has been
+booked as income, and that a refunded sale reads as refunded. That belongs with
+the end-to-end testing at the top of this file.
 
 **Sequencing note:** items 4 and 5 are the cost-heavy ones. Batch 1.1 must be done
 first, with a higher daily limit for Pro — that turns the rate limiter from a safety

@@ -9,6 +9,7 @@ import { showPdfReportModal, rememberAiReport } from '../components/pdfReport.js
 import { canConnectStripe, fetchStripeConnection, syncStripeSales } from '../stripeImport.js';
 import { canConnectPayPal, fetchPayPalConnection, syncPayPalSales } from '../paypalImport.js';
 import { refreshImportedSales, getImportedSalesCache } from '../importedSales.js';
+import { currencySymbolFor } from '../currency.js';
 
 // Pipeline list state. Module level so it survives a re-render — delete an entry
 // on page 3 of the list and you stay on page 3 instead of being thrown back to
@@ -53,6 +54,47 @@ function renderQuickOfferSlot(index, offer) {
     `;
 }
 
+// Imported sales sitting outside the totals for want of an exchange rate.
+//
+// This is the visible half of "flag, never guess". The maths has already left
+// these out of every figure on the screen, which is the honest thing to do and
+// also completely silent -- so without this banner the user would simply see a
+// quarter total lower than their bank account and have no idea why.
+//
+// Counts come from insights.unconvertedSales, computed in getRevenueInsights().
+// Deliberately not recounted here: the number in the warning and the number
+// missing from the total have to be the same number. [[read-from-single-source]]
+function renderUnconvertedWarning(insights, currency) {
+    const groups = insights.unconvertedSales || [];
+    if (groups.length === 0) return '';
+
+    const lines = groups.map(g => {
+        const sales = g.count === 1 ? '1 sale' : `${g.count} sales`;
+        return `<strong>${sales}</strong> in ${g.code} (${g.symbol}${formatAmount(g.originalTotal)})`;
+    });
+
+    // "A and B" rather than "A, B" for two, because this sentence is read aloud
+    // in the user's head and a comma there sounds like a list that got cut off.
+    const list = lines.length === 1
+        ? lines[0]
+        : lines.slice(0, -1).join(', ') + ' and ' + lines[lines.length - 1];
+
+    return `
+        <div class="card mb-6" style="border-left: 4px solid #F79009; background: #FFFAEB; padding: 1.25rem; border-radius: 12px;">
+            <h4 style="margin: 0 0 0.4rem 0; font-size: 1rem; color: #B54708; font-weight: 700;">
+                Some sales are not in your totals yet
+            </h4>
+            <p style="margin: 0 0 0.9rem 0; font-size: 0.9rem; line-height: 1.6; color: #7A2E0E;">
+                You have ${list} that we have no exchange rate for, so they are
+                <strong>not counted</strong> in the figures below. We would rather show you the
+                gap than add a number we had to guess at. Set a rate and they will count from
+                then on, including in past quarters.
+            </p>
+            <a href="#/settings" class="btn btn-secondary btn-sm" style="font-weight: 600;">Set an exchange rate</a>
+        </div>
+    `;
+}
+
 export function renderRevenue() {
     window.setScreenModule({ attachEvents: revenueAttachEvents });
     const store = getStore();
@@ -60,6 +102,8 @@ export function renderRevenue() {
     importedCountAtRender = getImportedSalesCache().length;
     
     const currency = store.settings?.currency || '$';
+
+    const unconvertedHtml = renderUnconvertedWarning(insights, currency);
 
     const firstVisitDone = localStorage.getItem('first_revenue_visit_done') === 'true';
     let firstVisitTooltipHtml = '';
@@ -247,6 +291,7 @@ export function renderRevenue() {
             </div>
 
             ${firstVisitTooltipHtml}
+            ${unconvertedHtml}
 
             <!-- Top Cards -->
             <div class="grid-cols-4 mb-6">
@@ -708,9 +753,20 @@ function renderPipelineEvents(entries, leads, currency) {
             // is not in there — the button would do nothing at all. Showing a
             // control that silently fails is worse than not showing it, so
             // imported rows get a quiet label instead.
-            const displayAmount = e.refunded && e.grossAmount != null ? e.grossAmount : e.amount;
+            // A sale we have no exchange rate for counts as zero, so showing
+            // `amount` here would print "£0" against a real payment and read as
+            // data loss. Show what the customer actually paid, in the currency
+            // they actually paid it in, and say plainly that it is not counted.
+            const displayAmount = e.needsRate
+                ? e.originalAmount
+                : (e.refunded && e.grossAmount != null ? e.grossAmount : e.amount);
+            const displayCurrency = e.needsRate ? currencySymbolFor(e.originalCurrency) : currency;
+
+            // Was hardcoded to "STRIPE", which badged every PayPal sale as a
+            // Stripe one. `source` is the processor's own label and is already
+            // on the entry.
             const badge = e.imported
-                ? `<span style="font-size: 0.7rem; font-weight: 600; color: var(--color-primary-dark); background: var(--color-primary-light); padding: 0.1rem 0.4rem; border-radius: 4px; margin-left: 0.4rem; vertical-align: middle;">STRIPE</span>`
+                ? `<span style="font-size: 0.7rem; font-weight: 600; color: var(--color-primary-dark); background: var(--color-primary-light); padding: 0.1rem 0.4rem; border-radius: 4px; margin-left: 0.4rem; vertical-align: middle;">${(e.source || 'Imported').toUpperCase()}</span>`
                 : '';
             const refundNote = e.refunded
                 ? `<span style="font-size: 0.7rem; font-weight: 600; color: #B42318; background: #FEF3F2; padding: 0.1rem 0.4rem; border-radius: 4px; margin-left: 0.4rem; vertical-align: middle;">REFUNDED</span>`
@@ -719,14 +775,25 @@ function renderPipelineEvents(entries, leads, currency) {
                 ? `<div style="font-size: 0.75rem; color: #B54708; margin-top: 0.25rem;">Possibly the same sale you logged by hand. Both are shown, and both are counted.</div>`
                 : '';
 
+            // The two halves of the currency story, and only ever one of them.
+            // A converted sale says what it was before, so the figure can always
+            // be traced back; an unconverted one says why it is missing from the
+            // total and exactly where to fix it.
+            const currencyNote = e.needsRate
+                ? `<div style="font-size: 0.75rem; color: #B54708; margin-top: 0.25rem;">Not counted yet. Set a rate for ${e.originalCurrency} in <a href="#/settings" style="color: #B54708; text-decoration: underline;">Settings</a> and it will count towards your quarter.</div>`
+                : (e.converted
+                    ? `<div style="font-size: 0.75rem; color: var(--color-text-muted); margin-top: 0.25rem;">Converted from ${currencySymbolFor(e.originalCurrency)}${formatAmount(e.originalAmount)}</div>`
+                    : '');
+
             return `
                 <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.75rem; border-bottom: 1px solid var(--color-border);">
                     <div>
                         <span style="font-weight: 600; color: var(--color-black); display: block;">
-                            <span style="${e.refunded ? 'text-decoration: line-through; opacity: 0.6;' : ''}">${currency}${formatAmount(displayAmount)}</span>${badge}${refundNote}
+                            <span style="${e.refunded ? 'text-decoration: line-through; opacity: 0.6;' : ''}${e.needsRate ? 'opacity: 0.6;' : ''}">${displayCurrency}${formatAmount(displayAmount)}</span>${badge}${refundNote}
                         </span>
                         <span style="font-size: 0.8rem; color: var(--color-text-muted);">SALE • ${new Date(e.date).toLocaleDateString()}${e.source ? ' • ' + e.source : ''}${e.offer ? ' • ' + e.offer : ''}</span>
                         ${duplicateNote}
+                        ${currencyNote}
                     </div>
                     ${e.imported
                         ? `<span title="Imported from Stripe. Manage it in Stripe, or disconnect on the Account screen." style="font-size: 0.75rem; color: var(--color-text-muted); padding: 0.25rem; white-space: nowrap;">auto</span>`

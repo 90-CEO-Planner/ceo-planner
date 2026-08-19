@@ -85,6 +85,20 @@ const LIVE_STATUSES = ['active', 'trialing', 'past_due', 'unpaid', 'incomplete']
 // portal configuration list has no metadata filter, so this is matched in code.
 const CONFIG_TAG = 'ceo-planner'
 
+// Bump this whenever portalFeatures() changes.
+//
+// The configuration is created once and then lives in Stripe, so without a
+// version stamp a later edit to the shape below would never reach the live
+// portal — the function would find the old configuration, decide its job was
+// done, and hand out a session built to last year's rules. On a mismatch it
+// updates in place instead, which also means the fix does not depend on anyone
+// remembering to delete anything in the dashboard.
+//
+// rev 2: adjustable_quantity turned off. Stripe defaults it ON, and rev 1 left
+// it that way — which let a customer set the quantity of a single-seat product
+// to 5 in the portal and pay five times over for one account.
+const CONFIG_REV = '2'
+
 const APP_ORIGIN = 'https://app.thewomensentrepreneurialnetwork.com'
 
 // Where Stripe sends them back to. An allowlist rather than "whatever Origin
@@ -179,18 +193,62 @@ async function ensureConfiguration(): Promise<string | null> {
   const existing = await stripeCall('billing_portal/configurations', 'GET', { limit: 100, active: true })
   if (existing.ok && Array.isArray(existing.body?.data)) {
     const mine = existing.body.data.find((c: any) => c?.metadata?.app === CONFIG_TAG)
+
     if (mine?.id) {
+      // Up to date. The overwhelmingly common path.
+      if (mine?.metadata?.rev === CONFIG_REV) {
+        cachedConfigurationId = mine.id
+        return mine.id
+      }
+
+      // Built by an older revision of this file. Bring it up to the current
+      // shape in place rather than creating a second configuration — the
+      // customer keeps one portal, and there is nothing to tidy up afterwards.
+      const updated = await stripeCall(`billing_portal/configurations/${mine.id}`, 'POST', configurationBody())
+
+      if (updated.ok && updated.body?.id) {
+        console.log(`Updated the CEO Planner portal configuration ${mine.id} to rev ${CONFIG_REV}`)
+        cachedConfigurationId = mine.id
+        return mine.id
+      }
+
+      // Still usable, just out of date. Better a slightly stale portal than no
+      // portal at all, so this is a warning and not a failure.
+      console.error(
+        `Could not update portal configuration ${mine.id} to rev ${CONFIG_REV}; ` +
+        `serving the older one. Stripe said: ` +
+        (updated.body?.error?.message ?? `status ${updated.status}`)
+      )
       cachedConfigurationId = mine.id
       return mine.id
     }
   }
 
-  const created = await stripeCall('billing_portal/configurations', 'POST', {
+  const created = await stripeCall('billing_portal/configurations', 'POST', configurationBody())
+
+  if (!created.ok || !created.body?.id) {
+    console.error(
+      'Could not create the CEO Planner portal configuration. Falling back to the account default, ' +
+      'which means NO plan switching. Stripe said: ' +
+      (created.body?.error?.message ?? `status ${created.status}`)
+    )
+    return null
+  }
+
+  console.log(`Created the CEO Planner portal configuration: ${created.body.id}`)
+  cachedConfigurationId = created.body.id
+  return created.body.id
+}
+
+// The configuration itself, shared by create and update so the two can never
+// drift apart.
+function configurationBody(): Record<string, unknown> {
+  return {
     business_profile: {
       headline: 'CEO Planner — manage your subscription',
     },
     default_return_url: `${APP_ORIGIN}/#/account`,
-    metadata: { app: CONFIG_TAG },
+    metadata: { app: CONFIG_TAG, rev: CONFIG_REV },
     features: {
       invoice_history: { enabled: true },
       payment_method_update: { enabled: true },
@@ -228,32 +286,29 @@ async function ensureConfiguration(): Promise<string | null> {
             { type: 'shortening_interval' },
           ],
         },
+        // ⚠️ `adjustable_quantity` must stay off on BOTH, and Stripe's default
+        // is ON. CEO Planner is one seat for one person; there is no such thing
+        // as buying two. Left enabled, the portal shows a quantity stepper on
+        // the plan-switch screen, and a customer who nudges it to 2 pays $74 a
+        // month for the same single account — the webhook writes the tier and
+        // never looks at quantity, so nothing about the app would change and
+        // nothing would flag it. Found in the live rev 1 configuration on
+        // 19 Aug 2026, before any customer had reached the portal.
         products: [
           {
             product: PLANNER_PRODUCTS.base,
             prices: [PLANNER_PRICES.baseMonthly, PLANNER_PRICES.baseAnnual],
+            adjustable_quantity: { enabled: false },
           },
           {
             product: PLANNER_PRODUCTS.pro,
             prices: [PLANNER_PRICES.proMonthly, PLANNER_PRICES.proAnnual],
+            adjustable_quantity: { enabled: false },
           },
         ],
       },
     },
-  })
-
-  if (!created.ok || !created.body?.id) {
-    console.error(
-      'Could not create the CEO Planner portal configuration. Falling back to the account default, ' +
-      'which means NO plan switching. Stripe said: ' +
-      (created.body?.error?.message ?? `status ${created.status}`)
-    )
-    return null
   }
-
-  console.log(`Created the CEO Planner portal configuration: ${created.body.id}`)
-  cachedConfigurationId = created.body.id
-  return created.body.id
 }
 
 // The customer's live CEO Planner subscription, if they have one.
