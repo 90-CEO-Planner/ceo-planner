@@ -3,7 +3,7 @@ import { renderNav } from '../components/nav.js';
 import { renderTooltip } from '../components/tooltip.js';
 import { generate90DayActionPlan } from '../aiService.js';
 import { showToast, showConfirm, rerenderScreen } from '../components/toast.js';
-import { proTeaser, proLock, canRegenerateWeek } from '../components/proGate.js';
+import { proTeaser, proLock, canRegenerateWeek, trialTimeLeftPhrase, trialDaysLeft } from '../components/proGate.js';
 import { showWeekRegenModal } from '../components/weekRegen.js';
 import { canUseLiveAI, getCachedLive, daily3Fingerprint, advisorFingerprint, hydrateDaily3, hydrateAdvisorPulses, liveAINote } from '../liveAI.js';
 
@@ -43,15 +43,20 @@ export function renderDashboard() {
 
     if (trialEndsAtStr && subStatus === 'trialing') {
         const trialEnd = new Date(trialEndsAtStr);
-        const daysLeft = Math.max(0, Math.ceil((trialEnd.getTime() - Date.now()) / 86400000));
+        // Threshold only. What the banner SAYS comes from trialTimeLeftPhrase()
+        // below — rounded-up days are fine for deciding whether to nudge and
+        // wrong for telling someone how long they have.
+        const daysLeft = trialDaysLeft();
 
         // Start nudging in the last five days
-        if (daysLeft <= 5) {
+        if (daysLeft !== null && daysLeft <= 5) {
             const endDate = trialEnd.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-            const dayWord = daysLeft === 1 ? 'day' : 'days';
+            // Not `daysLeft` — that rounds the final afternoon up to "1 day" and
+            // then prints today's date beside it. See trialTimeLeftPhrase().
+            const remaining = trialTimeLeftPhrase() || 'a little time';
             trialWarningHtml = `
                 <div style="background: #FFF3CD; border-bottom: 1px solid #FFEBAA; color: #856404; padding: 0.75rem 1.5rem; text-align: center; font-size: 0.95rem; font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 0.5rem; flex-wrap: wrap; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); position: relative; z-index: 10;">
-                    <span>Your free trial ends in ${daysLeft} ${dayWord}, on ${endDate}. Your plans and streaks stay safe, you just need a plan to keep using them.</span>
+                    <span>Your free trial ends in ${remaining}, on ${endDate}. Your plans and streaks stay safe, you just need a plan to keep using them.</span>
                     <a href="#/billing" style="color: #533F03; text-decoration: underline; font-weight: 700; display: inline-flex; align-items: center; gap: 0.25rem;">Choose your plan</a>
                 </div>
             `;

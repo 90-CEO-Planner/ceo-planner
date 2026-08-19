@@ -1,5 +1,6 @@
 // billing.js
 import { showToast, rerenderScreen } from '../components/toast.js';
+import { baseFeatures, PRO_FEATURE_KEYS, PRO_FEATURES, isFeatureLive, trialTimeLeftPhrase } from '../components/proGate.js';
 
 // Checkout happens on Stripe's own page and the account is upgraded by a webhook
 // firing somewhere else entirely, so there is a window of a few seconds where the
@@ -86,19 +87,132 @@ function renderRefreshLink() {
 
 // The card-free trial ran out, or they're subscribing early. Nothing has gone
 // wrong in either case, so the tone here is an invitation rather than a warning.
+// The two plan panels on the trial-end screen.
+//
+// Jen spotted the problem this solves, 19 Aug 2026, while testing the paywall:
+// the trial runs on Pro for 14 days, and the screen at the end offered Base
+// only, with both buttons reading "Continue". "Continue" is the wrong verb for
+// a downgrade. The customer had had the pipeline, the sales import, the coach
+// that remembers and the rest for a fortnight, every one of which locks the
+// moment they pay for Base, and nothing on the screen said so.
+//
+// Both lists are read from proGate rather than retyped here. Two hand-kept
+// copies of "what you keep" would eventually disagree, and they would disagree
+// on the screen where the customer is deciding whether to trust us with a card.
+function planFeatureRow(text, muted) {
+    const colour = muted ? 'var(--color-text-muted)' : 'var(--color-black)';
+    const mark = muted
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink:0;margin-top:0.2rem;"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>'
+        : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink:0;margin-top:0.2rem;"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+    return `
+        <div style="display:flex;gap:0.5rem;align-items:flex-start;font-size:0.85rem;line-height:1.45;color:${colour};margin-bottom:0.4rem;text-align:left;">
+            ${mark}<span>${text}</span>
+        </div>
+    `;
+}
+
+// Only features that actually exist. The plan list has always followed this
+// rule -- see `shipped` in proGate -- and it matters more here than anywhere:
+// this is the screen where the promise turns into a charge.
+function liveProFeatureTitles() {
+    return PRO_FEATURE_KEYS
+        .filter(isFeatureLive)
+        .map(key => PRO_FEATURES[key] && PRO_FEATURES[key].title)
+        .filter(Boolean);
+}
+
+function renderProPanel() {
+    const price = window.CEO_PLAN_PRICING.pro;
+    const rows = liveProFeatureTitles().map(t => planFeatureRow(t, false)).join('');
+
+    return `
+        <div style="flex:1 1 260px;min-width:0;border:2px solid var(--color-primary);border-radius:16px;padding:1.5rem;background:rgba(255,255,255,0.55);position:relative;">
+            <div style="position:absolute;top:-0.7rem;left:1.5rem;background:var(--color-primary);color:#fff;font-size:0.7rem;font-weight:700;letter-spacing:0.04em;padding:0.2rem 0.6rem;border-radius:999px;">
+                WHAT YOU'VE BEEN USING
+            </div>
+
+            <h3 style="font-size:1.15rem;color:var(--color-black);margin:0.4rem 0 0.25rem;">CEO Planner Pro</h3>
+            <p style="font-size:0.95rem;color:var(--color-black);font-weight:600;margin:0 0 0.25rem;">
+                ${price.monthly}/month
+            </p>
+            <p style="font-size:0.8rem;color:var(--color-text-muted);margin:0 0 1rem;">
+                or ${price.annual} a year
+            </p>
+
+            <p style="font-size:0.8rem;color:var(--color-text-muted);margin:0 0 0.75rem;text-align:left;">
+                Everything in Base, plus the parts you have had all fortnight:
+            </p>
+            ${rows}
+
+            <button id="btn-pro-annual" class="btn btn-primary" style="width:100%;padding:0.85rem;font-size:0.95rem;border-radius:12px;margin-top:1.25rem;margin-bottom:0.5rem;">
+                Stay on Pro, yearly
+            </button>
+            <button id="btn-pro-monthly" class="btn btn-secondary" style="width:100%;padding:0.85rem;font-size:0.95rem;border-radius:12px;">
+                Stay on Pro, monthly
+            </button>
+        </div>
+    `;
+}
+
+function renderBasePanel() {
+    const price = window.CEO_PLAN_PRICING.base;
+    const rows = baseFeatures().map(f => planFeatureRow(f.text, false)).join('');
+    const lost = liveProFeatureTitles();
+
+    // Naming what stops is the whole point of this panel. A customer who works
+    // out for themselves that they quietly lost half the product is a refund
+    // and a bad review; a customer who was told is just a customer.
+    const lostNote = lost.length
+        ? `
+            <p style="font-size:0.75rem;color:var(--color-text-muted);margin:1rem 0 0.4rem;text-align:left;font-weight:600;">
+                On Base these pause:
+            </p>
+            ${lost.map(t => planFeatureRow(t, true)).join('')}
+            <p style="font-size:0.72rem;color:var(--color-text-muted);margin:0.5rem 0 0;text-align:left;line-height:1.45;">
+                Nothing is deleted. Everything you logged stays exactly where it is,
+                and comes straight back if you move to Pro later.
+            </p>
+        `
+        : '';
+
+    return `
+        <div style="flex:1 1 260px;min-width:0;border:1px solid rgba(0,0,0,0.12);border-radius:16px;padding:1.5rem;background:rgba(255,255,255,0.35);">
+            <h3 style="font-size:1.15rem;color:var(--color-black);margin:0.4rem 0 0.25rem;">CEO Planner</h3>
+            <p style="font-size:0.95rem;color:var(--color-black);font-weight:600;margin:0 0 0.25rem;">
+                ${price.monthly}/month
+            </p>
+            <p style="font-size:0.8rem;color:var(--color-text-muted);margin:0 0 1rem;">
+                or ${price.annual} a year
+            </p>
+
+            <p style="font-size:0.8rem;color:var(--color-text-muted);margin:0 0 0.75rem;text-align:left;">
+                The essentials, and they stay yours:
+            </p>
+            ${rows}
+            ${lostNote}
+
+            <button id="btn-annual" class="btn btn-secondary" style="width:100%;padding:0.85rem;font-size:0.95rem;border-radius:12px;margin-top:1.25rem;margin-bottom:0.5rem;">
+                Choose Base, yearly
+            </button>
+            <button id="btn-monthly" class="btn btn-secondary" style="width:100%;padding:0.85rem;font-size:0.95rem;border-radius:12px;">
+                Choose Base, monthly
+            </button>
+        </div>
+    `;
+}
+
 function renderTrialEnded(stillInTrial) {
-    const trialEndsAtStr = localStorage.getItem('ceo_trial_ends_at');
-    let daysLeft = null;
-    if (stillInTrial && trialEndsAtStr) {
-        daysLeft = Math.max(0, Math.ceil((new Date(trialEndsAtStr).getTime() - Date.now()) / 86400000));
-    }
+    // Same wording as the dashboard banner and the nav pill, from the one place
+    // that decides it. See trialTimeLeftPhrase() in proGate.
+    const remaining = (stillInTrial && trialTimeLeftPhrase()) || 'a little time';
 
     const heading = stillInTrial ? 'Ready to make it official?' : 'Your 14 days are up';
     const blurb = stillInTrial
-        ? `You've still got ${daysLeft !== null ? daysLeft : 'a few'} ${daysLeft === 1 ? 'day' : 'days'} left, so there's no rush.
-           Pick a plan whenever you're ready and nothing will be interrupted.`
+        ? `You've got ${remaining} left, so there's no rush. Your trial has been running
+           on Pro, so the plan on the left is the one you already know.`
         : `Your plans, streaks and revenue history are all still here, safe and waiting.
-           Pick a plan below and you'll pick up exactly where you left off.`;
+           Your trial ran on Pro, so that is the plan you have actually been using.
+           Base is the smaller one, and it says below exactly what pauses if you pick it.`;
 
     const backLink = stillInTrial
         ? `<a href="#/dashboard" style="color: var(--color-text-muted); font-size: 0.875rem; text-decoration: underline;">Back to my dashboard</a>`
@@ -106,7 +220,7 @@ function renderTrialEnded(stillInTrial) {
 
     return `
         <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--color-primary-light) 0%, var(--color-bg-main) 100%); padding: 1.5rem;">
-            <div class="card fade-up" style="width: 100%; max-width: 520px; padding: 3rem 2.5rem; text-align: center; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); border: 1px solid rgba(255,255,255,0.5); backdrop-filter: blur(10px);">
+            <div class="card fade-up" style="width: 100%; max-width: 760px; padding: 3rem 2.5rem; text-align: center; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); border: 1px solid rgba(255,255,255,0.5); backdrop-filter: blur(10px);">
 
                 <div style="display: inline-flex; align-items: center; justify-content: center; width: 64px; height: 64px; background: var(--color-primary-light); color: var(--color-primary-dark); border-radius: 16px; margin-bottom: 1.5rem;">
                     <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
@@ -118,13 +232,10 @@ function renderTrialEnded(stillInTrial) {
                     ${blurb}
                 </p>
 
-                <button id="btn-annual" class="btn btn-primary" style="width: 100%; padding: 1rem; font-size: 1.05rem; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(78, 14, 255, 0.2); margin-bottom: 0.75rem;">
-                    Continue yearly, best value
-                </button>
-
-                <button id="btn-monthly" class="btn btn-secondary" style="width: 100%; padding: 1rem; font-size: 1.05rem; border-radius: 12px; margin-bottom: 1.5rem;">
-                    Continue monthly
-                </button>
+                <div style="display:flex;flex-wrap:wrap;gap:1.25rem;align-items:flex-start;margin-bottom:1.75rem;">
+                    ${renderProPanel()}
+                    ${renderBasePanel()}
+                </div>
 
                 <p style="color: var(--color-text-muted); font-size: 0.8rem; margin-bottom: 1.5rem; line-height: 1.5;">
                     Please check out with the same email address you signed up with,
@@ -138,8 +249,6 @@ function renderTrialEnded(stillInTrial) {
     `;
 }
 
-// An existing paying customer whose card has failed. They already have a Stripe
-// record, so the customer portal is the right destination.
 function renderPaymentProblem() {
     return `
         <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--color-primary-light) 0%, var(--color-bg-main) 100%); padding: 1.5rem;">
@@ -257,6 +366,16 @@ function billingAttachEvents() {
     const btnMonthly = document.getElementById('btn-monthly');
     if (btnMonthly) {
         btnMonthly.addEventListener('click', () => checkout(window.CEO_CHECKOUT_MONTHLY));
+    }
+
+    const btnProAnnual = document.getElementById('btn-pro-annual');
+    if (btnProAnnual) {
+        btnProAnnual.addEventListener('click', () => checkout(window.CEO_CHECKOUT_PRO_ANNUAL));
+    }
+
+    const btnProMonthly = document.getElementById('btn-pro-monthly');
+    if (btnProMonthly) {
+        btnProMonthly.addEventListener('click', () => checkout(window.CEO_CHECKOUT_PRO_MONTHLY));
     }
 
     const btnPortal = document.getElementById('btn-portal');

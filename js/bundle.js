@@ -185,7 +185,7 @@ window.db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 // Stripe checkout links for when the free trial runs out.
 // These deliberately have NO Stripe trial period on them. The 14 free days are
 // served by the app, so a trial period here would hand people a second fortnight
-// free before they were ever charged.
+// free before they were ever charged. Checked on all four links, 19 Aug 2026.
 window.CEO_CHECKOUT_MONTHLY = 'https://buy.stripe.com/7sY28q2DXgrp6H67VM18c08';
 window.CEO_CHECKOUT_ANNUAL = 'https://buy.stripe.com/28E8wO92l6QP1mM3Fw18c09';
 // Existing customers whose card failed manage themselves here
@@ -203,11 +203,32 @@ window.CEO_BILLING_PORTAL = 'https://billing.stripe.com/p/login/eVq3cucex8YXc1q0
 // first.
 window.CEO_TURNSTILE_SITE_KEY = '0x4AAAAAAESsYq8ysZijiBEz';
 
-// Pro tier checkout. Deliberately null: Pro is being built and has no price in
-// Stripe yet, so the locked-feature modal explains the feature and stops there
-// rather than selling something that cannot be delivered. Set this to the Pro
-// payment link when the tier ships and the modal grows an upgrade button.
-window.CEO_CHECKOUT_PRO = null;
+// Pro tier checkout. Live since 19 Aug 2026 — until then these were null,
+// because Pro had no price in Stripe and the app refused to sell something it
+// could not deliver.
+//
+// $37/month and $327/year, Jen's pricing. Product `prod_V6LjD07AtJG5o4`,
+// prices `price_1U691jAnrDOsqkV3F04IF3eU` (monthly) and
+// `price_1U691oAnrDOsqkV3INISfwNm` (annual).
+//
+// ⚠️ Both Pro prices carry `metadata.tier = 'pro'` in Stripe, and both Base
+// prices carry `metadata.tier = 'base'`. That metadata is what `stripe-webhook`
+// reads to set `profiles.plan_tier`. **A new price with no tier metadata is
+// treated as Base**, so anyone buying it would pay Pro money for Base features.
+// If you add a price in the Stripe dashboard, set the metadata at the same time.
+window.CEO_CHECKOUT_PRO_MONTHLY = 'https://buy.stripe.com/00w6oG2DXcb99Ti6RI18c0a';
+window.CEO_CHECKOUT_PRO_ANNUAL = 'https://buy.stripe.com/14A7sK6Ud4IH9Tifoe18c0b';
+
+// What each plan costs, kept next to the links so the price on screen and the
+// price actually charged cannot drift apart.
+//
+// These are deliberately hardcoded in dollars and do NOT read
+// store.settings.currency. That setting is for displaying the user's OWN
+// revenue; these are what Stripe will charge, and Stripe charges USD.
+window.CEO_PLAN_PRICING = {
+    base: { monthly: '$17', annual: '$147' },
+    pro: { monthly: '$37', annual: '$327' }
+};
 
 // Reads the user's real subscription state from the database and caches it locally.
 // The cached copy is only ever used to render the UI. The database is the source
@@ -3873,10 +3894,13 @@ CRITICAL: Return ONLY the JSON object above. No explanation, no preamble, no cod
 //
 // The design rule for Phase 2: base-tier users SEE every Pro feature where they
 // would naturally use it, rather than having it hidden. Clicking a locked control
-// opens an explanatory modal. Nothing is sold here yet — there is no Pro price in
-// Stripe, so a checkout button would be selling something that doesn't exist.
-// When Pro ships, set window.CEO_CHECKOUT_PRO in supabaseClient.js and the
-// modal grows a real upgrade button on its own.
+// opens an explanatory modal.
+//
+// Pro became purchasable on 19 Aug 2026 ($37/month, $327/year). Until then there
+// was no Pro price in Stripe and the modal deliberately refused to sell — the
+// footer said so rather than showing a button that went nowhere. That branch is
+// still below and still correct: it keys off window.CEO_CHECKOUT_PRO_MONTHLY, so
+// blanking the link turns selling off again everywhere at once.
 //
 // The client is for presentation only. Every Pro feature that costs money must
 // also be enforced server side — the edge functions are the real gate.
@@ -4036,6 +4060,40 @@ const PRO_FEATURES = {
         ]
     }
 };
+
+// Everything the base plan includes.
+//
+// Lives here rather than on the Account screen because the trial-end paywall
+// needs the identical list. Two hand-kept copies of "what you keep on Base"
+// disagreeing is exactly the kind of thing a customer notices at the worst
+// moment, so there is one. Written out rather than derived, because
+// the point of this list is to make base feel like a complete product on its
+// own — a Pro list with nothing beside it reads as a list of things you lack.
+//
+// A function rather than a constant so the AI line can carry the number that
+// actually applies to the account reading it. It was hardcoded to "30
+// conversations a day", which is the TRIAL rate: every paying base customer was
+// being told they got a quarter of what they were paying for, and a Pro
+// customer two thirds less again.
+//
+// "Requests" rather than "conversations" because one request is one request
+// whether it is a chat message, a 90-day plan or a refreshed suggestion — and
+// on Pro the planning surfaces spend them too.
+function baseFeatures() {
+    return [
+        { text: 'Your 90-day roadmap and quarterly targets' },
+        { text: 'Weekly planning and the Daily 3' },
+        { text: 'Revenue, leads and conversion tracking' },
+        { text: 'The Friday Review and your Monday draft' },
+        // The plan list says what the plan includes. How much of it you have
+        // used today is a different question and gets its own card below —
+        // appending a running count here made a feature list double as a meter
+        // and read like an afterthought.
+        { text: `The AI coach, ${aiDailyAllowance()} requests a day` },
+        { text: 'CSV export of everything you log' },
+        { text: 'Executive reports on demand' }
+    ];
+}
 
 // The nine Pro features in plan-list order. `overview` is deliberately absent —
 // it is the "all of Pro" description used by the nav, not a feature.
@@ -4250,6 +4308,42 @@ function trialDaysLeft() {
     return Math.max(0, Math.ceil(ms / 86400000));
 }
 
+// How long is left, as a phrase a person would actually say.
+//
+// `trialDaysLeft()` rounds up, so the last twenty-three hours of a trial all
+// read as "1 day". Paired with the end date that produces the contradiction Jen
+// caught on 19 Aug 2026: "Your free trial ends in 1 day, on 19 Aug", read on
+// 19 August with seventeen minutes to go.
+//
+// Rounding up is right above a day -- nobody wants "1 day and 4 hours" -- so the
+// fix is not to change the number but to stop using days once days stop being
+// the useful unit. Returns null when there is no trial to describe.
+//
+// ⚠️ This is the ONLY place the wording is decided. The dashboard banner, the
+// nav pill and the trial-end screen all render what this returns. There were
+// three separate copies of the arithmetic before, which is how one of them came
+// to disagree with the date printed beside it.
+function trialTimeLeftPhrase() {
+    const endsAt = localStorage.getItem('ceo_trial_ends_at');
+    if (!endsAt) return null;
+    const ms = new Date(endsAt).getTime() - Date.now();
+    if (Number.isNaN(ms)) return null;
+
+    // Already gone. Null rather than a phrase, so a caller cannot accidentally
+    // tell someone their finished trial has "less than an hour" left.
+    if (ms <= 0) return null;
+
+    const hours = ms / 3600000;
+    // Rounded, not floored: a trial handed out moments ago is 13.9999 days by
+    // the time this runs, and flooring told a brand new customer they had
+    // 13 days of their 14.
+    if (hours >= 48) return `${Math.round(hours / 24)} days`;
+    if (hours >= 24) return '1 day';
+    if (hours >= 2) return `${Math.floor(hours)} hours`;
+    if (hours >= 1) return '1 hour';
+    return 'less than an hour';
+}
+
 // Can this account open the lead pipeline screen?
 //
 // One answer, asked by three places: the nav link, the screen's own guard, and
@@ -4461,7 +4555,7 @@ function showProModal(featureKey) {
         note.textContent = "This one is still being built. Nothing changes on your plan today, and it'll appear here the moment it lands.";
     } else if (isProUser()) {
         note.textContent = 'This is part of your plan. Go ahead.';
-    } else if (window.CEO_CHECKOUT_PRO) {
+    } else if (window.CEO_CHECKOUT_PRO_MONTHLY) {
         note.textContent = 'This is part of Pro. You can switch plans whenever you like, and everything you have logged comes with you.';
     } else {
         note.textContent = "Pro isn't open for sign-ups just yet. You'll see it here as soon as it is.";
@@ -5230,10 +5324,9 @@ function renderPlanPill() {
     if (!isProTrial()) return '';
 
     const noun = anyProFeatureLive() ? 'Pro trial' : 'Free trial';
-    const days = trialDaysLeft();
-    const label = days === null
-        ? noun
-        : (days === 1 ? `${noun}, 1 day left` : `${noun}, ${days} days left`);
+    // Hours rather than a rounded-up day once there is less than a day to go.
+    const remaining = trialTimeLeftPhrase();
+    const label = remaining === null ? noun : `${noun}, ${remaining} left`;
 
     return `<a href="#/account" class="nav-plan-pill" title="See your plan and choose one whenever you're ready">${label}</a>`;
 }
@@ -7604,15 +7697,20 @@ function renderDashboard() {
 
     if (trialEndsAtStr && subStatus === 'trialing') {
         const trialEnd = new Date(trialEndsAtStr);
-        const daysLeft = Math.max(0, Math.ceil((trialEnd.getTime() - Date.now()) / 86400000));
+        // Threshold only. What the banner SAYS comes from trialTimeLeftPhrase()
+        // below — rounded-up days are fine for deciding whether to nudge and
+        // wrong for telling someone how long they have.
+        const daysLeft = trialDaysLeft();
 
         // Start nudging in the last five days
-        if (daysLeft <= 5) {
+        if (daysLeft !== null && daysLeft <= 5) {
             const endDate = trialEnd.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-            const dayWord = daysLeft === 1 ? 'day' : 'days';
+            // Not `daysLeft` — that rounds the final afternoon up to "1 day" and
+            // then prints today's date beside it. See trialTimeLeftPhrase().
+            const remaining = trialTimeLeftPhrase() || 'a little time';
             trialWarningHtml = `
                 <div style="background: #FFF3CD; border-bottom: 1px solid #FFEBAA; color: #856404; padding: 0.75rem 1.5rem; text-align: center; font-size: 0.95rem; font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 0.5rem; flex-wrap: wrap; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); position: relative; z-index: 10;">
-                    <span>Your free trial ends in ${daysLeft} ${dayWord}, on ${endDate}. Your plans and streaks stay safe, you just need a plan to keep using them.</span>
+                    <span>Your free trial ends in ${remaining}, on ${endDate}. Your plans and streaks stay safe, you just need a plan to keep using them.</span>
                     <a href="#/billing" style="color: #533F03; text-decoration: underline; font-weight: 700; display: inline-flex; align-items: center; gap: 0.25rem;">Choose your plan</a>
                 </div>
             `;
@@ -13279,35 +13377,6 @@ function settingsAttachEvents() {
 // details, and erasing everything. Settings keeps the business profile, goals,
 // strategy mode and reminders, all of which feed the AI rather than the account.
 
-// Everything the base plan includes. Written out rather than derived, because
-// the point of this list is to make base feel like a complete product on its
-// own — a Pro list with nothing beside it reads as a list of things you lack.
-//
-// A function rather than a constant so the AI line can carry the number that
-// actually applies to the account reading it. It was hardcoded to "30
-// conversations a day", which is the TRIAL rate: every paying base customer was
-// being told they got a quarter of what they were paying for, and a Pro
-// customer two thirds less again.
-//
-// "Requests" rather than "conversations" because one request is one request
-// whether it is a chat message, a 90-day plan or a refreshed suggestion — and
-// on Pro the planning surfaces spend them too.
-function baseFeatures() {
-    return [
-        { text: 'Your 90-day roadmap and quarterly targets' },
-        { text: 'Weekly planning and the Daily 3' },
-        { text: 'Revenue, leads and conversion tracking' },
-        { text: 'The Friday Review and your Monday draft' },
-        // The plan list says what the plan includes. How much of it you have
-        // used today is a different question and gets its own card below —
-        // appending a running count here made a feature list double as a meter
-        // and read like an afterthought.
-        { text: `The AI coach, ${aiDailyAllowance()} requests a day` },
-        { text: 'CSV export of everything you log' },
-        { text: 'Executive reports on demand' }
-    ];
-}
-
 const TICK_SVG = `<svg class="plan-feature-mark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
 const LOCK_SVG = `<svg class="plan-feature-mark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>`;
 const CLOCK_SVG = `<svg class="plan-feature-mark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>`;
@@ -13339,14 +13408,14 @@ function renderAccount() {
 function renderPlanCard() {
     const tier = getPlanTier();
     const onTrial = isProTrial();
-    const days = trialDaysLeft();
+    const remaining = trialTimeLeftPhrase();
     const hasPro = tier === 'pro';
 
     let heading;
     let sub;
 
     if (onTrial) {
-        const dayText = days === null ? 'while your trial runs' : (days === 1 ? 'for 1 more day' : `for ${days} more days`);
+        const dayText = remaining === null ? 'while your trial runs' : `for another ${remaining}`;
         heading = 'Free trial, running on Pro';
         sub = `You have the complete product ${dayText}, including every Pro feature as it lands. Nothing to pay and no card on file. When the trial finishes you'll pick a plan, and Base keeps everything in the first list below.`;
     } else if (hasPro) {
@@ -16237,19 +16306,132 @@ function renderRefreshLink() {
 
 // The card-free trial ran out, or they're subscribing early. Nothing has gone
 // wrong in either case, so the tone here is an invitation rather than a warning.
+// The two plan panels on the trial-end screen.
+//
+// Jen spotted the problem this solves, 19 Aug 2026, while testing the paywall:
+// the trial runs on Pro for 14 days, and the screen at the end offered Base
+// only, with both buttons reading "Continue". "Continue" is the wrong verb for
+// a downgrade. The customer had had the pipeline, the sales import, the coach
+// that remembers and the rest for a fortnight, every one of which locks the
+// moment they pay for Base, and nothing on the screen said so.
+//
+// Both lists are read from proGate rather than retyped here. Two hand-kept
+// copies of "what you keep" would eventually disagree, and they would disagree
+// on the screen where the customer is deciding whether to trust us with a card.
+function planFeatureRow(text, muted) {
+    const colour = muted ? 'var(--color-text-muted)' : 'var(--color-black)';
+    const mark = muted
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink:0;margin-top:0.2rem;"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>'
+        : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink:0;margin-top:0.2rem;"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+    return `
+        <div style="display:flex;gap:0.5rem;align-items:flex-start;font-size:0.85rem;line-height:1.45;color:${colour};margin-bottom:0.4rem;text-align:left;">
+            ${mark}<span>${text}</span>
+        </div>
+    `;
+}
+
+// Only features that actually exist. The plan list has always followed this
+// rule -- see `shipped` in proGate -- and it matters more here than anywhere:
+// this is the screen where the promise turns into a charge.
+function liveProFeatureTitles() {
+    return PRO_FEATURE_KEYS
+        .filter(isFeatureLive)
+        .map(key => PRO_FEATURES[key] && PRO_FEATURES[key].title)
+        .filter(Boolean);
+}
+
+function renderProPanel() {
+    const price = window.CEO_PLAN_PRICING.pro;
+    const rows = liveProFeatureTitles().map(t => planFeatureRow(t, false)).join('');
+
+    return `
+        <div style="flex:1 1 260px;min-width:0;border:2px solid var(--color-primary);border-radius:16px;padding:1.5rem;background:rgba(255,255,255,0.55);position:relative;">
+            <div style="position:absolute;top:-0.7rem;left:1.5rem;background:var(--color-primary);color:#fff;font-size:0.7rem;font-weight:700;letter-spacing:0.04em;padding:0.2rem 0.6rem;border-radius:999px;">
+                WHAT YOU'VE BEEN USING
+            </div>
+
+            <h3 style="font-size:1.15rem;color:var(--color-black);margin:0.4rem 0 0.25rem;">CEO Planner Pro</h3>
+            <p style="font-size:0.95rem;color:var(--color-black);font-weight:600;margin:0 0 0.25rem;">
+                ${price.monthly}/month
+            </p>
+            <p style="font-size:0.8rem;color:var(--color-text-muted);margin:0 0 1rem;">
+                or ${price.annual} a year
+            </p>
+
+            <p style="font-size:0.8rem;color:var(--color-text-muted);margin:0 0 0.75rem;text-align:left;">
+                Everything in Base, plus the parts you have had all fortnight:
+            </p>
+            ${rows}
+
+            <button id="btn-pro-annual" class="btn btn-primary" style="width:100%;padding:0.85rem;font-size:0.95rem;border-radius:12px;margin-top:1.25rem;margin-bottom:0.5rem;">
+                Stay on Pro, yearly
+            </button>
+            <button id="btn-pro-monthly" class="btn btn-secondary" style="width:100%;padding:0.85rem;font-size:0.95rem;border-radius:12px;">
+                Stay on Pro, monthly
+            </button>
+        </div>
+    `;
+}
+
+function renderBasePanel() {
+    const price = window.CEO_PLAN_PRICING.base;
+    const rows = baseFeatures().map(f => planFeatureRow(f.text, false)).join('');
+    const lost = liveProFeatureTitles();
+
+    // Naming what stops is the whole point of this panel. A customer who works
+    // out for themselves that they quietly lost half the product is a refund
+    // and a bad review; a customer who was told is just a customer.
+    const lostNote = lost.length
+        ? `
+            <p style="font-size:0.75rem;color:var(--color-text-muted);margin:1rem 0 0.4rem;text-align:left;font-weight:600;">
+                On Base these pause:
+            </p>
+            ${lost.map(t => planFeatureRow(t, true)).join('')}
+            <p style="font-size:0.72rem;color:var(--color-text-muted);margin:0.5rem 0 0;text-align:left;line-height:1.45;">
+                Nothing is deleted. Everything you logged stays exactly where it is,
+                and comes straight back if you move to Pro later.
+            </p>
+        `
+        : '';
+
+    return `
+        <div style="flex:1 1 260px;min-width:0;border:1px solid rgba(0,0,0,0.12);border-radius:16px;padding:1.5rem;background:rgba(255,255,255,0.35);">
+            <h3 style="font-size:1.15rem;color:var(--color-black);margin:0.4rem 0 0.25rem;">CEO Planner</h3>
+            <p style="font-size:0.95rem;color:var(--color-black);font-weight:600;margin:0 0 0.25rem;">
+                ${price.monthly}/month
+            </p>
+            <p style="font-size:0.8rem;color:var(--color-text-muted);margin:0 0 1rem;">
+                or ${price.annual} a year
+            </p>
+
+            <p style="font-size:0.8rem;color:var(--color-text-muted);margin:0 0 0.75rem;text-align:left;">
+                The essentials, and they stay yours:
+            </p>
+            ${rows}
+            ${lostNote}
+
+            <button id="btn-annual" class="btn btn-secondary" style="width:100%;padding:0.85rem;font-size:0.95rem;border-radius:12px;margin-top:1.25rem;margin-bottom:0.5rem;">
+                Choose Base, yearly
+            </button>
+            <button id="btn-monthly" class="btn btn-secondary" style="width:100%;padding:0.85rem;font-size:0.95rem;border-radius:12px;">
+                Choose Base, monthly
+            </button>
+        </div>
+    `;
+}
+
 function renderTrialEnded(stillInTrial) {
-    const trialEndsAtStr = localStorage.getItem('ceo_trial_ends_at');
-    let daysLeft = null;
-    if (stillInTrial && trialEndsAtStr) {
-        daysLeft = Math.max(0, Math.ceil((new Date(trialEndsAtStr).getTime() - Date.now()) / 86400000));
-    }
+    // Same wording as the dashboard banner and the nav pill, from the one place
+    // that decides it. See trialTimeLeftPhrase() in proGate.
+    const remaining = (stillInTrial && trialTimeLeftPhrase()) || 'a little time';
 
     const heading = stillInTrial ? 'Ready to make it official?' : 'Your 14 days are up';
     const blurb = stillInTrial
-        ? `You've still got ${daysLeft !== null ? daysLeft : 'a few'} ${daysLeft === 1 ? 'day' : 'days'} left, so there's no rush.
-           Pick a plan whenever you're ready and nothing will be interrupted.`
+        ? `You've got ${remaining} left, so there's no rush. Your trial has been running
+           on Pro, so the plan on the left is the one you already know.`
         : `Your plans, streaks and revenue history are all still here, safe and waiting.
-           Pick a plan below and you'll pick up exactly where you left off.`;
+           Your trial ran on Pro, so that is the plan you have actually been using.
+           Base is the smaller one, and it says below exactly what pauses if you pick it.`;
 
     const backLink = stillInTrial
         ? `<a href="#/dashboard" style="color: var(--color-text-muted); font-size: 0.875rem; text-decoration: underline;">Back to my dashboard</a>`
@@ -16257,7 +16439,7 @@ function renderTrialEnded(stillInTrial) {
 
     return `
         <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--color-primary-light) 0%, var(--color-bg-main) 100%); padding: 1.5rem;">
-            <div class="card fade-up" style="width: 100%; max-width: 520px; padding: 3rem 2.5rem; text-align: center; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); border: 1px solid rgba(255,255,255,0.5); backdrop-filter: blur(10px);">
+            <div class="card fade-up" style="width: 100%; max-width: 760px; padding: 3rem 2.5rem; text-align: center; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); border: 1px solid rgba(255,255,255,0.5); backdrop-filter: blur(10px);">
 
                 <div style="display: inline-flex; align-items: center; justify-content: center; width: 64px; height: 64px; background: var(--color-primary-light); color: var(--color-primary-dark); border-radius: 16px; margin-bottom: 1.5rem;">
                     <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
@@ -16269,13 +16451,10 @@ function renderTrialEnded(stillInTrial) {
                     ${blurb}
                 </p>
 
-                <button id="btn-annual" class="btn btn-primary" style="width: 100%; padding: 1rem; font-size: 1.05rem; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(78, 14, 255, 0.2); margin-bottom: 0.75rem;">
-                    Continue yearly, best value
-                </button>
-
-                <button id="btn-monthly" class="btn btn-secondary" style="width: 100%; padding: 1rem; font-size: 1.05rem; border-radius: 12px; margin-bottom: 1.5rem;">
-                    Continue monthly
-                </button>
+                <div style="display:flex;flex-wrap:wrap;gap:1.25rem;align-items:flex-start;margin-bottom:1.75rem;">
+                    ${renderProPanel()}
+                    ${renderBasePanel()}
+                </div>
 
                 <p style="color: var(--color-text-muted); font-size: 0.8rem; margin-bottom: 1.5rem; line-height: 1.5;">
                     Please check out with the same email address you signed up with,
@@ -16289,8 +16468,6 @@ function renderTrialEnded(stillInTrial) {
     `;
 }
 
-// An existing paying customer whose card has failed. They already have a Stripe
-// record, so the customer portal is the right destination.
 function renderPaymentProblem() {
     return `
         <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--color-primary-light) 0%, var(--color-bg-main) 100%); padding: 1.5rem;">
@@ -16408,6 +16585,16 @@ function billingAttachEvents() {
     const btnMonthly = document.getElementById('btn-monthly');
     if (btnMonthly) {
         btnMonthly.addEventListener('click', () => checkout(window.CEO_CHECKOUT_MONTHLY));
+    }
+
+    const btnProAnnual = document.getElementById('btn-pro-annual');
+    if (btnProAnnual) {
+        btnProAnnual.addEventListener('click', () => checkout(window.CEO_CHECKOUT_PRO_ANNUAL));
+    }
+
+    const btnProMonthly = document.getElementById('btn-pro-monthly');
+    if (btnProMonthly) {
+        btnProMonthly.addEventListener('click', () => checkout(window.CEO_CHECKOUT_PRO_MONTHLY));
     }
 
     const btnPortal = document.getElementById('btn-portal');

@@ -1,6 +1,6 @@
 // nav.js
 import { getStore } from '../store.js';
-import { isProTrial, trialDaysLeft, anyProFeatureLive, canUseLeadPipeline, clearAiAllowance } from './proGate.js';
+import { isProTrial, trialTimeLeftPhrase, anyProFeatureLive, canUseLeadPipeline, clearAiAllowance } from './proGate.js';
 import { clearLiveAICache } from '../liveAI.js';
 
 // Signs the user out properly. The old inline handler cleared localStorage but
@@ -42,10 +42,9 @@ function renderPlanPill() {
     if (!isProTrial()) return '';
 
     const noun = anyProFeatureLive() ? 'Pro trial' : 'Free trial';
-    const days = trialDaysLeft();
-    const label = days === null
-        ? noun
-        : (days === 1 ? `${noun}, 1 day left` : `${noun}, ${days} days left`);
+    // Hours rather than a rounded-up day once there is less than a day to go.
+    const remaining = trialTimeLeftPhrase();
+    const label = remaining === null ? noun : `${noun}, ${remaining} left`;
 
     return `<a href="#/account" class="nav-plan-pill" title="See your plan and choose one whenever you're ready">${label}</a>`;
 }

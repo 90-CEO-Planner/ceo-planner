@@ -4,10 +4,13 @@
 //
 // The design rule for Phase 2: base-tier users SEE every Pro feature where they
 // would naturally use it, rather than having it hidden. Clicking a locked control
-// opens an explanatory modal. Nothing is sold here yet — there is no Pro price in
-// Stripe, so a checkout button would be selling something that doesn't exist.
-// When Pro ships, set window.CEO_CHECKOUT_PRO in supabaseClient.js and the
-// modal grows a real upgrade button on its own.
+// opens an explanatory modal.
+//
+// Pro became purchasable on 19 Aug 2026 ($37/month, $327/year). Until then there
+// was no Pro price in Stripe and the modal deliberately refused to sell — the
+// footer said so rather than showing a button that went nowhere. That branch is
+// still below and still correct: it keys off window.CEO_CHECKOUT_PRO_MONTHLY, so
+// blanking the link turns selling off again everywhere at once.
 //
 // The client is for presentation only. Every Pro feature that costs money must
 // also be enforced server side — the edge functions are the real gate.
@@ -167,6 +170,40 @@ export const PRO_FEATURES = {
         ]
     }
 };
+
+// Everything the base plan includes.
+//
+// Lives here rather than on the Account screen because the trial-end paywall
+// needs the identical list. Two hand-kept copies of "what you keep on Base"
+// disagreeing is exactly the kind of thing a customer notices at the worst
+// moment, so there is one. Written out rather than derived, because
+// the point of this list is to make base feel like a complete product on its
+// own — a Pro list with nothing beside it reads as a list of things you lack.
+//
+// A function rather than a constant so the AI line can carry the number that
+// actually applies to the account reading it. It was hardcoded to "30
+// conversations a day", which is the TRIAL rate: every paying base customer was
+// being told they got a quarter of what they were paying for, and a Pro
+// customer two thirds less again.
+//
+// "Requests" rather than "conversations" because one request is one request
+// whether it is a chat message, a 90-day plan or a refreshed suggestion — and
+// on Pro the planning surfaces spend them too.
+export function baseFeatures() {
+    return [
+        { text: 'Your 90-day roadmap and quarterly targets' },
+        { text: 'Weekly planning and the Daily 3' },
+        { text: 'Revenue, leads and conversion tracking' },
+        { text: 'The Friday Review and your Monday draft' },
+        // The plan list says what the plan includes. How much of it you have
+        // used today is a different question and gets its own card below —
+        // appending a running count here made a feature list double as a meter
+        // and read like an afterthought.
+        { text: `The AI coach, ${aiDailyAllowance()} requests a day` },
+        { text: 'CSV export of everything you log' },
+        { text: 'Executive reports on demand' }
+    ];
+}
 
 // The nine Pro features in plan-list order. `overview` is deliberately absent —
 // it is the "all of Pro" description used by the nav, not a feature.
@@ -381,6 +418,42 @@ export function trialDaysLeft() {
     return Math.max(0, Math.ceil(ms / 86400000));
 }
 
+// How long is left, as a phrase a person would actually say.
+//
+// `trialDaysLeft()` rounds up, so the last twenty-three hours of a trial all
+// read as "1 day". Paired with the end date that produces the contradiction Jen
+// caught on 19 Aug 2026: "Your free trial ends in 1 day, on 19 Aug", read on
+// 19 August with seventeen minutes to go.
+//
+// Rounding up is right above a day -- nobody wants "1 day and 4 hours" -- so the
+// fix is not to change the number but to stop using days once days stop being
+// the useful unit. Returns null when there is no trial to describe.
+//
+// ⚠️ This is the ONLY place the wording is decided. The dashboard banner, the
+// nav pill and the trial-end screen all render what this returns. There were
+// three separate copies of the arithmetic before, which is how one of them came
+// to disagree with the date printed beside it.
+export function trialTimeLeftPhrase() {
+    const endsAt = localStorage.getItem('ceo_trial_ends_at');
+    if (!endsAt) return null;
+    const ms = new Date(endsAt).getTime() - Date.now();
+    if (Number.isNaN(ms)) return null;
+
+    // Already gone. Null rather than a phrase, so a caller cannot accidentally
+    // tell someone their finished trial has "less than an hour" left.
+    if (ms <= 0) return null;
+
+    const hours = ms / 3600000;
+    // Rounded, not floored: a trial handed out moments ago is 13.9999 days by
+    // the time this runs, and flooring told a brand new customer they had
+    // 13 days of their 14.
+    if (hours >= 48) return `${Math.round(hours / 24)} days`;
+    if (hours >= 24) return '1 day';
+    if (hours >= 2) return `${Math.floor(hours)} hours`;
+    if (hours >= 1) return '1 hour';
+    return 'less than an hour';
+}
+
 // Can this account open the lead pipeline screen?
 //
 // One answer, asked by three places: the nav link, the screen's own guard, and
@@ -592,7 +665,7 @@ export function showProModal(featureKey) {
         note.textContent = "This one is still being built. Nothing changes on your plan today, and it'll appear here the moment it lands.";
     } else if (isProUser()) {
         note.textContent = 'This is part of your plan. Go ahead.';
-    } else if (window.CEO_CHECKOUT_PRO) {
+    } else if (window.CEO_CHECKOUT_PRO_MONTHLY) {
         note.textContent = 'This is part of Pro. You can switch plans whenever you like, and everything you have logged comes with you.';
     } else {
         note.textContent = "Pro isn't open for sign-ups just yet. You'll see it here as soon as it is.";

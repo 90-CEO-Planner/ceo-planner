@@ -10,39 +10,10 @@
 // strategy mode and reminders, all of which feed the AI rather than the account.
 import { renderNav, signOutAndClear } from '../components/nav.js';
 import { showToast, showConfirm } from '../components/toast.js';
-import { PRO_FEATURES, PRO_FEATURE_KEYS, getPlanTier, isProUser, isProTrial, trialDaysLeft, isFeatureLive, proBadge, aiDailyAllowance, AI_DAILY_LIMITS, getAiAllowanceToday, fetchAiAllowance } from '../components/proGate.js';
+import { PRO_FEATURES, PRO_FEATURE_KEYS, baseFeatures, getPlanTier, isProUser, isProTrial, trialTimeLeftPhrase, isFeatureLive, proBadge, aiDailyAllowance, AI_DAILY_LIMITS, getAiAllowanceToday, fetchAiAllowance } from '../components/proGate.js';
 import { fetchStripeConnection, connectStripeKey, disconnectStripe, syncStripeSales, canConnectStripe, STRIPE_KEY_PAGE } from '../stripeImport.js';
 import { fetchPayPalConnection, connectPayPalApp, disconnectPayPal, syncPayPalSales, canConnectPayPal, PAYPAL_APP_PAGE } from '../paypalImport.js';
 import { refreshImportedSales, countImportedFrom } from '../importedSales.js';
-
-// Everything the base plan includes. Written out rather than derived, because
-// the point of this list is to make base feel like a complete product on its
-// own — a Pro list with nothing beside it reads as a list of things you lack.
-//
-// A function rather than a constant so the AI line can carry the number that
-// actually applies to the account reading it. It was hardcoded to "30
-// conversations a day", which is the TRIAL rate: every paying base customer was
-// being told they got a quarter of what they were paying for, and a Pro
-// customer two thirds less again.
-//
-// "Requests" rather than "conversations" because one request is one request
-// whether it is a chat message, a 90-day plan or a refreshed suggestion — and
-// on Pro the planning surfaces spend them too.
-function baseFeatures() {
-    return [
-        { text: 'Your 90-day roadmap and quarterly targets' },
-        { text: 'Weekly planning and the Daily 3' },
-        { text: 'Revenue, leads and conversion tracking' },
-        { text: 'The Friday Review and your Monday draft' },
-        // The plan list says what the plan includes. How much of it you have
-        // used today is a different question and gets its own card below —
-        // appending a running count here made a feature list double as a meter
-        // and read like an afterthought.
-        { text: `The AI coach, ${aiDailyAllowance()} requests a day` },
-        { text: 'CSV export of everything you log' },
-        { text: 'Executive reports on demand' }
-    ];
-}
 
 const TICK_SVG = `<svg class="plan-feature-mark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
 const LOCK_SVG = `<svg class="plan-feature-mark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>`;
@@ -75,14 +46,14 @@ export function renderAccount() {
 function renderPlanCard() {
     const tier = getPlanTier();
     const onTrial = isProTrial();
-    const days = trialDaysLeft();
+    const remaining = trialTimeLeftPhrase();
     const hasPro = tier === 'pro';
 
     let heading;
     let sub;
 
     if (onTrial) {
-        const dayText = days === null ? 'while your trial runs' : (days === 1 ? 'for 1 more day' : `for ${days} more days`);
+        const dayText = remaining === null ? 'while your trial runs' : `for another ${remaining}`;
         heading = 'Free trial, running on Pro';
         sub = `You have the complete product ${dayText}, including every Pro feature as it lands. Nothing to pay and no card on file. When the trial finishes you'll pick a plan, and Base keeps everything in the first list below.`;
     } else if (hasPro) {

@@ -9,7 +9,7 @@ window.db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 // Stripe checkout links for when the free trial runs out.
 // These deliberately have NO Stripe trial period on them. The 14 free days are
 // served by the app, so a trial period here would hand people a second fortnight
-// free before they were ever charged.
+// free before they were ever charged. Checked on all four links, 19 Aug 2026.
 window.CEO_CHECKOUT_MONTHLY = 'https://buy.stripe.com/7sY28q2DXgrp6H67VM18c08';
 window.CEO_CHECKOUT_ANNUAL = 'https://buy.stripe.com/28E8wO92l6QP1mM3Fw18c09';
 // Existing customers whose card failed manage themselves here
@@ -27,11 +27,32 @@ window.CEO_BILLING_PORTAL = 'https://billing.stripe.com/p/login/eVq3cucex8YXc1q0
 // first.
 window.CEO_TURNSTILE_SITE_KEY = '0x4AAAAAAESsYq8ysZijiBEz';
 
-// Pro tier checkout. Deliberately null: Pro is being built and has no price in
-// Stripe yet, so the locked-feature modal explains the feature and stops there
-// rather than selling something that cannot be delivered. Set this to the Pro
-// payment link when the tier ships and the modal grows an upgrade button.
-window.CEO_CHECKOUT_PRO = null;
+// Pro tier checkout. Live since 19 Aug 2026 — until then these were null,
+// because Pro had no price in Stripe and the app refused to sell something it
+// could not deliver.
+//
+// $37/month and $327/year, Jen's pricing. Product `prod_V6LjD07AtJG5o4`,
+// prices `price_1U691jAnrDOsqkV3F04IF3eU` (monthly) and
+// `price_1U691oAnrDOsqkV3INISfwNm` (annual).
+//
+// ⚠️ Both Pro prices carry `metadata.tier = 'pro'` in Stripe, and both Base
+// prices carry `metadata.tier = 'base'`. That metadata is what `stripe-webhook`
+// reads to set `profiles.plan_tier`. **A new price with no tier metadata is
+// treated as Base**, so anyone buying it would pay Pro money for Base features.
+// If you add a price in the Stripe dashboard, set the metadata at the same time.
+window.CEO_CHECKOUT_PRO_MONTHLY = 'https://buy.stripe.com/00w6oG2DXcb99Ti6RI18c0a';
+window.CEO_CHECKOUT_PRO_ANNUAL = 'https://buy.stripe.com/14A7sK6Ud4IH9Tifoe18c0b';
+
+// What each plan costs, kept next to the links so the price on screen and the
+// price actually charged cannot drift apart.
+//
+// These are deliberately hardcoded in dollars and do NOT read
+// store.settings.currency. That setting is for displaying the user's OWN
+// revenue; these are what Stripe will charge, and Stripe charges USD.
+window.CEO_PLAN_PRICING = {
+    base: { monthly: '$17', annual: '$147' },
+    pro: { monthly: '$37', annual: '$327' }
+};
 
 // Reads the user's real subscription state from the database and caches it locally.
 // The cached copy is only ever used to render the UI. The database is the source

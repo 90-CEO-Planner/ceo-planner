@@ -150,7 +150,120 @@ itself, and every row now has one. What v82 does **not** know about is
 `comp_pro`. So if the push has not happened by 2 Sept, the database will grant
 Derina and Jen access while their browsers show them the paywall.
 
-### 2. PayPal scope reduction — parked 19 Aug 2026
+### ✅ 2. PRO IS NOW PURCHASABLE — and the trial-end screen says what it costs you (19 Aug 2026)
+
+Found while Jen was testing the paywall, minutes after item 1 shipped. She reached
+the "choose your plan" screen and asked the right question: *the customer has been
+on Pro for 14 days, so why is the only option Base, and why does nothing say they
+are downgrading?*
+
+The answer was that **Pro did not exist as something you could buy.** Checked
+against the live Stripe account (`acct_1IqftU…`): one product, `CEOPlanner`, two
+prices, $17/month and $147/year, both Base. That is why `CEO_CHECKOUT_PRO` was
+`null` — the app was refusing to sell something it could not deliver.
+
+Pulling that thread turned up two things behind it that were worse.
+
+#### ⚠️ The webhook had never run at all
+
+`stripe-webhook` has a whole second half handling `customer.subscription.*` —
+cancellations, `past_due`, plan changes. **The Stripe endpoint was only subscribed
+to `checkout.session.*` events, so none of it had ever executed once.** Not a
+single subscription event had ever been delivered.
+
+What that meant in practice, for the whole life of the product:
+
+- A cancelled subscription never became `canceled` in the app. The customer kept
+  full access indefinitely.
+- A failed payment never became `past_due`. Nobody was ever asked to fix a card.
+- `test_paywall@example.com` being `past_due` was set by hand, not by Stripe —
+  which is why that path looked exercised when it never had been.
+
+It masked itself perfectly, because nothing has ever cancelled. The endpoint now
+carries all seven events.
+
+#### ⚠️ And it wrote no tier
+
+Even once subscribed, the function only ever set `subscription_status` on
+`profiles`. It never wrote `plan_tier` or `subscription_price_id`. So the day a
+Pro price existed, a customer could pay $37 and land on `plan_tier = 'base'` with
+none of the Pro features — a charge with nothing behind it, which reads as fraud
+rather than as a bug.
+
+#### What shipped
+
+**Stripe** (live mode, created through the API):
+
+| Object | Id |
+|--------|-----|
+| Product `CEO Planner Pro` | `prod_V6LjD07AtJG5o4` |
+| Pro monthly, $37 | `price_1U691jAnrDOsqkV3F04IF3eU` |
+| Pro annual, $327 | `price_1U691oAnrDOsqkV3INISfwNm` |
+| Pro monthly payment link | `https://buy.stripe.com/00w6oG2DXcb99Ti6RI18c0a` |
+| Pro annual payment link | `https://buy.stripe.com/14A7sK6Ud4IH9Tifoe18c0b` |
+
+All four CEO Planner prices now carry `metadata.tier` — `pro` on the two new
+ones, `base` on the two existing. Neither Pro link has a Stripe trial period,
+matching the Base links: the 14 free days are served by the app, and a trial here
+would hand out a second fortnight. The webhook endpoint `we_1TVHer…` gained
+`customer.subscription.created`, `.updated` and `.deleted`.
+
+**`stripe-webhook` (v19)** now resolves the tier from `price.metadata.tier` and
+writes `plan_tier` and `subscription_price_id`. It also handles
+`customer.subscription.created`, which is the event a brand new subscription
+fires first — without it a Pro customer would have waited for some unrelated
+change to wake the function up.
+
+Three deliberate details:
+
+- **An untagged price resolves to `base`, loudly.** Erring cheap is the safe
+  direction; erring generous gives Pro away silently. It logs the price id and
+  says what to fix.
+- **It falls back to fetching the price from Stripe** when the payload carries no
+  usable metadata. The endpoint serialises at API version `2020-08-27` while the
+  SDK pins `2022-11-15`, so the inline shape is not guaranteed. It reads `price`,
+  then the older `plan`, then asks Stripe directly.
+- **No tier is written for a cancelled or lapsed subscription.** The tier they
+  last held is more useful than blanking it, and `subscription_status` is what
+  actually withdraws access.
+
+**The trial-end screen** ([js/screens/billing.js](js/screens/billing.js)) now
+shows both plans side by side: Pro badged *"what you've been using"* with its
+live feature list, Base beside it with what it keeps **and an explicit "on Base
+these pause" list**, plus the reassurance that nothing is deleted. The buttons
+read "Stay on Pro" and "Choose Base" — "Continue" is the wrong verb for a
+downgrade. Both lists are read from `baseFeatures()` and `PRO_FEATURE_KEYS` in
+proGate rather than retyped, and only `shipped` features are listed.
+
+`baseFeatures()` moved from account.js into proGate.js so both screens read one
+copy. Two hand-kept lists of "what you keep" would eventually disagree, on the
+screen where someone is deciding whether to trust us with a card.
+
+**The day counter.** `trialTimeLeftPhrase()` in proGate is now the only place the
+wording is decided, replacing four separate copies of the same arithmetic (nav
+pill, dashboard banner, Account plan card, billing screen). Under a day it counts
+hours; under an hour it says "less than an hour"; expired returns null rather
+than a phrase. Rounded rather than floored, because flooring told a customer with
+a brand new 14-day trial that they had 13 days.
+
+Verified by running the real functions out of the built bundle: eight clocks from
+14 days down to expired, and twelve assertions on the rendered screen (both
+tiers, all four prices, the "pauses" list, no "Continue" left). Bundle **v84**.
+
+#### What is deliberately NOT done
+
+**An existing Base subscriber still has no way to upgrade to Pro in the app.**
+This is not an oversight and should not be fixed by dropping the Pro payment link
+onto the Account screen: a customer who already has a Base subscription and then
+buys through a payment link ends up with **two active subscriptions** and pays for
+both. An upgrade has to go through the billing portal or a proration flow, which
+is its own piece of work.
+
+It is not urgent — there are currently **zero** accounts with `subscription_status
+= 'active'`, so nobody is on Base to upgrade. It becomes urgent the moment the
+first person buys Base.
+
+### 3. PayPal scope reduction — parked 19 Aug 2026
 
 Not urgent and not blocking: the import works. The open question is whether a
 PayPal REST app can be made genuinely read-only.

@@ -38,6 +38,59 @@ function canonicalEmail(email: string): string {
   return local + '@gmail.com'
 }
 
+// Which plan did they actually buy?
+//
+// Read off `price.metadata.tier`, which is set on every CEO Planner price in
+// Stripe: 'pro' on the two Pro prices, 'base' on the two Base ones. Reading the
+// metadata rather than matching hardcoded price ids means a new price can be
+// added in the dashboard without redeploying this function.
+//
+// **Defaults to 'base' when the metadata is missing or unrecognised**, and that
+// direction is deliberate: an untagged price hands out the cheaper feature set
+// rather than silently giving Pro away. It logs loudly, because the failure is
+// otherwise invisible — the customer pays and quietly gets less than they bought.
+//
+// Before 19 Aug 2026 this function wrote no tier at all. `plan_tier` stayed
+// 'base' on every row, so the day a Pro price existed, buying it would have
+// granted nothing. See item 2 in UPGRADE_PLAN.md.
+async function tierFromSubscription(
+  subscription: Stripe.Subscription
+): Promise<{ tier: string; priceId: string | null }> {
+  const item = subscription.items?.data?.[0] as Record<string, any> | undefined
+  const price = item?.price
+  const priceId = typeof price?.id === 'string'
+    ? price.id
+    : (typeof item?.plan?.id === 'string' ? item.plan.id : null)
+
+  const readTier = (value: unknown): string | null =>
+    value === 'pro' || value === 'base' ? value : null
+
+  // The endpoint serialises payloads at API version 2020-08-27, where a
+  // subscription item carries both `price` and the older `plan`. Read whichever
+  // is there rather than assuming the newer shape.
+  const embedded = readTier(price?.metadata?.tier) ?? readTier(item?.plan?.metadata?.tier)
+  if (embedded) return { tier: embedded, priceId }
+
+  // Nothing usable inline. Ask Stripe directly before giving up — the SDK pins a
+  // newer API version than the webhook payload, so this returns the current
+  // shape even when the payload did not.
+  if (priceId) {
+    try {
+      const fetched = await stripe.prices.retrieve(priceId)
+      const live = readTier(fetched?.metadata?.tier)
+      if (live) return { tier: live, priceId }
+    } catch (err) {
+      console.error(`Could not retrieve price ${priceId}: ${err.message}`)
+    }
+  }
+
+  console.error(
+    `Price ${priceId ?? 'unknown'} has no usable metadata.tier. Falling back to ` +
+    `'base'. Set metadata.tier on that price in Stripe, then resend the event.`
+  )
+  return { tier: 'base', priceId }
+}
+
 // Helper function to upsert contact and properties to Loops.so
 async function syncToLoops(
   email: string,
@@ -198,7 +251,17 @@ serve(async (req) => {
       }
     }
 
-    if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.deleted') {
+    // `created` was missing until 19 Aug 2026, and so was the Stripe-side
+    // subscription to these events — the endpoint listened only for
+    // checkout.session.*, so everything below had never run once. A new
+    // subscription fires `created` before anything fires `updated`, so without
+    // it a Pro customer could sit on the default plan_tier until some unrelated
+    // change to their subscription happened to wake this up.
+    if (
+      event.type === 'customer.subscription.created' ||
+      event.type === 'customer.subscription.updated' ||
+      event.type === 'customer.subscription.deleted'
+    ) {
       const subscription = event.data.object as Stripe.Subscription
       const customerId = subscription.customer as string
       const status = subscription.status // 'trialing', 'active', 'past_due', 'canceled'
@@ -219,6 +282,21 @@ serve(async (req) => {
         profileUpdate.trial_ends_at = null
       } else if (status === 'trialing' && subscription.trial_end) {
         profileUpdate.trial_ends_at = new Date(subscription.trial_end * 1000).toISOString()
+      }
+
+      // What they bought. `plan_tier` is what every server-side Pro gate reads
+      // through account_access(), so without this a Pro subscriber gets Base.
+      // `subscription_price_id` is written alongside it as the audit trail: if
+      // the tier is ever wrong, this is what says which price it came from.
+      //
+      // Not written when the subscription has been cancelled or has lapsed —
+      // the tier they last held is more useful there than overwriting it, and
+      // `subscription_status` is what withdraws their access in that case.
+      if (status === 'active' || status === 'trialing') {
+        const { tier, priceId } = await tierFromSubscription(subscription)
+        profileUpdate.plan_tier = tier
+        if (priceId) profileUpdate.subscription_price_id = priceId
+        console.log(`Customer ${customerId} resolved to plan_tier '${tier}' from price ${priceId ?? 'unknown'}`)
       }
 
       await supabaseAdmin
