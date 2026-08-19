@@ -18,6 +18,10 @@ $files = @(
     "js\components\nav.js",
     "js\components\tooltip.js",
     "js\components\toast.js",
+    # After toast.js and proGate.js, whose showToast() and anyProFeatureLive()
+    # it calls. Before account.js and billing.js, the two screens that open the
+    # Stripe customer portal through it.
+    "js\stripePortal.js",
     "js\components\chatWidget.js",
     # After toast.js and aiService.js, both of which it calls at click time.
     "js\components\weekRegen.js",

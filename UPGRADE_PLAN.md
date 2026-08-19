@@ -250,20 +250,148 @@ Verified by running the real functions out of the built bundle: eight clocks fro
 14 days down to expired, and twelve assertions on the rendered screen (both
 tiers, all four prices, the "pauses" list, no "Continue" left). Bundle **v84**.
 
-#### What is deliberately NOT done
+#### What was deliberately NOT done — now done, see item 3
 
-**An existing Base subscriber still has no way to upgrade to Pro in the app.**
-This is not an oversight and should not be fixed by dropping the Pro payment link
-onto the Account screen: a customer who already has a Base subscription and then
-buys through a payment link ends up with **two active subscriptions** and pays for
-both. An upgrade has to go through the billing portal or a proration flow, which
-is its own piece of work.
+An existing Base subscriber had no way to upgrade to Pro in the app. That was a
+decision, not an oversight: dropping the Pro payment link onto the Account screen
+would leave a customer who already has a Base subscription paying for **two**.
+The upgrade needed the billing portal or a proration flow, which was its own
+piece of work. It is item 3 below.
 
-It is not urgent — there are currently **zero** accounts with `subscription_status
-= 'active'`, so nobody is on Base to upgrade. It becomes urgent the moment the
-first person buys Base.
+### ✅ 3. THE BILLING PORTAL — an existing Base subscriber can upgrade to Pro (19 Aug 2026)
 
-### 3. PayPal scope reduction — parked 19 Aug 2026
+The route that item 2 left open. Base → Pro now goes through Stripe's customer
+portal, which prorates properly: credit for the unused remainder of what they
+have already paid for, an invoice for the difference, and — the part that made
+this the right choice over a hand-rolled flow — **the exact figure shown to the
+customer before they agree to it**.
+
+The webhook end needed nothing. Item 2 had already taught `stripe-webhook` to
+resolve the tier from `price.metadata.tier` on `customer.subscription.updated`
+and write `plan_tier`, and had already subscribed the endpoint to that event. A
+plan switched in the portal lands back in the app on its own.
+
+#### What shipped
+
+**`supabase/functions/stripe-portal` (v2), deployed.** `verify_jwt = true`.
+
+  POST { intent: 'upgrade' }  → a portal session opening on the plan switch
+  POST { }                    → the portal home: card, invoices, address, cancel
+
+- The customer id is read from `profiles.stripe_customer_id` **server side, from
+  the caller's own row**. It is never accepted from the request body — that would
+  hand anyone else's billing page to anyone who asked for it.
+- The subscription is looked up from Stripe rather than stored. `profiles` has no
+  subscription id column and does not need one; a column a webhook has to keep in
+  step is a second thing to go wrong.
+- It is filtered by **product as well as status**. Jen's Stripe account also
+  carries WEN Business Club and the rest of the catalogue, and a customer who is
+  in both must never have her membership touched by a planner upgrade.
+- `return_url` comes from an **allowlist**, not from the `Origin` header. It is a
+  redirect we are asking Stripe to perform on a signed-in customer.
+- Errors carry a `code` the client can act on: `no_customer`, `no_subscription`
+  (both mean "you have nothing to manage" — the client routes to `#/billing`) and
+  `config_failed`.
+
+**A CEO Planner-only portal configuration**, created by the function on first use
+and tagged `metadata.app = 'ceo-planner'` so it is found again afterwards.
+
+The account **default** configuration (`bpc_1QRFNh…`) is left exactly as it is,
+deliberately. It is shared with everything else Jen sells, and pointing its
+"plans customers can switch to" at the two planner products would offer a WEN
+Business Club member the chance to move her membership onto CEO Planner Base.
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| `subscription_update.products` | the 2 planner products, all 4 prices | Nothing from the rest of the catalogue can appear |
+| `proration_behavior` | `always_invoice` | Upgrades bill the difference immediately |
+| `schedule_at_period_end.conditions` | `decreasing_item_amount`, `shortening_interval` | **Downgrades wait for the renewal date.** No refund owed, and nobody loses Pro on a day they have paid for |
+| `subscription_cancel.mode` | `at_period_end` | Same principle |
+
+⚠️ **A downgrade path now exists that did not before.** A Pro customer can move
+themselves to Base in the portal. That is deliberate — someone who cannot
+downgrade cancels instead — but it is Jen's call, and it is one field to change:
+drop the base product from `subscription_update.products` in
+[stripe-portal/index.ts](supabase/functions/stripe-portal/index.ts), delete the
+configuration in Stripe, and the next call rebuilds it.
+
+**Client** — new [js/stripePortal.js](js/stripePortal.js), added to the `$files`
+array in `build_bundle.ps1`. Bundle **v86** (`index.html`, `sw.js` `CACHE_NAME`
+and `?v=` all bumped), everything synced into `github_deployment/` and
+hash-verified both ways.
+
+- `openBillingPortal(intent)` replaces every `window.location.href =
+  window.CEO_BILLING_PORTAL` in the app. That constant is Stripe's **login page**
+  — it asks for an email and sends a code. Fine as a last resort, wrong as the
+  front door for somebody who has this second proved who they are, and
+  particularly wrong on the payment-failed screen, where we are asking a customer
+  we have just locked out to go and check their email before they can retype a
+  card. It is kept as the fallback for when the function itself is unreachable.
+- `canUpgradeToPro()` decides who sees the upgrade panel: on Base, `active` or
+  `past_due`, not comped, and at least one Pro feature actually shipped.
+  **Deliberately false during the trial** — a trial user has paid nothing, so
+  there is nothing to prorate. They buy Pro outright through `#/billing`.
+- `watchForPlanChange()` handles the way back. Stripe knows the new plan
+  instantly; the app finds out when the webhook reaches `profiles`. Without this,
+  someone who had just upgraded would land on an Account screen still rendered
+  for a Base user and reasonably conclude they had paid for nothing.
+- The Account screen gains the upgrade panel, wired to the plan card, and its
+  Billing card now says "change your plan" because it can.
+
+#### Verified
+
+The function: deployed, boots, and answers **from its own body** (`{"error":"Please
+sign in first."}`) rather than from the gateway, on both `{}` and
+`{"intent":"upgrade"}`; CORS preflight 200; no-token 401. Reaching the auth check
+at all proves `STRIPE_SECRET_KEY` is present, since the missing-key guard runs
+first. Its form encoder was checked against Stripe's nested-parameter format for
+the configuration, the subscription list and the `flow_data` session.
+
+The client half: **42 assertions**, run against the real functions pulled out of
+the source under stubs in node.
+
+- `canUpgradeToPro()` across nine account states — active Base, `past_due` Base,
+  already Pro, mid-trial, expired trial, cancelled, comped, no Pro feature
+  shipped, empty storage.
+- `openBillingPortal()` across every branch — success, intent forwarding, the
+  empty body, `no_customer` and `no_subscription` routing to `#/billing` with an
+  *info* toast rather than an error, `config_failed` surfacing as an error and
+  **not** navigating, a 2xx with no url, and a transport failure falling back to
+  the login link.
+- `renderUpgradePanel()` — hidden when ineligible, and when shown it quotes $37
+  and $327 from `planPricing()`, never a Base price, carries the button id the
+  handler binds, and states all three promises (prorated, shown first, nothing
+  lost).
+- `watchForPlanChange()` — clears its marker immediately so a re-render cannot
+  start a second watcher, polls past a late webhook, and reloads once the tier
+  changes.
+
+Bundle `node --check`ed after the rebuild.
+
+#### ⚠️ One thing that cannot be checked without a real customer
+
+**The portal configuration has never actually been created.** It is built on the
+first real call, and that call needs a signed-in account with a
+`stripe_customer_id` — which is nobody today, because there are still **zero**
+accounts with `subscription_status = 'active'`.
+
+Live mode has requirements a sandbox does not, chiefly a privacy policy and terms
+URL either on the configuration or as account defaults in the Stripe dashboard.
+So the creation is written **not to throw**: if Stripe refuses, the function logs
+the exact message, falls back to the account default configuration — card,
+invoices and cancel all still work — and returns `config_failed` for an upgrade
+rather than a 500.
+
+After the first person presses either button, check it landed:
+
+```
+Supabase → Edge Functions → stripe-portal → Logs
+```
+
+A line reading `Created the CEO Planner portal configuration: bpc_…` means it
+worked. A line beginning `Could not create` names the field Stripe wants.
+
+### 4. PayPal scope reduction — parked 19 Aug 2026
 
 Not urgent and not blocking: the import works. The open question is whether a
 PayPal REST app can be made genuinely read-only.

@@ -408,3 +408,10 @@ entrypoint = "./functions/chat/index.ts"
 
 [functions.stripe-webhook]
 verify_jwt = false
+
+# Unlike stripe-webhook, every request here comes from our own browser code
+# carrying a real session — there is no Stripe redirect to accommodate — and the
+# session it opens is the customer's own billing page. It must never be callable
+# without a signed-in user.
+[functions.stripe-portal]
+verify_jwt = true

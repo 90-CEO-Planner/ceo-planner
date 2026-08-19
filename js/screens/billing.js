@@ -1,6 +1,7 @@
 // billing.js
 import { showToast, rerenderScreen } from '../components/toast.js';
 import { baseFeatures, PRO_FEATURE_KEYS, PRO_FEATURES, isFeatureLive, trialTimeLeftPhrase, planPricing } from '../components/proGate.js';
+import { openBillingPortal } from '../stripePortal.js';
 
 // Checkout happens on Stripe's own page and the account is upgraded by a webhook
 // firing somewhere else entirely, so there is a window of a few seconds where the
@@ -390,10 +391,24 @@ function billingAttachEvents() {
         btnProMonthly.addEventListener('click', () => checkout(window.CEO_CHECKOUT_PRO_MONTHLY));
     }
 
+    // Straight into their own portal session, rather than Stripe's login page.
+    // This customer is signed in and their card has failed: asking them to prove
+    // who they are again, by email, before they can retype a card number is the
+    // last thing to do to somebody we have just locked out. openBillingPortal
+    // falls back to the login link if our function cannot be reached at all.
     const btnPortal = document.getElementById('btn-portal');
     if (btnPortal) {
-        btnPortal.addEventListener('click', () => {
-            window.location.href = window.CEO_BILLING_PORTAL;
+        btnPortal.addEventListener('click', async () => {
+            const original = btnPortal.textContent;
+            btnPortal.disabled = true;
+            btnPortal.textContent = 'Opening…';
+
+            const failed = await openBillingPortal();
+
+            if (failed) {
+                btnPortal.disabled = false;
+                btnPortal.textContent = original;
+            }
         });
     }
 

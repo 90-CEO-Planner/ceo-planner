@@ -10,10 +10,11 @@
 // strategy mode and reminders, all of which feed the AI rather than the account.
 import { renderNav, signOutAndClear } from '../components/nav.js';
 import { showToast, showConfirm } from '../components/toast.js';
-import { PRO_FEATURES, PRO_FEATURE_KEYS, baseFeatures, getPlanTier, isProUser, isProTrial, trialTimeLeftPhrase, isFeatureLive, proBadge, aiDailyAllowance, AI_DAILY_LIMITS, getAiAllowanceToday, fetchAiAllowance } from '../components/proGate.js';
+import { PRO_FEATURES, PRO_FEATURE_KEYS, baseFeatures, getPlanTier, isProUser, isProTrial, trialTimeLeftPhrase, isFeatureLive, proBadge, planPricing, aiDailyAllowance, AI_DAILY_LIMITS, getAiAllowanceToday, fetchAiAllowance } from '../components/proGate.js';
 import { fetchStripeConnection, connectStripeKey, disconnectStripe, syncStripeSales, canConnectStripe, STRIPE_KEY_PAGE } from '../stripeImport.js';
 import { fetchPayPalConnection, connectPayPalApp, disconnectPayPal, syncPayPalSales, canConnectPayPal, PAYPAL_APP_PAGE } from '../paypalImport.js';
 import { refreshImportedSales, countImportedFrom } from '../importedSales.js';
+import { openBillingPortal, canUpgradeToPro, watchForPlanChange } from '../stripePortal.js';
 
 const TICK_SVG = `<svg class="plan-feature-mark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
 const LOCK_SVG = `<svg class="plan-feature-mark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>`;
@@ -112,8 +113,67 @@ function renderPlanCard() {
 
         <p class="plan-section-label" style="color: var(--color-secondary-dark); margin-top: 1.5rem; display: flex; align-items: center; gap: 0.5rem;">${proBadge()} adds</p>
         ${proRows}
+        ${renderUpgradePanel()}
     </div>
     `;
+}
+
+// The upgrade route for someone already paying for Base.
+//
+// Until this shipped there wasn't one, and that was deliberate rather than
+// forgotten: the only way to buy Pro was a Stripe payment link, and a customer
+// with a live Base subscription who used one would have ended up paying for two
+// subscriptions at once, every month, until somebody noticed. Dropping a link on
+// this card was the obvious fix and the wrong one.
+//
+// It goes through the Stripe portal instead, which does the arithmetic properly
+// — credit for the unused part of what they've already paid for, invoice for the
+// difference — and, more to the point, shows them the figure before they agree
+// to it. `canUpgradeToPro()` in stripePortal.js owns who sees this; it is
+// deliberately false during the trial, because a trial user has paid nothing and
+// so has nothing to prorate. They buy Pro outright through #/billing.
+function renderUpgradePanel() {
+    if (!canUpgradeToPro()) return '';
+
+    const pro = planPricing('pro');
+    const priceLine = pro
+        ? `Pro is ${pro.monthly} a month, or ${pro.annual} a year.`
+        : '';
+
+    return `
+    <div style="margin-top: 1.5rem; padding: 1.25rem; border: 1px solid var(--color-secondary); border-radius: 12px; background: rgba(255,255,255,0.5);">
+        <p style="font-weight: 600; color: var(--color-black); margin: 0 0 0.5rem 0; font-size: 0.95rem;">
+            Want the locked ones back?
+        </p>
+        <p style="color: var(--color-text-muted); font-size: 0.875rem; line-height: 1.6; margin: 0 0 1rem 0;">
+            ${priceLine}
+            You won't be charged a full month on top of what you've already paid —
+            you only pay the difference for the rest of your current billing period,
+            and Stripe shows you that exact amount before anything is taken.
+            Everything you've logged stays exactly where it is.
+        </p>
+        <button type="button" id="btn-upgrade-pro" class="btn btn-primary" style="display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 600;">
+            Upgrade to Pro
+        </button>
+    </div>
+    `;
+}
+
+// Opening the portal means a round trip to our function and then to Stripe, so
+// the button has to say something in between. Restored only on failure: on
+// success the browser is already leaving, and putting the old label back would
+// flash "Manage billing" for an instant on a page that is on its way out.
+async function portalOnClick(button, busyLabel, intent) {
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = busyLabel;
+
+    const failed = await openBillingPortal(intent);
+
+    if (failed) {
+        button.disabled = false;
+        button.textContent = original;
+    }
 }
 
 // Connected payment processors, for Pro item 1.
@@ -373,7 +433,7 @@ function renderBillingCard() {
         <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1.5rem; line-height: 1.6;">
             ${onTrial
                 ? "You're on the free trial, so there's nothing to pay and nothing to cancel. Whenever you're ready, you can choose a plan here."
-                : 'Update your card, change your billing address, download invoices or cancel — all handled on the secure Stripe page, so your card details never touch this app.'}
+                : 'Change your plan, update your card, change your billing address, download invoices or cancel — all handled on the secure Stripe page, so your card details never touch this app.'}
         </p>
         <button type="button" id="btn-manage-subscription" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600; display: inline-flex; align-items: center; gap: 0.5rem;">
             ${onTrial ? 'Choose Your Plan' : 'Manage billing, invoices or cancel'}
@@ -972,6 +1032,10 @@ function accountAttachEvents() {
         if (el) el.textContent = 'Not available';
     });
 
+    // Just back from Stripe. Waits for the new plan to reach the app rather than
+    // leaving somebody who has this minute upgraded looking at a Base screen.
+    watchForPlanChange();
+
     // Someone on the free trial has no Stripe record yet, so the customer portal
     // would be a dead end for them. Send them to the plan picker instead.
     const btnManageSub = document.getElementById('btn-manage-subscription');
@@ -979,10 +1043,15 @@ function accountAttachEvents() {
         btnManageSub.addEventListener('click', () => {
             if (localStorage.getItem('ceo_sub_status') === 'trialing') {
                 window.location.hash = '#/billing';
-            } else {
-                window.location.href = window.CEO_BILLING_PORTAL;
+                return;
             }
+            portalOnClick(btnManageSub, 'Opening…');
         });
+    }
+
+    const btnUpgrade = document.getElementById('btn-upgrade-pro');
+    if (btnUpgrade) {
+        btnUpgrade.addEventListener('click', () => portalOnClick(btnUpgrade, 'Opening…', 'upgrade'));
     }
 
     // Same flow as "forgot password" on the login screen: Supabase emails a link

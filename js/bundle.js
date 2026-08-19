@@ -188,7 +188,18 @@ window.db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 // free before they were ever charged. Checked on all four links, 19 Aug 2026.
 window.CEO_CHECKOUT_MONTHLY = 'https://buy.stripe.com/7sY28q2DXgrp6H67VM18c08';
 window.CEO_CHECKOUT_ANNUAL = 'https://buy.stripe.com/28E8wO92l6QP1mM3Fw18c09';
-// Existing customers whose card failed manage themselves here
+// Stripe's portal LOGIN page: it asks for an email address and sends a code.
+//
+// No longer the way in. Since 19 Aug 2026 the app opens a real portal session
+// through the `stripe-portal` edge function — see js/stripePortal.js — which
+// needs no second proof of identity from somebody already signed in, and runs on
+// a CEO Planner-specific configuration that can switch plans. This link runs on
+// the account DEFAULT configuration, shared with WEN Business Club, which
+// cannot.
+//
+// Kept as the fallback for when that function is unreachable. Somebody whose
+// card has failed must always have a route to fixing it, including on a day our
+// own backend is having a bad time. Don't wire it to a button directly again.
 window.CEO_BILLING_PORTAL = 'https://billing.stripe.com/p/login/eVq3cucex8YXc1q0tk18c00';
 
 // Cloudflare Turnstile site key, for the bot protection on the auth forms.
@@ -5584,6 +5595,193 @@ function showConfirm(message, opts = {}) {
 // without the page reload that used to follow every save.
 function rerenderScreen() {
     window.dispatchEvent(new Event('hashchange'));
+}
+
+
+// --- js\stripePortal.js ---
+// stripePortal.js
+//
+// The customer's way into their own billing: change card, read invoices, cancel,
+// and — the thing this was actually built for — move from Base up to Pro.
+//
+// Why an edge function rather than the link that used to be here:
+//
+// `window.CEO_BILLING_PORTAL` is Stripe's *login page*. It asks for an email
+// address, emails a code, and only then shows the portal. That is a reasonable
+// last resort for someone whose card has failed, and a poor front door for
+// somebody who is already signed in — they have just proved who they are, and
+// we are asking them to go and check their email. Worse, it runs on the account's
+// DEFAULT portal configuration, which is shared with WEN Business Club and
+// everything else Jen sells, and which offers no plan switching for the planner.
+//
+// The function creates a session against a CEO Planner-specific configuration
+// instead, so the plan list is the four planner prices and nothing else, and it
+// can drop the customer straight onto the plan-switch step.
+//
+// The login link is kept as the fallback for when the function cannot be reached
+// at all. Somebody whose payment has failed must always have a route to fixing
+// it, even on the day our own backend is having a bad time.
+
+// Both of these mean "there is nothing to manage yet, go and buy a plan". They
+// are separate codes because they are separate situations — no Stripe customer
+// at all, versus a customer whose planner subscription has ended — and if this
+// ever needs different wording per case, the information is already here.
+const NO_BILLING_CODES = ['no_customer', 'no_subscription'];
+
+// Pull both the message and the machine-readable code off a function error.
+// `window.readFunctionError` reads the message only, and the code is the half
+// that decides where the customer goes next.
+async function readPortalError(error) {
+    let code = null;
+    let message = null;
+
+    try {
+        if (error && error.context && typeof error.context.json === 'function') {
+            const body = await error.context.json();
+            if (body) {
+                code = body.code || null;
+                message = body.error || body.message || null;
+            }
+        }
+    } catch (err) {
+        // Unreadable body. The generic path below still says something useful.
+    }
+
+    if (!message) message = await window.readFunctionError(error);
+    return { code, message };
+}
+
+// Open the portal. `intent` is either 'upgrade', which lands on the plan switch
+// for their live subscription, or nothing, which lands on the portal home.
+//
+// Returns null on success — though "success" here means the browser is already
+// on its way to Stripe — and an error string if the caller wants to say
+// something itself. It has already shown a toast either way.
+async function openBillingPortal(intent) {
+    try {
+        const { data, error } = await window.db.functions.invoke('stripe-portal', {
+            method: 'POST',
+            body: intent ? { intent } : {}
+        });
+
+        if (error) {
+            const { code, message } = await readPortalError(error);
+
+            if (NO_BILLING_CODES.includes(code)) {
+                // Not a failure from where the customer is sitting: they simply
+                // have no subscription to manage. Send them to the one screen
+                // that can give them one.
+                showToast("You don't have a subscription on this account yet. Here are the plans.", 'info');
+                window.location.hash = '#/billing';
+                return null;
+            }
+
+            showToast(message, 'error');
+            return message;
+        }
+
+        if (!data || !data.url) {
+            showToast('We could not open your billing page. Please try again in a moment.', 'error');
+            return 'No portal URL returned.';
+        }
+
+        window.location.href = data.url;
+        return null;
+    } catch (err) {
+        // The function was unreachable — offline, or the whole project is down.
+        // Fall back to Stripe's own login page rather than leaving somebody with
+        // a failed card and no way to fix it.
+        console.warn('Portal session failed, falling back to the login link:', err && err.message);
+        if (window.CEO_BILLING_PORTAL) {
+            window.location.href = window.CEO_BILLING_PORTAL;
+            return null;
+        }
+        showToast('We could not open your billing page. Please try again in a moment.', 'error');
+        return 'Portal unreachable.';
+    }
+}
+
+// Is this account an existing subscriber who could move up to Pro?
+//
+// All four conditions matter:
+//
+//   - on Base. A Pro customer has nowhere to go, and the trial resolves to Pro
+//     (see getPlanTier), so this is false during the 14 days — which is right:
+//     a trial user has never paid, so there is nothing to prorate. They go
+//     through #/billing and buy Pro outright.
+//   - paying. `active` or `past_due` only. Without a live subscription there is
+//     no proration to do, and the portal would open on nothing.
+//   - not comped. Derina pays Base and holds Pro by hand. Offering her an
+//     upgrade would be selling her something she already has.
+//   - Pro has to actually exist to sell. If no Pro feature has shipped yet there
+//     is nothing behind the upsell, which is the same rule the plan card follows.
+function canUpgradeToPro() {
+    const status = localStorage.getItem('ceo_sub_status');
+    if (status !== 'active' && status !== 'past_due') return false;
+    if (localStorage.getItem('ceo_comp_pro') === 'true') return false;
+    if (localStorage.getItem('ceo_plan_tier') === 'pro') return false;
+    return anyProFeatureLive();
+}
+
+// Coming back from the portal.
+//
+// The plan lives in two places for a few seconds: Stripe has it immediately, and
+// the app finds out when `customer.subscription.updated` reaches the webhook and
+// that reaches `profiles`. Somebody who has just upgraded and lands back on an
+// Account screen still rendered for a Base user would reasonably conclude they
+// had paid for nothing.
+//
+// So on the way back in, poll until the tier actually changes, then reload —
+// full reload rather than a re-render, because every gate in the app was built
+// for the old tier. Same shape as the post-checkout wait in billing.js, and the
+// same principle: never spin forever. If the webhook is slow, the screen stays
+// as it was and the customer can press refresh, which is a small annoyance
+// rather than a stuck page.
+const RETURN_POLL_MS = 2000;
+const RETURN_TIMEOUT_MS = 20000;
+
+function hasBillingReturnMarker() {
+    const hash = window.location.hash || '';
+    const q = hash.indexOf('?');
+    const inHash = q !== -1 && /[?&]billing=updated/.test(hash.slice(q));
+    return inHash || /[?&]billing=updated/.test(window.location.search);
+}
+
+function clearBillingReturnMarker() {
+    const hash = (window.location.hash || '').split('?')[0];
+    window.history.replaceState({}, '', window.location.pathname + (hash || '#/account'));
+}
+
+async function watchForPlanChange() {
+    if (!hasBillingReturnMarker()) return;
+
+    const before = localStorage.getItem('ceo_plan_tier');
+    const startedAt = Date.now();
+
+    // Cleared straight away, so a re-render of the Account screen doesn't start
+    // a second watcher on top of this one.
+    clearBillingReturnMarker();
+
+    const timer = setInterval(async () => {
+        const access = await window.refreshAccessState();
+        const changed = access && access.tier && access.tier !== before;
+
+        if (changed) {
+            clearInterval(timer);
+            showToast("You're on the new plan. Everything it unlocks is available now.", 'success');
+            // Let the toast land before the page goes.
+            setTimeout(() => window.location.reload(), 1200);
+            return;
+        }
+
+        if (Date.now() - startedAt >= RETURN_TIMEOUT_MS) {
+            clearInterval(timer);
+            // Deliberately quiet. Nothing has gone wrong — a downgrade scheduled
+            // for the renewal date changes nothing today, and that is the most
+            // likely reason to arrive here. Shouting about it would worry
+            // somebody whose change worked exactly as Stripe described it.
+        }
+    }, RETURN_POLL_MS);
 }
 
 
@@ -13520,8 +13718,67 @@ function renderPlanCard() {
 
         <p class="plan-section-label" style="color: var(--color-secondary-dark); margin-top: 1.5rem; display: flex; align-items: center; gap: 0.5rem;">${proBadge()} adds</p>
         ${proRows}
+        ${renderUpgradePanel()}
     </div>
     `;
+}
+
+// The upgrade route for someone already paying for Base.
+//
+// Until this shipped there wasn't one, and that was deliberate rather than
+// forgotten: the only way to buy Pro was a Stripe payment link, and a customer
+// with a live Base subscription who used one would have ended up paying for two
+// subscriptions at once, every month, until somebody noticed. Dropping a link on
+// this card was the obvious fix and the wrong one.
+//
+// It goes through the Stripe portal instead, which does the arithmetic properly
+// — credit for the unused part of what they've already paid for, invoice for the
+// difference — and, more to the point, shows them the figure before they agree
+// to it. `canUpgradeToPro()` in stripePortal.js owns who sees this; it is
+// deliberately false during the trial, because a trial user has paid nothing and
+// so has nothing to prorate. They buy Pro outright through #/billing.
+function renderUpgradePanel() {
+    if (!canUpgradeToPro()) return '';
+
+    const pro = planPricing('pro');
+    const priceLine = pro
+        ? `Pro is ${pro.monthly} a month, or ${pro.annual} a year.`
+        : '';
+
+    return `
+    <div style="margin-top: 1.5rem; padding: 1.25rem; border: 1px solid var(--color-secondary); border-radius: 12px; background: rgba(255,255,255,0.5);">
+        <p style="font-weight: 600; color: var(--color-black); margin: 0 0 0.5rem 0; font-size: 0.95rem;">
+            Want the locked ones back?
+        </p>
+        <p style="color: var(--color-text-muted); font-size: 0.875rem; line-height: 1.6; margin: 0 0 1rem 0;">
+            ${priceLine}
+            You won't be charged a full month on top of what you've already paid —
+            you only pay the difference for the rest of your current billing period,
+            and Stripe shows you that exact amount before anything is taken.
+            Everything you've logged stays exactly where it is.
+        </p>
+        <button type="button" id="btn-upgrade-pro" class="btn btn-primary" style="display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 600;">
+            Upgrade to Pro
+        </button>
+    </div>
+    `;
+}
+
+// Opening the portal means a round trip to our function and then to Stripe, so
+// the button has to say something in between. Restored only on failure: on
+// success the browser is already leaving, and putting the old label back would
+// flash "Manage billing" for an instant on a page that is on its way out.
+async function portalOnClick(button, busyLabel, intent) {
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = busyLabel;
+
+    const failed = await openBillingPortal(intent);
+
+    if (failed) {
+        button.disabled = false;
+        button.textContent = original;
+    }
 }
 
 // Connected payment processors, for Pro item 1.
@@ -13781,7 +14038,7 @@ function renderBillingCard() {
         <p style="color: var(--color-text-muted); font-size: 0.875rem; margin-bottom: 1.5rem; line-height: 1.6;">
             ${onTrial
                 ? "You're on the free trial, so there's nothing to pay and nothing to cancel. Whenever you're ready, you can choose a plan here."
-                : 'Update your card, change your billing address, download invoices or cancel — all handled on the secure Stripe page, so your card details never touch this app.'}
+                : 'Change your plan, update your card, change your billing address, download invoices or cancel — all handled on the secure Stripe page, so your card details never touch this app.'}
         </p>
         <button type="button" id="btn-manage-subscription" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600; display: inline-flex; align-items: center; gap: 0.5rem;">
             ${onTrial ? 'Choose Your Plan' : 'Manage billing, invoices or cancel'}
@@ -14380,6 +14637,10 @@ function accountAttachEvents() {
         if (el) el.textContent = 'Not available';
     });
 
+    // Just back from Stripe. Waits for the new plan to reach the app rather than
+    // leaving somebody who has this minute upgraded looking at a Base screen.
+    watchForPlanChange();
+
     // Someone on the free trial has no Stripe record yet, so the customer portal
     // would be a dead end for them. Send them to the plan picker instead.
     const btnManageSub = document.getElementById('btn-manage-subscription');
@@ -14387,10 +14648,15 @@ function accountAttachEvents() {
         btnManageSub.addEventListener('click', () => {
             if (localStorage.getItem('ceo_sub_status') === 'trialing') {
                 window.location.hash = '#/billing';
-            } else {
-                window.location.href = window.CEO_BILLING_PORTAL;
+                return;
             }
+            portalOnClick(btnManageSub, 'Opening…');
         });
+    }
+
+    const btnUpgrade = document.getElementById('btn-upgrade-pro');
+    if (btnUpgrade) {
+        btnUpgrade.addEventListener('click', () => portalOnClick(btnUpgrade, 'Opening…', 'upgrade'));
     }
 
     // Same flow as "forgot password" on the login screen: Supabase emails a link
@@ -16655,10 +16921,24 @@ function billingAttachEvents() {
         btnProMonthly.addEventListener('click', () => checkout(window.CEO_CHECKOUT_PRO_MONTHLY));
     }
 
+    // Straight into their own portal session, rather than Stripe's login page.
+    // This customer is signed in and their card has failed: asking them to prove
+    // who they are again, by email, before they can retype a card number is the
+    // last thing to do to somebody we have just locked out. openBillingPortal
+    // falls back to the login link if our function cannot be reached at all.
     const btnPortal = document.getElementById('btn-portal');
     if (btnPortal) {
-        btnPortal.addEventListener('click', () => {
-            window.location.href = window.CEO_BILLING_PORTAL;
+        btnPortal.addEventListener('click', async () => {
+            const original = btnPortal.textContent;
+            btnPortal.disabled = true;
+            btnPortal.textContent = 'Opening…';
+
+            const failed = await openBillingPortal();
+
+            if (failed) {
+                btnPortal.disabled = false;
+                btnPortal.textContent = original;
+            }
         });
     }
 

@@ -12,7 +12,18 @@ window.db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 // free before they were ever charged. Checked on all four links, 19 Aug 2026.
 window.CEO_CHECKOUT_MONTHLY = 'https://buy.stripe.com/7sY28q2DXgrp6H67VM18c08';
 window.CEO_CHECKOUT_ANNUAL = 'https://buy.stripe.com/28E8wO92l6QP1mM3Fw18c09';
-// Existing customers whose card failed manage themselves here
+// Stripe's portal LOGIN page: it asks for an email address and sends a code.
+//
+// No longer the way in. Since 19 Aug 2026 the app opens a real portal session
+// through the `stripe-portal` edge function — see js/stripePortal.js — which
+// needs no second proof of identity from somebody already signed in, and runs on
+// a CEO Planner-specific configuration that can switch plans. This link runs on
+// the account DEFAULT configuration, shared with WEN Business Club, which
+// cannot.
+//
+// Kept as the fallback for when that function is unreachable. Somebody whose
+// card has failed must always have a route to fixing it, including on a day our
+// own backend is having a bad time. Don't wire it to a button directly again.
 window.CEO_BILLING_PORTAL = 'https://billing.stripe.com/p/login/eVq3cucex8YXc1q0tk18c00';
 
 // Cloudflare Turnstile site key, for the bot protection on the auth forms.
