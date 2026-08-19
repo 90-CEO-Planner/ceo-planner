@@ -6,40 +6,28 @@
 // Reading imported sales is in importedSales.js, shared with Stripe. Nothing in
 // this file reads the sales table.
 
-import { isProUser, isFeatureLive } from './components/proGate.js';
+import { isProUser, isFeatureLive, PAYPAL_IMPORT_LIVE } from './components/proGate.js';
 import { fetchConnectionRow, refreshImportedSales } from './importedSales.js';
 
 // --- Is the PayPal card visible? ---------------------------------------------
 //
-// ⚠️ FALSE ON PURPOSE. Flipping this to true is the last step of Pro item 10,
-// and it should happen the day a real PayPal account has connected and imported
-// real sales — NOT the day the code was written.
+// The switch itself is PAYPAL_IMPORT_LIVE in components/proGate.js, NOT here.
+// It lives there because that file also owns the copy that has to agree with it
+// (the Pro pop-up, the plan list, the Revenue teaser), and paypalImport already
+// imports proGate, so a flag owned here could not be read back without a cycle.
 //
-// This is the same discipline Stripe shipped under, and the proGate note records
-// why it was right: `payment-import` stayed `shipped: false` until "eight real
-// sales were confirmed importing and displaying on the live site". Until then
-// the import worked but nothing read the results back, so the feature existed
-// everywhere except the screen it was for.
-//
-// PayPal has more unverified surface than Stripe did, not less. Three things in
-// paypal-sync have never met the live API: the 31-day windowing, the T00xx/T11xx
-// event-code filter that decides what counts as income, and the refund matching
-// through `paypal_reference_id`. Each is the kind of thing that looks perfect in
-// review and is wrong in a way only real data shows.
-//
-// When it flips, three strings ending "(PayPal coming soon)" come out too — two
-// in components/proGate.js and one in screens/revenue.js. Search for that exact
-// phrase; they are meant to be deleted together with this line.
-const PAYPAL_LIVE = false;
+// This file used to declare its own `PAYPAL_LIVE`. That was removed rather than
+// left in place: two flags for one decision is precisely the bug where someone
+// flips the one they can see and nothing happens.
 
 // Can this account actually reach the PayPal connect form on the Account screen?
 //
 // Gated on the same Pro feature as Stripe (`payment-import` covers both
-// processors — PayPal is not a separate purchase), plus PAYPAL_LIVE above.
+// processors — PayPal is not a separate purchase), plus PAYPAL_IMPORT_LIVE.
 export function canConnectPayPal() {
     if (!isProUser()) return false;
     if (!isFeatureLive('payment-import')) return false;
-    return PAYPAL_LIVE || localStorage.getItem('ceo_paypal_preview') === '1';
+    return PAYPAL_IMPORT_LIVE || localStorage.getItem('ceo_paypal_preview') === '1';
 }
 
 // Turn the preview flag on from a link instead of the console:
@@ -56,7 +44,7 @@ export function canConnectPayPal() {
 // throw it away. Stripped immediately after being applied, so a reload doesn't
 // re-apply it and the URL doesn't get shared around with the flag baked in.
 //
-// Delete this whole function when PAYPAL_LIVE goes true.
+// Delete this whole function when PAYPAL_IMPORT_LIVE goes true.
 export function applyPayPalPreviewParam() {
     const match = /[?&]paypal_preview=([01])/.exec(window.location.search);
     if (!match) return;

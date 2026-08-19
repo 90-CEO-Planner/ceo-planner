@@ -12,6 +12,32 @@
 // The client is for presentation only. Every Pro feature that costs money must
 // also be enforced server side — the edge functions are the real gate.
 
+// --- The PayPal launch switch ------------------------------------------------
+//
+// ⚠️ ONE flag turns PayPal on everywhere. Flip this and the Account card, the
+// Revenue panel, the Pro pop-up, the plan list and every "(PayPal coming soon)"
+// correct themselves together. There are no other strings to hunt down — that
+// was the whole point of moving it here.
+//
+// It lives in proGate rather than in paypalImport.js because paypalImport
+// already imports THIS file, and a flag it owned could not be read back here
+// without a circular import. Putting it beside `shipped` is also where it
+// belongs: it is the same kind of honesty switch.
+//
+// FALSE ON PURPOSE until a real PayPal payment has been imported and checked.
+// The exclusion side is already proven on Jen's live account (19 Aug 2026: 24
+// transactions scanned, 0 imported, every one correctly identified as her own
+// spending rather than income). What has never been proven is the positive
+// path — that a genuine sale arrives with the right amount, name and date, and
+// that a refund flags it. Until a test payment shows that, this stays false.
+export const PAYPAL_IMPORT_LIVE = false;
+
+// How the two processors are named in copy, and the bracket that admits PayPal
+// is not here yet. Derived rather than written out, so the copy cannot drift
+// from the flag above.
+export const IMPORT_SOURCES_LABEL = PAYPAL_IMPORT_LIVE ? 'Stripe or PayPal' : 'Stripe';
+export const IMPORT_SOON_NOTE = PAYPAL_IMPORT_LIVE ? '' : ' (PayPal coming soon)';
+
 // Every Pro feature, in the order they appear in UPGRADE_PLAN.md Phase 2.
 // `title` is what the modal is headed with, `blurb` is the honest description of
 // what it does. Keep the tone the same as the rest of the app: plain, warm, no
@@ -31,10 +57,10 @@ export const PRO_FEATURES = {
         // everywhere except the screen it was for.
         shipped: true,
         title: 'Sales that log themselves',
-        // Stripe and PayPal used to be named as though both existed. Only Stripe
-        // is being built, so PayPal sits in brackets as a promise about later
-        // rather than a claim about today. Delete the bracket when it ships.
-        blurb: 'Connect Stripe once and every sale appears here on its own, at the moment it happens. No manual entry, no forgotten Tuesday, and every rate on this page becomes something you can actually trust. (PayPal coming soon)'
+        // Both processors are named from IMPORT_SOURCES_LABEL so this sentence
+        // tells the truth in both states. It used to name Stripe and PayPal as
+        // though both existed, which is what put PayPal on the plan as item 10.
+        blurb: `Connect ${IMPORT_SOURCES_LABEL} once and every sale appears here on its own, at the moment it happens. No manual entry, no forgotten Tuesday, and every rate on this page becomes something you can actually trust.${IMPORT_SOON_NOTE}`
     },
     'lead-pipeline': {
         // Shipped 16 Aug 2026. Lives on its own screen at #/pipeline, with the
@@ -116,7 +142,7 @@ export const PRO_FEATURES = {
         title: 'What Pro adds',
         blurb: 'Pro is being built now. Here is what is coming:',
         list: [
-            'Sales imported automatically from Stripe (PayPal coming soon)',
+            `Sales imported automatically from ${IMPORT_SOURCES_LABEL}${IMPORT_SOON_NOTE}`,
             'A named lead pipeline with follow-up dates',
             'Quarter-over-quarter history and a year view',
             'AI planning written from your real numbers',

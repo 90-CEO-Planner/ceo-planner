@@ -152,6 +152,16 @@ Deno.serve(async (req) => {
     return new Response('ok', { headers: corsHeaders })
   }
 
+  // ?debug=1 adds a tally of the transaction shapes PayPal returned, so a sync
+  // that imports nothing can be told apart from an account that simply had no
+  // sales. Without it the two are identical from outside, which cost a session
+  // on 19 Aug 2026: 24 transactions scanned, 0 imported, and no way to know
+  // whether the filter was wrong or the account was quiet.
+  //
+  // Deliberately carries NO amounts, emails, names or transaction ids — only
+  // event codes, statuses and the sign of the amount. Safe to read out loud.
+  const debug = new URL(req.url).searchParams.get('debug') === '1'
+
   const supabaseAdmin = createClient(
     Deno.env.get('SUPABASE_URL') ?? '',
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -233,6 +243,9 @@ Deno.serve(async (req) => {
     // be able to reach backwards.
     const refundedIds = new Set<string>()
 
+    // See the note by `debug` above. Keyed by shape, never by transaction.
+    const shapeTally = new Map<string, number>()
+
     let windowStart = new Date(since)
 
     while (windowStart < now && windows < MAX_WINDOWS) {
@@ -281,6 +294,13 @@ Deno.serve(async (req) => {
           const info = detail?.transaction_info ?? {}
           const code = String(info.transaction_event_code ?? '')
           const externalId = typeof info.transaction_id === 'string' ? info.transaction_id : ''
+
+          if (debug) {
+            const sign = toAmount(info.transaction_amount?.value) > 0 ? 'credit' : 'debit'
+            const key = `${code || 'no-code'} ${info.transaction_status ?? '?'} ${sign}`
+            shapeTally.set(key, (shapeTally.get(key) ?? 0) + 1)
+          }
+
           if (!externalId) continue
 
           // A reversal names the sale it undoes. Record the reference and move
@@ -405,6 +425,7 @@ Deno.serve(async (req) => {
       // True when we stopped because of a ceiling rather than because PayPal ran
       // out. The next run picks up from the new watermark.
       truncated,
+      ...(debug ? { shapes: Object.fromEntries(shapeTally) } : {}),
     })
   } catch (err) {
     console.error('paypal-sync failed:', err.message)

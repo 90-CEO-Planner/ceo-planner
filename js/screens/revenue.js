@@ -3,7 +3,7 @@ import { renderNav } from '../components/nav.js';
 import { getStore, updateQuickOffers, addRevenueEntry, deleteRevenueEntry, getRevenueInsights, getFunnelInsights, getPipelineInsights, PIPELINE_STAGES, PIPELINE_PROBABILITIES, CONTACT_SOURCES, getChannelFunnel, NOT_ATTRIBUTED, addLeadEntry, deleteLeadEntry, addMetricSnapshot, deleteMetricSnapshot, getLocalDateString, getWeekStart, parseDateInput, formatAmount } from '../store.js';
 import { renderTooltip } from '../components/tooltip.js';
 import { showToast, showConfirm, rerenderScreen } from '../components/toast.js';
-import { proTeaser, proLock, proCardHeading, proBadge, PRO_CARD_HEADING_STYLE, canUseLeadPipeline, canExportPdf, canUseUnlimitedOffers, QUICK_OFFER_BASE_LIMIT } from '../components/proGate.js';
+import { proTeaser, proLock, proCardHeading, proBadge, PRO_CARD_HEADING_STYLE, canUseLeadPipeline, canExportPdf, canUseUnlimitedOffers, QUICK_OFFER_BASE_LIMIT, IMPORT_SOURCES_LABEL, IMPORT_SOON_NOTE } from '../components/proGate.js';
 import { escapeText } from '../liveAI.js';
 import { showPdfReportModal, rememberAiReport } from '../components/pdfReport.js';
 import { canConnectStripe, fetchStripeConnection, syncStripeSales } from '../stripeImport.js';
@@ -420,7 +420,7 @@ export function renderRevenue() {
                        : proTeaser(
                            'payment-import',
                            'Never log a sale by hand again',
-                           'Connect Stripe once. Every sale appears here the moment it happens. (PayPal coming soon)',
+                           `Connect ${IMPORT_SOURCES_LABEL} once. Every sale appears here the moment it happens.${IMPORT_SOON_NOTE}`,
                            null
                        )}
 
@@ -1193,6 +1193,23 @@ async function paintRevenueImportPanel() {
 
     const names = connected.map(c => c.name).join(' and ');
 
+    // The other processor, when only one is connected.
+    //
+    // Without this the panel goes quiet about PayPal the moment Stripe is
+    // working, so someone who takes money through both would never learn the
+    // second half exists — the Revenue screen is exactly where you notice sales
+    // missing, and it was the one screen that stopped offering the answer.
+    const missing = [];
+    if (stripe.state === 'none') missing.push('Stripe');
+    if (canConnectPayPal() && paypal.state === 'none') missing.push('PayPal');
+
+    const addOther = missing.length
+        ? `<p style="margin: 0 0 1rem 0; line-height: 1.5;">
+               Also taking payments through ${missing.join(' or ')}?
+               <a href="#/account" style="color: var(--color-primary-dark); font-weight: 600;">Connect ${missing.join(' or ')} →</a>
+           </p>`
+        : '';
+
     // The combined count is right here, unlike on the Account screen where each
     // processor has its own panel and must claim only its own sales. This one
     // sentence covers everything that arrived on its own.
@@ -1219,6 +1236,7 @@ async function paintRevenueImportPanel() {
         <p style="margin: 0 0 1rem 0; line-height: 1.5;">
             ${count} ${count === 1 ? 'sale' : 'sales'} imported automatically, part of your Pro plan. Last checked ${lastSynced}.
         </p>
+        ${addOther}
         ${errors}
         <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
             <button type="button" id="btn-revenue-import-sync" class="btn btn-outline btn-sm" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Import sales now</button>
@@ -1529,13 +1547,25 @@ function revenueAttachEvents() {
     // pass canExportPdf(), and the modal checks the same rule again.
     const btnReportPdf = document.getElementById('btn-report-pdf');
     if (btnReportPdf) {
-        btnReportPdf.addEventListener('click', () => showPdfReportModal());
+        // Refresh imported sales FIRST. Both exports read getRevenueInsights(),
+        // which merges the in-memory imported-sales cache -- so a report built
+        // before that cache is warm silently omits every Stripe and PayPal sale
+        // and shows only what was typed by hand. The screen hydrates it on load,
+        // but that is a race rather than a guarantee, and a report that quietly
+        // under-reports revenue is the worst possible thing for this file to
+        // produce. One await removes the whole class of problem.
+        btnReportPdf.addEventListener('click', async () => {
+            await refreshImportedSales();
+            showPdfReportModal();
+        });
     }
 
     // CSV Export Logic
     const btnReportCsv = document.getElementById('btn-report-csv');
     if (btnReportCsv) {
-        btnReportCsv.addEventListener('click', () => {
+        btnReportCsv.addEventListener('click', async () => {
+            // Same guarantee as the PDF button above.
+            await refreshImportedSales();
             const store = getStore();
             const insights = getRevenueInsights();
             const entries = insights.entries || [];

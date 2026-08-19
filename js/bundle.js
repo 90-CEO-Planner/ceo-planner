@@ -3176,35 +3176,23 @@ async function syncStripeSales() {
 
 // --- Is the PayPal card visible? ---------------------------------------------
 //
-// ⚠️ FALSE ON PURPOSE. Flipping this to true is the last step of Pro item 10,
-// and it should happen the day a real PayPal account has connected and imported
-// real sales — NOT the day the code was written.
+// The switch itself is PAYPAL_IMPORT_LIVE in components/proGate.js, NOT here.
+// It lives there because that file also owns the copy that has to agree with it
+// (the Pro pop-up, the plan list, the Revenue teaser), and paypalImport already
+// imports proGate, so a flag owned here could not be read back without a cycle.
 //
-// This is the same discipline Stripe shipped under, and the proGate note records
-// why it was right: `payment-import` stayed `shipped: false` until "eight real
-// sales were confirmed importing and displaying on the live site". Until then
-// the import worked but nothing read the results back, so the feature existed
-// everywhere except the screen it was for.
-//
-// PayPal has more unverified surface than Stripe did, not less. Three things in
-// paypal-sync have never met the live API: the 31-day windowing, the T00xx/T11xx
-// event-code filter that decides what counts as income, and the refund matching
-// through `paypal_reference_id`. Each is the kind of thing that looks perfect in
-// review and is wrong in a way only real data shows.
-//
-// When it flips, three strings ending "(PayPal coming soon)" come out too — two
-// in components/proGate.js and one in screens/revenue.js. Search for that exact
-// phrase; they are meant to be deleted together with this line.
-const PAYPAL_LIVE = false;
+// This file used to declare its own `PAYPAL_LIVE`. That was removed rather than
+// left in place: two flags for one decision is precisely the bug where someone
+// flips the one they can see and nothing happens.
 
 // Can this account actually reach the PayPal connect form on the Account screen?
 //
 // Gated on the same Pro feature as Stripe (`payment-import` covers both
-// processors — PayPal is not a separate purchase), plus PAYPAL_LIVE above.
+// processors — PayPal is not a separate purchase), plus PAYPAL_IMPORT_LIVE.
 function canConnectPayPal() {
     if (!isProUser()) return false;
     if (!isFeatureLive('payment-import')) return false;
-    return PAYPAL_LIVE || localStorage.getItem('ceo_paypal_preview') === '1';
+    return PAYPAL_IMPORT_LIVE || localStorage.getItem('ceo_paypal_preview') === '1';
 }
 
 // Turn the preview flag on from a link instead of the console:
@@ -3221,7 +3209,7 @@ function canConnectPayPal() {
 // throw it away. Stripped immediately after being applied, so a reload doesn't
 // re-apply it and the URL doesn't get shared around with the flag baked in.
 //
-// Delete this whole function when PAYPAL_LIVE goes true.
+// Delete this whole function when PAYPAL_IMPORT_LIVE goes true.
 function applyPayPalPreviewParam() {
     const match = /[?&]paypal_preview=([01])/.exec(window.location.search);
     if (!match) return;
@@ -3880,6 +3868,32 @@ CRITICAL: Return ONLY the JSON object above. No explanation, no preamble, no cod
 // The client is for presentation only. Every Pro feature that costs money must
 // also be enforced server side — the edge functions are the real gate.
 
+// --- The PayPal launch switch ------------------------------------------------
+//
+// ⚠️ ONE flag turns PayPal on everywhere. Flip this and the Account card, the
+// Revenue panel, the Pro pop-up, the plan list and every "(PayPal coming soon)"
+// correct themselves together. There are no other strings to hunt down — that
+// was the whole point of moving it here.
+//
+// It lives in proGate rather than in paypalImport.js because paypalImport
+// already imports THIS file, and a flag it owned could not be read back here
+// without a circular import. Putting it beside `shipped` is also where it
+// belongs: it is the same kind of honesty switch.
+//
+// FALSE ON PURPOSE until a real PayPal payment has been imported and checked.
+// The exclusion side is already proven on Jen's live account (19 Aug 2026: 24
+// transactions scanned, 0 imported, every one correctly identified as her own
+// spending rather than income). What has never been proven is the positive
+// path — that a genuine sale arrives with the right amount, name and date, and
+// that a refund flags it. Until a test payment shows that, this stays false.
+const PAYPAL_IMPORT_LIVE = false;
+
+// How the two processors are named in copy, and the bracket that admits PayPal
+// is not here yet. Derived rather than written out, so the copy cannot drift
+// from the flag above.
+const IMPORT_SOURCES_LABEL = PAYPAL_IMPORT_LIVE ? 'Stripe or PayPal' : 'Stripe';
+const IMPORT_SOON_NOTE = PAYPAL_IMPORT_LIVE ? '' : ' (PayPal coming soon)';
+
 // Every Pro feature, in the order they appear in UPGRADE_PLAN.md Phase 2.
 // `title` is what the modal is headed with, `blurb` is the honest description of
 // what it does. Keep the tone the same as the rest of the app: plain, warm, no
@@ -3899,10 +3913,10 @@ const PRO_FEATURES = {
         // everywhere except the screen it was for.
         shipped: true,
         title: 'Sales that log themselves',
-        // Stripe and PayPal used to be named as though both existed. Only Stripe
-        // is being built, so PayPal sits in brackets as a promise about later
-        // rather than a claim about today. Delete the bracket when it ships.
-        blurb: 'Connect Stripe once and every sale appears here on its own, at the moment it happens. No manual entry, no forgotten Tuesday, and every rate on this page becomes something you can actually trust. (PayPal coming soon)'
+        // Both processors are named from IMPORT_SOURCES_LABEL so this sentence
+        // tells the truth in both states. It used to name Stripe and PayPal as
+        // though both existed, which is what put PayPal on the plan as item 10.
+        blurb: `Connect ${IMPORT_SOURCES_LABEL} once and every sale appears here on its own, at the moment it happens. No manual entry, no forgotten Tuesday, and every rate on this page becomes something you can actually trust.${IMPORT_SOON_NOTE}`
     },
     'lead-pipeline': {
         // Shipped 16 Aug 2026. Lives on its own screen at #/pipeline, with the
@@ -3984,7 +3998,7 @@ const PRO_FEATURES = {
         title: 'What Pro adds',
         blurb: 'Pro is being built now. Here is what is coming:',
         list: [
-            'Sales imported automatically from Stripe (PayPal coming soon)',
+            `Sales imported automatically from ${IMPORT_SOURCES_LABEL}${IMPORT_SOON_NOTE}`,
             'A named lead pipeline with follow-up dates',
             'Quarter-over-quarter history and a year view',
             'AI planning written from your real numbers',
@@ -9833,7 +9847,7 @@ function renderRevenue() {
                        : proTeaser(
                            'payment-import',
                            'Never log a sale by hand again',
-                           'Connect Stripe once. Every sale appears here the moment it happens. (PayPal coming soon)',
+                           `Connect ${IMPORT_SOURCES_LABEL} once. Every sale appears here the moment it happens.${IMPORT_SOON_NOTE}`,
                            null
                        )}
 
@@ -10606,6 +10620,23 @@ async function paintRevenueImportPanel() {
 
     const names = connected.map(c => c.name).join(' and ');
 
+    // The other processor, when only one is connected.
+    //
+    // Without this the panel goes quiet about PayPal the moment Stripe is
+    // working, so someone who takes money through both would never learn the
+    // second half exists — the Revenue screen is exactly where you notice sales
+    // missing, and it was the one screen that stopped offering the answer.
+    const missing = [];
+    if (stripe.state === 'none') missing.push('Stripe');
+    if (canConnectPayPal() && paypal.state === 'none') missing.push('PayPal');
+
+    const addOther = missing.length
+        ? `<p style="margin: 0 0 1rem 0; line-height: 1.5;">
+               Also taking payments through ${missing.join(' or ')}?
+               <a href="#/account" style="color: var(--color-primary-dark); font-weight: 600;">Connect ${missing.join(' or ')} →</a>
+           </p>`
+        : '';
+
     // The combined count is right here, unlike on the Account screen where each
     // processor has its own panel and must claim only its own sales. This one
     // sentence covers everything that arrived on its own.
@@ -10632,6 +10663,7 @@ async function paintRevenueImportPanel() {
         <p style="margin: 0 0 1rem 0; line-height: 1.5;">
             ${count} ${count === 1 ? 'sale' : 'sales'} imported automatically, part of your Pro plan. Last checked ${lastSynced}.
         </p>
+        ${addOther}
         ${errors}
         <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
             <button type="button" id="btn-revenue-import-sync" class="btn btn-outline btn-sm" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Import sales now</button>
@@ -10942,13 +10974,25 @@ function revenueAttachEvents() {
     // pass canExportPdf(), and the modal checks the same rule again.
     const btnReportPdf = document.getElementById('btn-report-pdf');
     if (btnReportPdf) {
-        btnReportPdf.addEventListener('click', () => showPdfReportModal());
+        // Refresh imported sales FIRST. Both exports read getRevenueInsights(),
+        // which merges the in-memory imported-sales cache -- so a report built
+        // before that cache is warm silently omits every Stripe and PayPal sale
+        // and shows only what was typed by hand. The screen hydrates it on load,
+        // but that is a race rather than a guarantee, and a report that quietly
+        // under-reports revenue is the worst possible thing for this file to
+        // produce. One await removes the whole class of problem.
+        btnReportPdf.addEventListener('click', async () => {
+            await refreshImportedSales();
+            showPdfReportModal();
+        });
     }
 
     // CSV Export Logic
     const btnReportCsv = document.getElementById('btn-report-csv');
     if (btnReportCsv) {
-        btnReportCsv.addEventListener('click', () => {
+        btnReportCsv.addEventListener('click', async () => {
+            // Same guarantee as the PDF button above.
+            await refreshImportedSales();
             const store = getStore();
             const insights = getRevenueInsights();
             const entries = insights.entries || [];
