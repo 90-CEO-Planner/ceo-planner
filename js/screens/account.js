@@ -463,14 +463,21 @@ function renderDangerCard() {
 // entry, which sidesteps every stale copy at once. **Bump it whenever the
 // screenshot is replaced.**
 const PERMISSIONS_HELP_IMAGE = './stripe-key-permissions.png?v=1';
+const PAYPAL_CREATE_APP_IMAGE = './paypal-create-app.png?v=1';
+const PAYPAL_SEARCH_HELP_IMAGE = './paypal-transaction-search.png?v=1';
 
-// Reveal the "See what this looks like" link only once the image genuinely
-// loads. The alternative — rendering the link unconditionally — means a broken
-// image icon on a screen whose entire job is to look trustworthy enough to be
-// handed a credential. Drop the file in and the link appears by itself; leave it
-// out and the card reads exactly as it did before.
-function revealPermissionsHelp() {
-    const link = document.getElementById('stripe-permissions-help');
+// Reveal a "See what this looks like" link only once its image genuinely loads.
+//
+// The alternative — rendering the link unconditionally — means a broken image
+// icon on a screen whose entire job is to look trustworthy enough to be handed a
+// credential. Drop the file in and the link appears by itself; leave it out and
+// the card reads exactly as it did before.
+//
+// One helper for all three screenshots rather than one function each. The Stripe
+// version was written first and copied for PayPal's two, which is how three
+// copies of the same probe-then-bind logic would have drifted apart.
+function revealImageHelp(linkId, src, alt, caption) {
+    const link = document.getElementById(linkId);
     if (!link) return;
 
     const probe = new Image();
@@ -478,14 +485,37 @@ function revealPermissionsHelp() {
         link.style.display = 'inline';
         link.addEventListener('click', (e) => {
             e.preventDefault();
-            showImageModal(
-                PERMISSIONS_HELP_IMAGE,
-                "Stripe's Create restricted API key page, with Charges and Refunds set to Read",
-                'Set each of the five to Read in the first Permissions column. Everything else stays on None.'
-            );
+            showImageModal(src, alt, caption);
         });
     };
-    probe.src = PERMISSIONS_HELP_IMAGE;
+    probe.src = src;
+}
+
+function revealPermissionsHelp() {
+    revealImageHelp(
+        'stripe-permissions-help',
+        PERMISSIONS_HELP_IMAGE,
+        "Stripe's Create restricted API key page, with Charges and Refunds set to Read",
+        'Set each of the five to Read in the first Permissions column. Everything else stays on None.'
+    );
+}
+
+// PayPal needs two, because its setup has two places you can go wrong: naming
+// the app on a dialog that looks like a dead end, and finding one checkbox in a
+// long list of features that mostly do not apply to you.
+function revealPayPalHelp() {
+    revealImageHelp(
+        'paypal-create-app-help',
+        PAYPAL_CREATE_APP_IMAGE,
+        "PayPal's Create App dialog with the app name filled in",
+        'Just the name and the Create App button. Nothing else to choose at this stage.'
+    );
+    revealImageHelp(
+        'paypal-search-help',
+        PAYPAL_SEARCH_HELP_IMAGE,
+        "PayPal's app features list with Transaction search ticked",
+        'Transaction search is under Add-on services on the right. That one tick is all this needs — leave everything else exactly as you find it.'
+    );
 }
 
 // A picture in a dialog. Structure, Escape handling, click-outside and focus
@@ -738,6 +768,7 @@ function paypalConnectFormHtml() {
             Press <strong style="color: var(--color-black);">Create App</strong> and name it
             <strong style="color: var(--color-black);">CEO Planner</strong>, so you can recognise it later.
             Make a new one rather than reusing an existing app — see the note in step 3.
+            <a href="#" id="paypal-create-app-help" style="display: none; margin-left: 0.25rem; color: var(--color-primary-dark); font-weight: 600;">See what this looks like</a>
         </li>
         <li style="margin-bottom: 0.5rem;">
             In the app's <strong style="color: var(--color-black);">Features</strong> list, tick
@@ -745,6 +776,7 @@ function paypalConnectFormHtml() {
             the only permission this needs — it lets us read your payment history and nothing else.
             <em>If you edit an app you have used before, PayPal can take up to 9 hours to apply a
             newly ticked permission, which is why a brand new app is easier.</em>
+            <a href="#" id="paypal-search-help" style="display: none; margin-left: 0.25rem; color: var(--color-primary-dark); font-weight: 600;">See what this looks like</a>
         </li>
         <li style="margin-bottom: 0.5rem;">
             Copy the <strong style="color: var(--color-black);">Client ID</strong> and the
@@ -804,6 +836,7 @@ async function paintPayPalConnection() {
 
     if (state === 'none') {
         host.innerHTML = paypalConnectFormHtml();
+        revealPayPalHelp();
 
         const idInput = document.getElementById('paypal-client-id-input');
         const secretInput = document.getElementById('paypal-secret-input');

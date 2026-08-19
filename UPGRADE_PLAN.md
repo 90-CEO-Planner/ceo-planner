@@ -22,6 +22,131 @@ same shape as Batch 7, covering everything built across the whole programme.
 Do not start it early and do not fold it into a feature session. It is its own
 piece of work, and its value comes from running against the finished thing.
 
+### 🔴 1. TRIALS NEVER END — fix this first (found 19 Aug 2026)
+
+**Every account is on a free trial that never expires, so nobody has ever been
+asked to pay.** Jen flagged this as the top priority and it belongs above every
+other item on this list.
+
+**The evidence.** 11 of 13 accounts have `trial_ends_at = NULL`, including:
+
+| Account | Signed up | Days on a "14-day" trial |
+|---------|-----------|--------------------------|
+| `derina@ntlworld.com` — **the one real customer** | 18 Jun 2026 | 62 |
+| `jeanette.spencer29@hotmail.co.uk` | 16 May 2026 | 95 |
+| `hello@thewomensentrepreneurialnetwork.com` | 23 May 2026 | 88 |
+
+Zero accounts have ever reached `trial_expired`.
+
+**The cause.** `profiles.trial_ends_at` is declared in
+[supabase/setup.sql](supabase/setup.sql) with **no default**, and nothing on the
+signup path ever sets it — `signup-sync` only reads it, and `stripe-webhook`
+only clears it. So every profile is created with NULL.
+
+`refreshAccessState()` in [js/supabaseClient.js](js/supabaseClient.js) then only
+expires a trial when `trial_ends_at` is truthy:
+
+```
+const trialEndsAt = profile.trial_ends_at ? new Date(profile.trial_ends_at) : null;
+if (trialEndsAt) { ... if (msLeft <= 0) status = 'trial_expired'; }
+```
+
+NULL skips the check entirely, `status` stays `trialing`, and `tier` resolves to
+`pro`. **Result: unlimited free Pro, forever, for everyone.** The digest query in
+`20260818_digest_recipients.sql` treats NULL the same way, so those accounts also
+keep receiving the Monday email indefinitely.
+
+**Two decisions before any code is written — both Jen's, not Claude's:**
+
+1. **What happens to the 11 existing accounts?** Backfilling `trial_ends_at` from
+   `created_at + 14 days` would expire almost all of them *the moment it ships*,
+   including Derina, who would lose access without warning after 62 days of
+   having it. A grace window (e.g. 14 days from the fix date) is kinder and is
+   probably the right answer, but it is a business call.
+2. **Does the paywall actually work when it fires?** It has never fired for a
+   real account. `test_paywall@example.com` is `past_due`, which is a different
+   code path from `trial_expired`.
+
+**Then the fix**, roughly: set `trial_ends_at` at profile creation (a column
+default of `now() + interval '14 days'` plus a backfill), and confirm
+`refreshAccessState()` flips a lapsed account to base rather than locking it out
+of its own data. Verify against a real account whose trial is set to expire
+within minutes, not by reasoning about the code.
+
+⚠️ Related and NOT the same bug: `plan_tier` is `'base'` on every row in the
+database, so a server-side gate on `plan_tier = 'pro'` matches nobody. Today that
+is masked, because `trialing` resolves to Pro on its own. **Fixing trials without
+fixing this would take Pro away from every account at once.** Both have to land
+together.
+
+#### The agreed fix — APPROVED 19 Aug 2026, ready to implement
+
+Do this as a dedicated session. It touches auth, billing and access control,
+which is where a mistake locks real people out of their own data.
+
+**Decisions CONFIRMED by Jen 19 Aug 2026 — do not reopen these:**
+- Grace window runs from the **fix date**, not from signup, and **everyone
+  getting 14 more days is explicitly fine**. Derina is the only real customer,
+  so the blast radius of the backfill is one person and she is being comped
+  anyway. Backfilling from `created_at` would have expired her instantly.
+- **Derina gets Pro permanently** via `comp_pro`, while paying Base. Jen
+  approved this specific mechanism, not just the intent.
+
+**Why not just set `plan_tier = 'pro'` for her:** `stripe-webhook` writes that
+column, so the moment she subscribes to Base it would silently overwrite the
+comp. It needs a flag nothing in the payment path touches.
+
+**⚠️ There are TWO Pro gates and they disagree.** `account_access()` is the
+canonical SQL one, but `stripe-sync` and `paypal-sync` each do their own inline
+`subscription_status === 'active' && plan_tier === 'pro'`. A comped account
+would get Pro everywhere EXCEPT sales importing. Fixing this is part of the job,
+not a nice-to-have.
+
+1. **Migration.**
+   ```sql
+   alter table profiles
+     alter column trial_ends_at set default (timezone('utc', now()) + interval '14 days');
+   alter table profiles
+     add column if not exists comp_pro boolean not null default false;
+   update profiles set trial_ends_at = timezone('utc', now()) + interval '14 days'
+     where trial_ends_at is null and subscription_status = 'trialing';
+   update profiles set comp_pro = true
+     where id = (select id from auth.users where email = 'derina@ntlworld.com');
+   ```
+2. **`account_access()`**: `comp_pro` grants `has_access` and tier `'pro'`; a NULL
+   `trial_ends_at` must stop meaning infinite access. Decide explicitly what a
+   NULL should do after the backfill — denying outright is safer than granting,
+   but check it cannot lock anyone out of data they own.
+3. **`refreshAccessState()`** in [js/supabaseClient.js](js/supabaseClient.js):
+   select and honour `comp_pro`.
+4. **Both sync functions** call `is_pro_account()` instead of their inline check,
+   killing the duplicate gate for good.
+5. **Do NOT fix trials without `plan_tier`.** Every row is `'base'`; today that is
+   masked because `trialing` resolves to Pro on its own. Fix one without the
+   other and every account loses Pro at once.
+
+**Verification — must be on a real account, not by reading the code:** set a test
+profile's `trial_ends_at` two minutes out and watch it flip to expired. Then
+confirm the paywall it lands on actually works: **it has never fired for any real
+account.** `test_paywall@example.com` is `past_due`, which is a DIFFERENT code
+path from `trial_expired`. That path has to be exercised before the grace window
+closes, not after.
+
+### 2. PayPal scope reduction — parked 19 Aug 2026
+
+Not urgent and not blocking: the import works. The open question is whether a
+PayPal REST app can be made genuinely read-only.
+
+Two attempts to untick the extra Features on an existing app both failed to save
+(`c8a0c3d0bffc5`, then `37e65bf6c6cca` with "Log in with PayPal" already off).
+Next thing to try is a **brand new app with only Transaction Search ticked from
+creation**. If that also grants payouts and refund scopes, PayPal does not permit
+a read-only app — record it, leave `REFUSE_WRITE_SCOPES` false permanently, and
+**change the Account card copy**, which currently tells the user to do exactly
+the thing that does not work.
+
+Full detail in the item 10 section further down.
+
 ### Coach memory (item 5) — the part no automated check could reach
 
 Written down while it was fresh. Every one of these needs a **real signed-in
