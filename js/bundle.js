@@ -3189,41 +3189,18 @@ async function syncStripeSales() {
 //
 // Gated on the same Pro feature as Stripe (`payment-import` covers both
 // processors — PayPal is not a separate purchase), plus PAYPAL_IMPORT_LIVE.
+//
+// The `ceo_paypal_preview` localStorage escape hatch was removed when the flag
+// went true on 19 Aug 2026: once PAYPAL_IMPORT_LIVE is true it could only ever
+// read as true, so keeping it would have left a second switch that does nothing
+// — the same shape of trap as the duplicate flag noted above. Any browser still
+// holding the old key is simply ignored. If the flag is ever turned back off to
+// roll PayPal back, restore this pair from git history rather than inventing a
+// new one.
 function canConnectPayPal() {
     if (!isProUser()) return false;
     if (!isFeatureLive('payment-import')) return false;
-    return PAYPAL_IMPORT_LIVE || localStorage.getItem('ceo_paypal_preview') === '1';
-}
-
-// Turn the preview flag on from a link instead of the console:
-//
-//   https://app.…/?paypal_preview=1
-//   https://app.…/?paypal_preview=0   (turns it back off)
-//
-// Exactly the Stripe mechanism, for exactly the reasons its comment gives: the
-// flag is localStorage, so it is per browser AND per profile, and a link works
-// on a phone and for anyone who does not want to open a developer console.
-//
-// Read from the query string rather than the hash because the router rewrites
-// the hash when it bounces an unauthenticated visitor to #/login, which would
-// throw it away. Stripped immediately after being applied, so a reload doesn't
-// re-apply it and the URL doesn't get shared around with the flag baked in.
-//
-// Delete this whole function when PAYPAL_IMPORT_LIVE goes true.
-function applyPayPalPreviewParam() {
-    const match = /[?&]paypal_preview=([01])/.exec(window.location.search);
-    if (!match) return;
-
-    if (match[1] === '1') {
-        localStorage.setItem('ceo_paypal_preview', '1');
-    } else {
-        localStorage.removeItem('ceo_paypal_preview');
-    }
-
-    const cleaned = window.location.search
-        .replace(/[?&]paypal_preview=[01]/, '')
-        .replace(/^&/, '?');
-    window.history.replaceState({}, '', window.location.pathname + (cleaned === '?' ? '' : cleaned) + window.location.hash);
+    return PAYPAL_IMPORT_LIVE;
 }
 
 // Where the user creates the REST app whose credentials they paste in.
@@ -3880,13 +3857,23 @@ CRITICAL: Return ONLY the JSON object above. No explanation, no preamble, no cod
 // without a circular import. Putting it beside `shipped` is also where it
 // belongs: it is the same kind of honesty switch.
 //
-// FALSE ON PURPOSE until a real PayPal payment has been imported and checked.
-// The exclusion side is already proven on Jen's live account (19 Aug 2026: 24
-// transactions scanned, 0 imported, every one correctly identified as her own
-// spending rather than income). What has never been proven is the positive
-// path — that a genuine sale arrives with the right amount, name and date, and
-// that a refund flags it. Until a test payment shows that, this stays false.
-const PAYPAL_IMPORT_LIVE = false;
+// TRUE since 19 Aug 2026 — Jen's call, made knowingly.
+//
+// What was proven before flipping: the EXCLUSION side, on her real account. 24
+// transactions over 120 days, 0 imported, every one correctly identified as her
+// own spending rather than income (11 subscription debits, 12 balance top-ups,
+// 1 ACH reversal — all checked against PayPal's T-code reference).
+//
+// ⚠️ What was NOT proven: the positive path. No real PayPal sale has ever been
+// imported, so the amount, the product name read from `cart_info`, and the
+// refund match through `paypal_reference_id` have never met live data. The
+// failure mode to expect is a sale NOT arriving, or arriving unnamed — that is
+// under-reporting, not inflated figures, because every filter here errs toward
+// excluding. If a genuine sale is ever missed, call paypal-sync with `?debug=1`
+// before changing any code: it returns a tally of event codes carrying no
+// amounts and no names, and it is what turned the original "0 imported"
+// mystery into a definite answer.
+const PAYPAL_IMPORT_LIVE = true;
 
 // How the two processors are named in copy, and the bracket that admits PayPal
 // is not here yet. Derived rather than written out, so the copy cannot drift
@@ -16688,11 +16675,12 @@ function bindGlobalNavEvents() {
 window.addEventListener('hashchange', router);
 window.addEventListener('load', () => {
     purgeLegacyKeys();
-    // ?stripe_preview=1 / ?paypal_preview=1 turn on the pre-launch import cards
-    // for this browser. Must run before router(), so the first render already
-    // sees them.
+    // ?stripe_preview=1 turns on the pre-launch Stripe import card for this
+    // browser. Must run before router(), so the first render already sees it.
+    //
+    // PayPal had the same escape hatch and no longer needs it: PAYPAL_IMPORT_LIVE
+    // went true on 19 Aug 2026, so the card is simply on for every Pro account.
     applyStripePreviewParam();
-    applyPayPalPreviewParam();
     bindGlobalNavEvents();
     // One delegated handler for every locked Pro control, bound once. Screens
     // render `data-pro-feature="..."` and never wire anything up themselves.

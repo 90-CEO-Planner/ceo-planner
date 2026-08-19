@@ -24,41 +24,18 @@ import { fetchConnectionRow, refreshImportedSales } from './importedSales.js';
 //
 // Gated on the same Pro feature as Stripe (`payment-import` covers both
 // processors — PayPal is not a separate purchase), plus PAYPAL_IMPORT_LIVE.
+//
+// The `ceo_paypal_preview` localStorage escape hatch was removed when the flag
+// went true on 19 Aug 2026: once PAYPAL_IMPORT_LIVE is true it could only ever
+// read as true, so keeping it would have left a second switch that does nothing
+// — the same shape of trap as the duplicate flag noted above. Any browser still
+// holding the old key is simply ignored. If the flag is ever turned back off to
+// roll PayPal back, restore this pair from git history rather than inventing a
+// new one.
 export function canConnectPayPal() {
     if (!isProUser()) return false;
     if (!isFeatureLive('payment-import')) return false;
-    return PAYPAL_IMPORT_LIVE || localStorage.getItem('ceo_paypal_preview') === '1';
-}
-
-// Turn the preview flag on from a link instead of the console:
-//
-//   https://app.…/?paypal_preview=1
-//   https://app.…/?paypal_preview=0   (turns it back off)
-//
-// Exactly the Stripe mechanism, for exactly the reasons its comment gives: the
-// flag is localStorage, so it is per browser AND per profile, and a link works
-// on a phone and for anyone who does not want to open a developer console.
-//
-// Read from the query string rather than the hash because the router rewrites
-// the hash when it bounces an unauthenticated visitor to #/login, which would
-// throw it away. Stripped immediately after being applied, so a reload doesn't
-// re-apply it and the URL doesn't get shared around with the flag baked in.
-//
-// Delete this whole function when PAYPAL_IMPORT_LIVE goes true.
-export function applyPayPalPreviewParam() {
-    const match = /[?&]paypal_preview=([01])/.exec(window.location.search);
-    if (!match) return;
-
-    if (match[1] === '1') {
-        localStorage.setItem('ceo_paypal_preview', '1');
-    } else {
-        localStorage.removeItem('ceo_paypal_preview');
-    }
-
-    const cleaned = window.location.search
-        .replace(/[?&]paypal_preview=[01]/, '')
-        .replace(/^&/, '?');
-    window.history.replaceState({}, '', window.location.pathname + (cleaned === '?' ? '' : cleaned) + window.location.hash);
+    return PAYPAL_IMPORT_LIVE;
 }
 
 // Where the user creates the REST app whose credentials they paste in.

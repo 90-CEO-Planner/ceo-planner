@@ -3,7 +3,7 @@ import { getStore, seedMockData, getLocalDateString, refreshDigestSnapshot, REMI
 import { signOutAndClear } from './components/nav.js';
 import { initProGate } from './components/proGate.js';
 import { applyStripePreviewParam, autoSyncStripeIfDue } from './stripeImport.js';
-import { applyPayPalPreviewParam, autoSyncPayPalIfDue } from './paypalImport.js';
+import { autoSyncPayPalIfDue } from './paypalImport.js';
 
 // Screens
 // We'll import these dynamically or define them later to handle page renders
@@ -339,11 +339,12 @@ function bindGlobalNavEvents() {
 window.addEventListener('hashchange', router);
 window.addEventListener('load', () => {
     purgeLegacyKeys();
-    // ?stripe_preview=1 / ?paypal_preview=1 turn on the pre-launch import cards
-    // for this browser. Must run before router(), so the first render already
-    // sees them.
+    // ?stripe_preview=1 turns on the pre-launch Stripe import card for this
+    // browser. Must run before router(), so the first render already sees it.
+    //
+    // PayPal had the same escape hatch and no longer needs it: PAYPAL_IMPORT_LIVE
+    // went true on 19 Aug 2026, so the card is simply on for every Pro account.
     applyStripePreviewParam();
-    applyPayPalPreviewParam();
     bindGlobalNavEvents();
     // One delegated handler for every locked Pro control, bound once. Screens
     // render `data-pro-feature="..."` and never wire anything up themselves.

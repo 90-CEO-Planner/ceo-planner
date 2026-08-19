@@ -24,13 +24,23 @@
 // without a circular import. Putting it beside `shipped` is also where it
 // belongs: it is the same kind of honesty switch.
 //
-// FALSE ON PURPOSE until a real PayPal payment has been imported and checked.
-// The exclusion side is already proven on Jen's live account (19 Aug 2026: 24
-// transactions scanned, 0 imported, every one correctly identified as her own
-// spending rather than income). What has never been proven is the positive
-// path — that a genuine sale arrives with the right amount, name and date, and
-// that a refund flags it. Until a test payment shows that, this stays false.
-export const PAYPAL_IMPORT_LIVE = false;
+// TRUE since 19 Aug 2026 — Jen's call, made knowingly.
+//
+// What was proven before flipping: the EXCLUSION side, on her real account. 24
+// transactions over 120 days, 0 imported, every one correctly identified as her
+// own spending rather than income (11 subscription debits, 12 balance top-ups,
+// 1 ACH reversal — all checked against PayPal's T-code reference).
+//
+// ⚠️ What was NOT proven: the positive path. No real PayPal sale has ever been
+// imported, so the amount, the product name read from `cart_info`, and the
+// refund match through `paypal_reference_id` have never met live data. The
+// failure mode to expect is a sale NOT arriving, or arriving unnamed — that is
+// under-reporting, not inflated figures, because every filter here errs toward
+// excluding. If a genuine sale is ever missed, call paypal-sync with `?debug=1`
+// before changing any code: it returns a tally of event codes carrying no
+// amounts and no names, and it is what turned the original "0 imported"
+// mystery into a definite answer.
+export const PAYPAL_IMPORT_LIVE = true;
 
 // How the two processors are named in copy, and the bracket that admits PayPal
 // is not here yet. Derived rather than written out, so the copy cannot drift
