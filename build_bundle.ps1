@@ -1,7 +1,14 @@
 $files = @(
     "js\supabaseClient.js",
+    # Before store.js, which calls getImportedSalesCache() at read time, and
+    # before both processor files, which call fetchConnectionRow() and share its
+    # session handling. This is the one source for sales imported from anywhere.
+    "js\importedSales.js",
     "js\store.js",
     "js\stripeImport.js",
+    # The second processor (Pro item 10). Same shape as stripeImport.js and, like
+    # it, holds no read of the sales table.
+    "js\paypalImport.js",
     "js\aiService.js",
     "js\components\proGate.js",
     # After proGate, because canUseLiveAI() calls isProUser(). Both are hoisted

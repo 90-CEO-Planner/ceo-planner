@@ -590,10 +590,270 @@ window.isLockedOut = function isLockedOut(status) {
 };
 
 
+// --- js\importedSales.js ---
+// importedSales.js
+//
+// The single source for sales imported from a payment processor, whichever one
+// it was. Everything that displays or totals imported money reads from here.
+//
+// --- Why this file exists ----------------------------------------------------
+//
+// All of this used to live in stripeImport.js, back when Stripe was the only
+// processor. That was fine until PayPal arrived (Pro item 10) and turned two of
+// those functions into quiet bugs:
+//
+//   * `fetchImportedSales()` never filtered on `source`, so it was ALREADY
+//     returning PayPal rows the moment the first one landed.
+//   * `toEntryShape()` hardcoded `source: 'Stripe'`, so those rows would have
+//     been labelled Stripe on the Revenue screen and in the Source Attribution
+//     breakdown. Money in the right total, credited to the wrong processor.
+//
+// Neither would have thrown. The figures would simply have been wrong in a way
+// only Jen could have spotted, which is the worst kind. So the read moved here,
+// where it belongs to no processor in particular, and the label is derived from
+// the row instead of assumed.
+//
+// Deliberately does NOT write imported sales into the planner store. The store
+// is one JSON document written wholesale by the browser on every save, so
+// merging server-owned rows into it would mean a sync could overwrite whatever
+// the user typed a second earlier. Imported sales stay in their own table and
+// are merged at read time for display.
+
+// How a `source` value in the database is spelled on screen. The database holds
+// lowercase identifiers ('stripe', 'paypal') because they are half of a unique
+// constraint; a human reads "PayPal".
+//
+// Anything not listed falls back to a capitalised version of whatever the row
+// says, so a third processor added server-side shows up under its own name
+// rather than silently reading as the wrong one.
+const SOURCE_LABELS = {
+    stripe: 'Stripe',
+    paypal: 'PayPal',
+};
+
+function sourceLabel(source) {
+    const key = String(source || '').toLowerCase();
+    if (SOURCE_LABELS[key]) return SOURCE_LABELS[key];
+    if (!key) return 'Imported';
+    return key.charAt(0).toUpperCase() + key.slice(1);
+}
+
+// Sales imported for the signed-in user, newest first. Returns [] when nothing
+// is connected, when the tables are missing, or when offline — this is
+// decoration on top of the user's own data, so it must never break a screen by
+// throwing.
+async function fetchImportedSales() {
+    try {
+        // Asked too early this returns nothing, and "no sales imported" is
+        // indistinguishable from "not ready". See waitForSession().
+        const session = await waitForSession();
+        if (!session) return [];
+
+        const { data, error } = await window.db
+            .from('imported_sales')
+            // `source` is not optional here. Without it every row shapes up as
+            // Stripe — see the note at the top of this file.
+            .select('source, external_id, amount, currency, occurred_at, description, product_name, product_id, customer_email, refunded')
+            .eq('user_id', session.user.id)
+            .order('occurred_at', { ascending: false })
+            .limit(500);
+
+        if (error) {
+            console.warn('Could not read imported sales:', error.message);
+            return [];
+        }
+        return data || [];
+    } catch (err) {
+        console.warn('Could not read imported sales:', err.message);
+        return [];
+    }
+}
+
+// --- The read-time merge -----------------------------------------------------
+//
+// getRevenueInsights() in store.js is synchronous and is called during render,
+// but imported sales live in Postgres behind an async fetch. Rather than make
+// the whole revenue pipeline async, or write server-owned rows into the store
+// (which the note at the top of this file explains we must not do), the sales
+// are held in memory here. The screens refresh the cache and re-render; the
+// maths reads it synchronously.
+//
+// An empty cache is always a safe answer: it just means "manual entries only",
+// which is exactly what the app did before this feature existed.
+let importedSalesCache = [];
+let importedSalesLoaded = false;
+
+function getImportedSalesCache() {
+    return importedSalesCache;
+}
+
+function hasLoadedImportedSales() {
+    return importedSalesLoaded;
+}
+
+// How many of the cached sales came from one processor. Used by the Account
+// cards so each says how much IT brought in, rather than both quoting the same
+// combined total and appearing to double-count.
+function countImportedFrom(source) {
+    const key = String(source || '').toLowerCase();
+    return importedSalesCache.filter(e => String(e.sourceKey || '').toLowerCase() === key).length;
+}
+
+// Reshape a row from imported_sales into the same shape as a manually logged
+// revenue entry, so the rest of the app does not need to know where it came from.
+//
+// A refunded charge is not revenue, so its amount is zeroed for the maths. The
+// row is still returned rather than dropped, because a sale that silently
+// vanishes from the feed after a refund looks like a bug, and the original
+// figure is kept on grossAmount so the feed can say what happened.
+function toEntryShape(row) {
+    const gross = parseFloat(row.amount) || 0;
+    const refunded = !!row.refunded;
+    const key = String(row.source || 'stripe').toLowerCase();
+    const label = sourceLabel(key);
+    return {
+        // Namespaced by processor. Two processors can and do issue ids in
+        // different formats, but nothing guarantees they never collide, and the
+        // database's own uniqueness is on (user_id, source, external_id) — so
+        // the client key matches that or it is not really a key.
+        id: `${key}:${row.external_id}`,
+        date: String(row.occurred_at || '').slice(0, 10),
+        amount: refunded ? 0 : gross,
+        grossAmount: gross,
+        refunded,
+        // The human label, which is what the Source Attribution breakdown groups
+        // and displays.
+        source: label,
+        // The raw database value, kept alongside it so code that needs to filter
+        // by processor does not have to reverse the label back into an id.
+        sourceKey: key,
+        offer: row.product_name || row.description || `${label} payment`,
+        type: 'sale',
+        imported: true,
+        customerEmail: row.customer_email || ''
+    };
+}
+
+// Pull the latest imported sales into the cache. Returns the cache.
+async function refreshImportedSales() {
+    const rows = await fetchImportedSales();
+    importedSalesCache = (rows || []).map(toEntryShape);
+    importedSalesLoaded = true;
+    return importedSalesCache;
+}
+
+// Wait for the signed-in session to be available.
+//
+// On a fresh page load the Supabase client restores the session from storage and
+// may have to refresh an expired token over the network first. Anything asking
+// "who is signed in?" during that window gets nothing back.
+//
+// The first version of this polled four times over 750ms, which was fine in
+// Chrome and not nearly long enough in Safari: its tracking protection makes the
+// token refresh a slower round trip, so the check gave up before the session
+// arrived and the Stripe card reported "couldn't check your connection" on a
+// perfectly good account. Same code, same data, different browser.
+//
+// So this no longer guesses a duration. It waits for Supabase to say the session
+// is ready via onAuthStateChange, with polling only as a backstop and a generous
+// ceiling. Waiting a few seconds in the rare slow case is invisible; telling
+// someone their connection is broken is not.
+//
+// Lives here rather than in either processor's file because both need it, and
+// two copies would eventually be tuned differently.
+async function waitForSession(timeoutMs = 8000) {
+    const immediate = await getSessionSafely();
+    if (immediate) return immediate;
+
+    return new Promise(resolve => {
+        let settled = false;
+        let subscription = null;
+        let poller = null;
+
+        const finish = (session) => {
+            if (settled) return;
+            settled = true;
+            if (poller) clearInterval(poller);
+            if (timer) clearTimeout(timer);
+            try { subscription?.unsubscribe(); } catch (err) { /* already gone */ }
+            resolve(session);
+        };
+
+        const timer = setTimeout(() => finish(null), timeoutMs);
+
+        try {
+            const { data } = window.db.auth.onAuthStateChange((_event, session) => {
+                if (session && session.user) finish(session);
+            });
+            subscription = data?.subscription;
+        } catch (err) {
+            // No listener available; the poller below still covers us.
+        }
+
+        // Backstop, in case the event fired before the listener attached.
+        poller = setInterval(async () => {
+            const s = await getSessionSafely();
+            if (s) finish(s);
+        }, 400);
+    });
+}
+
+async function getSessionSafely() {
+    try {
+        const { data: { session } } = await window.db.auth.getSession();
+        return (session && session.user) ? session : null;
+    } catch (err) {
+        return null;
+    }
+}
+
+// Read one processor's connection row.
+//
+// Returns { state, conn } rather than a bare row, because the three outcomes
+// have to be told apart:
+//
+//   'connected' — here is the connection
+//   'none'      — asked properly, there genuinely isn't one
+//   'unknown'   — could not find out: no session yet, or the read failed
+//
+// This used to return null for all three, and every caller treated null as "not
+// connected" and rendered the paste-your-key form. So a page opened a moment
+// before the session was ready, or a dropped request, told the user her Stripe
+// account had disconnected and asked her to set it up again — when nothing had
+// been lost and the row was sitting in the database the whole time.
+//
+// 'unknown' must never render the connect form. Say you are checking, and retry.
+//
+// Shared by both processors so that hard-won behaviour is not re-derived, and
+// re-broken, for each new one.
+async function fetchConnectionRow(table, columns) {
+    const session = await waitForSession();
+    if (!session) return { state: 'unknown', conn: null };
+
+    try {
+        const { data, error } = await window.db
+            .from(table)
+            .select(columns)
+            .eq('user_id', session.user.id)
+            .maybeSingle();
+
+        if (error) {
+            console.warn(`Could not read ${table}:`, error.message);
+            return { state: 'unknown', conn: null };
+        }
+        return data ? { state: 'connected', conn: data } : { state: 'none', conn: null };
+    } catch (err) {
+        console.warn(`Could not read ${table}:`, err.message);
+        return { state: 'unknown', conn: null };
+    }
+}
+
+
 // --- js\store.js ---
 // store.js
 
-// Read-only: the in-memory cache of sales imported from Stripe, merged into the
+// Read-only: the in-memory cache of sales imported from a payment processor
+// (Stripe or PayPal), merged into the
 // revenue figures at read time. store.js does not write to it and does not fetch
 // it — the screens refresh it and this just reads whatever is there. An empty
 // cache means "manual entries only", which is the pre-import behaviour.
@@ -965,7 +1225,7 @@ function deleteMetricSnapshot(id) {
     return store.metrics.length < initialLen;
 }
 
-// Combine manually logged sales with ones imported from Stripe.
+// Combine manually logged sales with ones imported from a payment processor.
 //
 // Nothing is hidden and nothing is deleted: if the same sale exists in both
 // places it appears twice, with the imported copy marked. Quietly dropping one
@@ -1679,7 +1939,7 @@ function getRevenueInsights() {
     // Every entry ever logged. The pipeline feed, the history chart and the CSV
     // export all need the full list, so this stays unfiltered.
     //
-    // Sales imported from Stripe are merged in here rather than being written
+    // Sales imported from Stripe or PayPal are merged in here rather than written
     // into the store, so a sync can never overwrite something the user typed.
     // Merging at this single point means the totals, the quarter progress, the
     // conversion rates, the CSV export and the AI Coach's context all pick them
@@ -2165,7 +2425,7 @@ function getQuarterHistory() {
 // so unlike the quarter columns, nothing is excluded here. The two therefore do
 // not always add up, which is why the screen says what this counts.
 //
-// Deduplicated by id: an imported Stripe sale dated inside an archived quarter
+// Deduplicated by id: an imported sale dated inside an archived quarter
 // appears in the live merged list as well, and counting it twice would inflate
 // the only figure on the screen someone might quote to an accountant.
 function getYearTotals(store, quarters) {
@@ -2710,14 +2970,13 @@ function seedMockData() {
 // --- js\stripeImport.js ---
 // stripeImport.js
 //
-// Client half of Pro item 1. Talks to the stripe-connect and stripe-sync edge
-// functions and reads the imported_sales table.
+// Client half of Pro item 1, Stripe side. Talks to the stripe-connect and
+// stripe-sync edge functions.
 //
-// Deliberately does NOT write imported sales into the planner store. The store
-// is one JSON document written wholesale by the browser on every save, so
-// merging server-owned rows into it would mean a sync could overwrite whatever
-// the user typed a second earlier. Imported sales stay in their own table and
-// are merged at read time for display.
+// Reading imported sales is NOT here any more. That moved to importedSales.js
+// when PayPal arrived, because the read was never Stripe-specific and had
+// started quietly labelling PayPal rows as Stripe — see the note at the top of
+// that file. This file now owns exactly one processor and nothing else.
 
 
 // Can this account actually reach the connect form on the Account screen?
@@ -2782,150 +3041,6 @@ function applyStripePreviewParam() {
 // hunting for a `?permissions[]=` parameter — it isn't in the docs.
 const STRIPE_KEY_PAGE = 'https://dashboard.stripe.com/apikeys/create';
 
-// Sales imported for the signed-in user, newest first. Returns [] when nothing
-// is connected, when the tables are missing, or when offline — this is decoration
-// on top of the user's own data, so it must never break a screen by throwing.
-async function fetchImportedSales() {
-    try {
-        // Same reason as fetchStripeConnection: asked too early, this returns
-        // nothing, and "no sales imported" is indistinguishable from "not ready".
-        const session = await waitForSession();
-        if (!session) return [];
-
-        const { data, error } = await window.db
-            .from('imported_sales')
-            .select('external_id, amount, currency, occurred_at, description, product_name, product_id, customer_email, refunded')
-            .eq('user_id', session.user.id)
-            .order('occurred_at', { ascending: false })
-            .limit(500);
-
-        if (error) {
-            console.warn('Could not read imported sales:', error.message);
-            return [];
-        }
-        return data || [];
-    } catch (err) {
-        console.warn('Could not read imported sales:', err.message);
-        return [];
-    }
-}
-
-// --- The read-time merge -----------------------------------------------------
-//
-// getRevenueInsights() in store.js is synchronous and is called during render,
-// but imported sales live in Postgres behind an async fetch. Rather than make
-// the whole revenue pipeline async, or write server-owned rows into the store
-// (which the note at the top of this file explains we must not do), the sales
-// are held in memory here. The screens refresh the cache and re-render; the
-// maths reads it synchronously.
-//
-// An empty cache is always a safe answer: it just means "manual entries only",
-// which is exactly what the app did before this feature existed.
-let importedSalesCache = [];
-let importedSalesLoaded = false;
-
-function getImportedSalesCache() {
-    return importedSalesCache;
-}
-
-function hasLoadedImportedSales() {
-    return importedSalesLoaded;
-}
-
-// Reshape a row from imported_sales into the same shape as a manually logged
-// revenue entry, so the rest of the app does not need to know where it came from.
-//
-// A refunded charge is not revenue, so its amount is zeroed for the maths. The
-// row is still returned rather than dropped, because a sale that silently
-// vanishes from the feed after a refund looks like a bug, and the original
-// figure is kept on grossAmount so the feed can say what happened.
-function toEntryShape(row) {
-    const gross = parseFloat(row.amount) || 0;
-    const refunded = !!row.refunded;
-    return {
-        id: `stripe:${row.external_id}`,
-        date: String(row.occurred_at || '').slice(0, 10),
-        amount: refunded ? 0 : gross,
-        grossAmount: gross,
-        refunded,
-        source: 'Stripe',
-        offer: row.product_name || row.description || 'Stripe payment',
-        type: 'sale',
-        imported: true,
-        customerEmail: row.customer_email || ''
-    };
-}
-
-// Pull the latest imported sales into the cache. Returns the cache.
-async function refreshImportedSales() {
-    const rows = await fetchImportedSales();
-    importedSalesCache = (rows || []).map(toEntryShape);
-    importedSalesLoaded = true;
-    return importedSalesCache;
-}
-
-// Wait for the signed-in session to be available.
-//
-// On a fresh page load the Supabase client restores the session from storage and
-// may have to refresh an expired token over the network first. Anything asking
-// "who is signed in?" during that window gets nothing back.
-//
-// The first version of this polled four times over 750ms, which was fine in
-// Chrome and not nearly long enough in Safari: its tracking protection makes the
-// token refresh a slower round trip, so the check gave up before the session
-// arrived and the Stripe card reported "couldn't check your connection" on a
-// perfectly good account. Same code, same data, different browser.
-//
-// So this no longer guesses a duration. It waits for Supabase to say the session
-// is ready via onAuthStateChange, with polling only as a backstop and a generous
-// ceiling. Waiting a few seconds in the rare slow case is invisible; telling
-// someone their Stripe connection is broken is not.
-async function waitForSession(timeoutMs = 8000) {
-    const immediate = await getSessionSafely();
-    if (immediate) return immediate;
-
-    return new Promise(resolve => {
-        let settled = false;
-        let subscription = null;
-        let poller = null;
-
-        const finish = (session) => {
-            if (settled) return;
-            settled = true;
-            if (poller) clearInterval(poller);
-            if (timer) clearTimeout(timer);
-            try { subscription?.unsubscribe(); } catch (err) { /* already gone */ }
-            resolve(session);
-        };
-
-        const timer = setTimeout(() => finish(null), timeoutMs);
-
-        try {
-            const { data } = window.db.auth.onAuthStateChange((_event, session) => {
-                if (session && session.user) finish(session);
-            });
-            subscription = data?.subscription;
-        } catch (err) {
-            // No listener available; the poller below still covers us.
-        }
-
-        // Backstop, in case the event fired before the listener attached.
-        poller = setInterval(async () => {
-            const s = await getSessionSafely();
-            if (s) finish(s);
-        }, 400);
-    });
-}
-
-async function getSessionSafely() {
-    try {
-        const { data: { session } } = await window.db.auth.getSession();
-        return (session && session.user) ? session : null;
-    } catch (err) {
-        return null;
-    }
-}
-
 // The current Stripe connection.
 //
 // Returns { state, conn } rather than a bare row, because the three outcomes have
@@ -2942,26 +3057,14 @@ async function getSessionSafely() {
 // been lost and the row was sitting in the database the whole time.
 //
 // 'unknown' must never render the connect form. Say you are checking, and retry.
+//
+// The three-state logic itself now lives in importedSales.js, so PayPal gets it
+// for free rather than re-deriving it and re-learning the Safari lesson above.
 async function fetchStripeConnection() {
-    const session = await waitForSession();
-    if (!session) return { state: 'unknown', conn: null };
-
-    try {
-        const { data, error } = await window.db
-            .from('stripe_connections')
-            .select('stripe_account_id, livemode, connected_at, last_synced_at, last_sync_error')
-            .eq('user_id', session.user.id)
-            .maybeSingle();
-
-        if (error) {
-            console.warn('Could not read Stripe connection:', error.message);
-            return { state: 'unknown', conn: null };
-        }
-        return data ? { state: 'connected', conn: data } : { state: 'none', conn: null };
-    } catch (err) {
-        console.warn('Could not read Stripe connection:', err.message);
-        return { state: 'unknown', conn: null };
-    }
+    return fetchConnectionRow(
+        'stripe_connections',
+        'stripe_account_id, livemode, connected_at, last_synced_at, last_sync_error'
+    );
 }
 
 // Hand the user's restricted key to the edge function, which validates it against
@@ -3059,6 +3162,177 @@ async function syncStripeSales() {
 // connection happens inside one request from this page — so it was deleted
 // rather than left to rot. Don't reintroduce it: a ?stripe= parameter arriving
 // now would mean something has gone wrong, not something has succeeded.
+
+
+// --- js\paypalImport.js ---
+// paypalImport.js
+//
+// Client half of Pro item 10. Talks to the paypal-connect and paypal-sync edge
+// functions. The sibling of stripeImport.js, and deliberately the same shape.
+//
+// Reading imported sales is in importedSales.js, shared with Stripe. Nothing in
+// this file reads the sales table.
+
+
+// --- Is the PayPal card visible? ---------------------------------------------
+//
+// ⚠️ FALSE ON PURPOSE. Flipping this to true is the last step of Pro item 10,
+// and it should happen the day a real PayPal account has connected and imported
+// real sales — NOT the day the code was written.
+//
+// This is the same discipline Stripe shipped under, and the proGate note records
+// why it was right: `payment-import` stayed `shipped: false` until "eight real
+// sales were confirmed importing and displaying on the live site". Until then
+// the import worked but nothing read the results back, so the feature existed
+// everywhere except the screen it was for.
+//
+// PayPal has more unverified surface than Stripe did, not less. Three things in
+// paypal-sync have never met the live API: the 31-day windowing, the T00xx/T11xx
+// event-code filter that decides what counts as income, and the refund matching
+// through `paypal_reference_id`. Each is the kind of thing that looks perfect in
+// review and is wrong in a way only real data shows.
+//
+// When it flips, three strings ending "(PayPal coming soon)" come out too — two
+// in components/proGate.js and one in screens/revenue.js. Search for that exact
+// phrase; they are meant to be deleted together with this line.
+const PAYPAL_LIVE = false;
+
+// Can this account actually reach the PayPal connect form on the Account screen?
+//
+// Gated on the same Pro feature as Stripe (`payment-import` covers both
+// processors — PayPal is not a separate purchase), plus PAYPAL_LIVE above.
+function canConnectPayPal() {
+    if (!isProUser()) return false;
+    if (!isFeatureLive('payment-import')) return false;
+    return PAYPAL_LIVE || localStorage.getItem('ceo_paypal_preview') === '1';
+}
+
+// Turn the preview flag on from a link instead of the console:
+//
+//   https://app.…/?paypal_preview=1
+//   https://app.…/?paypal_preview=0   (turns it back off)
+//
+// Exactly the Stripe mechanism, for exactly the reasons its comment gives: the
+// flag is localStorage, so it is per browser AND per profile, and a link works
+// on a phone and for anyone who does not want to open a developer console.
+//
+// Read from the query string rather than the hash because the router rewrites
+// the hash when it bounces an unauthenticated visitor to #/login, which would
+// throw it away. Stripped immediately after being applied, so a reload doesn't
+// re-apply it and the URL doesn't get shared around with the flag baked in.
+//
+// Delete this whole function when PAYPAL_LIVE goes true.
+function applyPayPalPreviewParam() {
+    const match = /[?&]paypal_preview=([01])/.exec(window.location.search);
+    if (!match) return;
+
+    if (match[1] === '1') {
+        localStorage.setItem('ceo_paypal_preview', '1');
+    } else {
+        localStorage.removeItem('ceo_paypal_preview');
+    }
+
+    const cleaned = window.location.search
+        .replace(/[?&]paypal_preview=[01]/, '')
+        .replace(/^&/, '?');
+    window.history.replaceState({}, '', window.location.pathname + (cleaned === '?' ? '' : cleaned) + window.location.hash);
+}
+
+// Where the user creates the REST app whose credentials they paste in.
+//
+// This is the developer dashboard, not the ordinary PayPal account area, and
+// that is worth knowing before clicking: it looks like a different company's
+// website and asks you to log in again. The Account card says so.
+const PAYPAL_APP_PAGE = 'https://developer.paypal.com/dashboard/applications/live';
+
+// The current PayPal connection. Same three states as Stripe, same rules —
+// 'unknown' must never render the connect form.
+async function fetchPayPalConnection() {
+    return fetchConnectionRow(
+        'paypal_connections',
+        'paypal_account_id, granted_scopes, read_only, livemode, connected_at, last_synced_at, last_sync_error'
+    );
+}
+
+// Hand the user's REST app credentials to the edge function, which validates
+// them against PayPal and stores them server side. Resolves to an error string,
+// or null on success.
+//
+// Unlike Stripe there is no prefix check worth doing in the browser: a PayPal
+// client id and secret look the same whatever the app can do, so the only real
+// validation is the token exchange the function performs. The one obvious
+// mistake worth catching here is the empty field.
+//
+// Neither half is stored in the browser: not in localStorage, not in the store,
+// not in a data attribute. The inputs that carried them are cleared by the
+// caller the moment this returns.
+async function connectPayPalApp(clientId, clientSecret) {
+    const id = String(clientId || '').trim();
+    const secret = String(clientSecret || '').trim();
+
+    if (!id) return 'Please paste your PayPal client ID first.';
+    if (!secret) return 'Please paste your PayPal secret too.';
+
+    const { data, error } = await window.db.functions.invoke('paypal-connect?action=connect', {
+        method: 'POST',
+        body: { clientId: id, clientSecret: secret }
+    });
+
+    if (error) return await window.readFunctionError(error);
+    return data?.ok ? null : 'Could not connect PayPal. Please try again.';
+}
+
+async function disconnectPayPal() {
+    const { error } = await window.db.functions.invoke('paypal-connect?action=disconnect', {
+        method: 'POST'
+    });
+    if (error) return await window.readFunctionError(error);
+    return null;
+}
+
+// Pull new sales. Returns { imported, scanned, refunded, truncated } or an error.
+async function syncPayPalSales() {
+    const { data, error } = await window.db.functions.invoke('paypal-sync', { method: 'POST' });
+    if (error) return { error: await window.readFunctionError(error) };
+    return data || { imported: 0, scanned: 0 };
+}
+
+// Import quietly in the background, if it is due.
+//
+// Same contract as autoSyncStripeIfDue: throttled per browser, deliberately
+// silent, never interrupts. A failure just means the figures are as fresh as the
+// last successful run, and the manual button is still there with its own
+// feedback.
+//
+// Its own throttle key, so a PayPal sync being due does not depend on when
+// Stripe last ran and vice versa.
+const PAYPAL_AUTO_SYNC_KEY = 'ceo_paypal_last_autosync';
+const PAYPAL_AUTO_SYNC_INTERVAL_MS = 60 * 60 * 1000;
+
+async function autoSyncPayPalIfDue() {
+    try {
+        const last = parseInt(localStorage.getItem(PAYPAL_AUTO_SYNC_KEY) || '0', 10);
+        if (Date.now() - last < PAYPAL_AUTO_SYNC_INTERVAL_MS) return null;
+
+        // Only worth a request if this account has actually connected PayPal.
+        const { state } = await fetchPayPalConnection();
+        if (state !== 'connected') return null;
+
+        // Written before the call, not after: a failing sync should wait its turn
+        // like a successful one, rather than retrying on every page load.
+        localStorage.setItem(PAYPAL_AUTO_SYNC_KEY, String(Date.now()));
+
+        const result = await syncPayPalSales();
+        if (result && !result.error && result.imported) {
+            await refreshImportedSales();
+            return result;
+        }
+        return null;
+    } catch (err) {
+        console.warn('Background PayPal sync skipped:', err.message);
+        return null;
+    }
+}
 
 
 // --- js\aiService.js ---
@@ -9555,7 +9829,7 @@ function renderRevenue() {
                        // advert but left a hole on the screen where the most
                        // useful control should be. Painted in attachEvents,
                        // because the connection state is an async read.
-                       ? `<div id="revenue-stripe-panel" class="card mb-6" style="padding: 1.25rem; font-size: 0.875rem; color: var(--color-text-muted);">Checking Stripe…</div>`
+                       ? `<div id="revenue-import-panel" class="card mb-6" style="padding: 1.25rem; font-size: 0.875rem; color: var(--color-text-muted);">Checking…</div>`
                        : proTeaser(
                            'payment-import',
                            'Never log a sale by hand again',
@@ -10271,74 +10545,127 @@ window.closeAiModal = function() {
 
 // Document click listener removed
 
-// The Stripe panel in the Revenue sidebar, for accounts that have the import.
+// The import panel in the Revenue sidebar, for accounts that have the feature.
 //
 // This replaces the teaser strip, which deletes itself once a feature is live for
-// you. That is correct for an advert and wrong for the slot: the moment Stripe
-// starts working is the moment you want a button to pull new sales in, not an
-// empty gap where the explanation used to be.
-async function paintRevenueStripePanel() {
-    const host = document.getElementById('revenue-stripe-panel');
+// you. That is correct for an advert and wrong for the slot: the moment the
+// import starts working is the moment you want a button to pull new sales in, not
+// an empty gap where the explanation used to be.
+//
+// Covers BOTH processors. It was Stripe-only until PayPal landed, and the two
+// things that had to change are the two that would have been wrong rather than
+// merely incomplete: the heading said "Stripe connected" whoever was connected,
+// and the button synced Stripe whether or not Stripe was the one with sales
+// waiting.
+async function paintRevenueImportPanel() {
+    const host = document.getElementById('revenue-import-panel');
     if (!host) return;
 
-    const { state, conn } = await fetchStripeConnection();
+    // Asked together rather than one after the other: this is a sidebar panel on
+    // a screen that is already doing a lot, and two sequential round trips before
+    // it can say anything is two too many.
+    const [stripe, paypal] = await Promise.all([
+        fetchStripeConnection(),
+        canConnectPayPal() ? fetchPayPalConnection() : Promise.resolve({ state: 'none', conn: null }),
+    ]);
 
-    // Couldn't find out. Say so quietly and leave it — this is a sidebar panel,
-    // not somewhere to start a troubleshooting flow, and offering "connect Stripe"
-    // to someone who already has would be actively wrong.
-    if (state === 'unknown') {
+    // Couldn't find out. Say so quietly and leave it - this is a sidebar panel,
+    // not somewhere to start a troubleshooting flow, and offering "connect
+    // Stripe" to someone who already has would be actively wrong.
+    //
+    // Only when BOTH are unknown. One processor answering is enough to paint a
+    // useful panel, and refusing to show a working PayPal connection because the
+    // Stripe read timed out would be losing information we already have.
+    if (stripe.state === 'unknown' && paypal.state === 'unknown') {
         host.innerHTML = `
-            <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('payment-import', 'Stripe')}</p>
+            <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('payment-import', 'Sales import')}</p>
             <p style="margin: 0; line-height: 1.5;">Couldn't check your connection just now. Nothing has been lost, it'll retry when you reload.</p>
         `;
         return;
     }
 
+    const connected = [];
+    if (stripe.state === 'connected') connected.push({ name: 'Stripe', conn: stripe.conn, sync: syncStripeSales });
+    if (paypal.state === 'connected') connected.push({ name: 'PayPal', conn: paypal.conn, sync: syncPayPalSales });
+
     // Both remaining states head with proCardHeading, the shared wrapper that owns
     // the PRO chip. Building this heading by hand is how the badge went missing
     // when this panel replaced the teaser strip.
-    if (state === 'none') {
+    if (!connected.length) {
+        // Names PayPal only when PayPal can actually be connected. Offering it
+        // while it is still behind its flag would be the exact "promised in the
+        // UI, not built" problem that put item 10 on the plan in the first place.
+        const what = canConnectPayPal() ? 'Connect Stripe or PayPal once' : 'Connect Stripe once';
         host.innerHTML = `
             <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('payment-import', 'Stop logging sales by hand')}</p>
-            <p style="margin: 0 0 1rem 0; line-height: 1.5;">Importing your sales automatically is part of Pro. Connect Stripe once and they appear here on their own.</p>
-            <a href="#/account" class="btn btn-outline btn-sm" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Connect Stripe →</a>
+            <p style="margin: 0 0 1rem 0; line-height: 1.5;">Importing your sales automatically is part of Pro. ${what} and they appear here on their own.</p>
+            <a href="#/account" class="btn btn-outline btn-sm" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Connect &rarr;</a>
         `;
         return;
     }
 
+    const names = connected.map(c => c.name).join(' and ');
+
+    // The combined count is right here, unlike on the Account screen where each
+    // processor has its own panel and must claim only its own sales. This one
+    // sentence covers everything that arrived on its own.
     const count = getImportedSalesCache().length;
-    const lastSynced = conn.last_synced_at
-        ? new Date(conn.last_synced_at).toLocaleDateString()
+
+    // The most recent successful check across everything connected. Two dates in
+    // a sidebar strip is more precision than the sentence can carry; the Account
+    // screen is where each connection reports for itself.
+    const syncedTimes = connected
+        .map(c => c.conn.last_synced_at)
+        .filter(Boolean)
+        .map(t => new Date(t).getTime());
+    const lastSynced = syncedTimes.length
+        ? new Date(Math.max(...syncedTimes)).toLocaleDateString()
         : 'not yet';
 
+    const errors = connected
+        .filter(c => c.conn.last_sync_error)
+        .map(c => `<p style="margin: 0 0 1rem 0; color: #B42318;">${c.name} last attempt failed: ${c.conn.last_sync_error}</p>`)
+        .join('');
+
     host.innerHTML = `
-        <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('payment-import', 'Stripe connected')}</p>
+        <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('payment-import', `${names} connected`)}</p>
         <p style="margin: 0 0 1rem 0; line-height: 1.5;">
             ${count} ${count === 1 ? 'sale' : 'sales'} imported automatically, part of your Pro plan. Last checked ${lastSynced}.
         </p>
-        ${conn.last_sync_error ? `<p style="margin: 0 0 1rem 0; color: #B42318;">Last attempt failed: ${conn.last_sync_error}</p>` : ''}
+        ${errors}
         <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
-            <button type="button" id="btn-revenue-stripe-sync" class="btn btn-outline btn-sm" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Import sales now</button>
+            <button type="button" id="btn-revenue-import-sync" class="btn btn-outline btn-sm" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Import sales now</button>
             <a href="#/account" style="font-size: 0.8rem; color: var(--color-text-muted); text-decoration: underline;">Manage</a>
         </div>
     `;
 
-    document.getElementById('btn-revenue-stripe-sync')?.addEventListener('click', async (e) => {
+    document.getElementById('btn-revenue-import-sync')?.addEventListener('click', async (e) => {
         e.target.disabled = true;
-        e.target.textContent = 'Importing…';
-        const result = await syncStripeSales();
-        if (result.error) {
-            showToast(result.error, 'error');
-            paintRevenueStripePanel();
+        e.target.textContent = 'Importing...';
+
+        // Every connected processor, in parallel. One button that syncs only one
+        // of two connections would leave the other silently stale.
+        const results = await Promise.all(connected.map(c => c.sync()));
+
+        const failures = [];
+        let importedTotal = 0;
+        results.forEach((result, i) => {
+            if (result.error) failures.push(`${connected[i].name}: ${result.error}`);
+            else importedTotal += result.imported || 0;
+        });
+
+        // A failure on one side does not hide a success on the other, so both are
+        // reported rather than the first one found.
+        if (failures.length) showToast(failures.join(' '), 'error');
+
+        if (!importedTotal) {
+            if (!failures.length) showToast('Up to date, nothing new to import.', 'success');
+            paintRevenueImportPanel();
             return;
         }
-        if (!result.imported) {
-            showToast('Up to date, nothing new to import.', 'success');
-            paintRevenueStripePanel();
-            return;
-        }
-        const sales = `${result.imported} ${result.imported === 1 ? 'sale' : 'sales'}`;
-        showToast(`Imported ${sales} from Stripe.`, 'success');
+
+        const sales = `${importedTotal} ${importedTotal === 1 ? 'sale' : 'sales'}`;
+        if (!failures.length) showToast(`Imported ${sales} from ${names}.`, 'success');
         // New sales change every figure on this screen, so re-read them and
         // repaint the whole thing rather than only this corner of it.
         await refreshImportedSales();
@@ -10358,7 +10685,7 @@ function revenueAttachEvents() {
     // rerenderScreen fires hashchange, which runs attachEvents, which lands here.
     refreshImportedSales().then(sales => {
         if (sales.length !== importedCountAtRender) rerenderScreen();
-        else paintRevenueStripePanel();
+        else paintRevenueImportPanel();
     }).catch(() => { /* decoration on top of the user's own data, never fatal */ });
 
     const closeTooltipBtn = document.getElementById('btn-close-revenue-tooltip');
@@ -13014,7 +13341,50 @@ function renderPlanCard() {
 // worse than no button. `canConnectStripe()` in stripeImport.js owns that rule —
 // the Revenue teaser links here and has to agree with it.
 function renderConnectionsCard() {
-    if (!canConnectStripe()) return '';
+    const showStripe = canConnectStripe();
+    const showPayPal = canConnectPayPal();
+    if (!showStripe && !showPayPal) return '';
+
+    // The promise is the same for both processors, so it is made once at the top
+    // rather than repeated per section. "Read-only" is the load-bearing word and
+    // it is true of both, though it is guaranteed differently: Stripe by the
+    // shape of the key, PayPal by the permissions on the app. The per-processor
+    // detail belongs in each section, not here.
+    const intro = showStripe && showPayPal
+        ? `Connect Stripe or PayPal and your sales are imported here automatically. Both connect
+           <strong>read-only</strong>, so they can see payments but can never move money, issue a
+           refund, or change anything in your account. Connect either, or both. You can disconnect
+           at any time and your imported sales stay with you.`
+        : showStripe
+            ? `Connect Stripe and your sales are imported here automatically. You give this a
+               <strong>read-only key</strong> that you create yourself, so it can see payments
+               but can never move money, issue a refund, or change anything in your Stripe
+               account. You can disconnect at any time and your imported sales stay with you.`
+            : `Connect PayPal and your sales are imported here automatically. It connects
+               <strong>read-only</strong>, so it can see payments but can never move money, issue a
+               refund, or change anything in your PayPal account. You can disconnect at any time
+               and your imported sales stay with you.`;
+
+    // Each processor gets its own heading only when both are on screen. With one
+    // connected the heading is noise; with two, an unlabelled pair of panels is
+    // genuinely ambiguous once both say "connected".
+    const sectionHeading = (label) => (showStripe && showPayPal)
+        ? `<p style="font-weight: 600; color: var(--color-black); margin: 0 0 0.5rem 0;">${label}</p>`
+        : '';
+
+    const stripeSection = showStripe ? `
+        <div style="margin-bottom: ${showPayPal ? '1.5rem' : '0'};">
+            ${sectionHeading('Stripe')}
+            <div id="stripe-connection-state" style="color: var(--color-text-muted); font-size: 0.875rem;">Checking…</div>
+        </div>
+    ` : '';
+
+    const paypalSection = showPayPal ? `
+        <div${showStripe ? ' style="border-top: 1px solid var(--color-border); padding-top: 1.25rem;"' : ''}>
+            ${sectionHeading('PayPal')}
+            <div id="paypal-connection-state" style="color: var(--color-text-muted); font-size: 0.875rem;">Checking…</div>
+        </div>
+    ` : '';
 
     return `
     <div class="card mb-6">
@@ -13023,12 +13393,10 @@ function renderConnectionsCard() {
             Connected accounts
         </h3>
         <p style="color: var(--color-text-muted); font-size: 0.875rem; line-height: 1.6; margin-bottom: 1.25rem;">
-            Connect Stripe and your sales are imported here automatically. You give this a
-            <strong>read-only key</strong> that you create yourself, so it can see payments
-            but can never move money, issue a refund, or change anything in your Stripe
-            account. You can disconnect at any time and your imported sales stay with you.
+            ${intro}
         </p>
-        <div id="stripe-connection-state" style="color: var(--color-text-muted); font-size: 0.875rem;">Checking…</div>
+        ${stripeSection}
+        ${paypalSection}
     </div>
     `;
 }
@@ -13441,9 +13809,14 @@ async function paintStripeConnection() {
     // in three and a half seconds, and if you happened to be looking elsewhere the
     // screen afterwards looks identical to the screen before. This is the same
     // information, written down and still there tomorrow.
-    const importedSales = await refreshImportedSales();
-    const importedSummary = importedSales.length
-        ? ` — <strong style="color: var(--color-black);">${importedSales.length} ${importedSales.length === 1 ? 'sale' : 'sales'}</strong> imported, showing on your Revenue screen`
+    //
+    // Counted per processor, not from the length of the whole cache. With both
+    // Stripe and PayPal connected the cache holds everything, so quoting its
+    // length here would have each panel claiming the other's sales as its own.
+    await refreshImportedSales();
+    const stripeCount = countImportedFrom('stripe');
+    const importedSummary = stripeCount
+        ? ` — <strong style="color: var(--color-black);">${stripeCount} ${stripeCount === 1 ? 'sale' : 'sales'}</strong> imported, showing on your Revenue screen`
         : '';
 
     // 'unknown' is what stripe-connect stores when a key can read charges but not
@@ -13517,8 +13890,251 @@ async function paintStripeConnection() {
     });
 }
 
+// The PayPal paste-your-credentials form.
+//
+// Written out step by step for the same reason the Stripe one is: this is the
+// hardest thing the app ever asks anyone to do, it happens once, and it happens
+// at the exact moment someone is deciding whether the import is worth the
+// bother. PayPal is arguably harder than Stripe, for two reasons worth knowing
+// before editing this copy:
+//
+//   1. THE DEVELOPER DASHBOARD IS NOT THE PAYPAL YOU KNOW. It is a different
+//      site with a different login, and it looks nothing like the account page
+//      where you check your balance. Someone who has used PayPal for ten years
+//      has probably never seen it. Saying so up front stops the "am I in the
+//      right place?" bounce.
+//   2. THE NINE HOUR DELAY IS REAL AND IT LOOKS LIKE A BUG. PayPal caches
+//      issued tokens, so ticking Transaction Search on an app that has been
+//      used before can take up to nine hours to take effect. Someone who ticks
+//      the box and connects immediately gets an error about a permission they
+//      can see is enabled. paypal-connect explains it when it happens; this
+//      warns before, so a fresh app is created rather than an existing one
+//      edited.
+//
+// Two fields rather than one, because PayPal's credential is a pair and neither
+// half works alone.
+function paypalConnectFormHtml() {
+    return `
+    <ol style="margin: 0 0 1.25rem 0; padding-left: 1.25rem; line-height: 1.7; color: var(--color-text-muted);">
+        <li style="margin-bottom: 0.5rem;">
+            Open <a href="${PAYPAL_APP_PAGE}" target="_blank" rel="noopener noreferrer" style="color: var(--color-primary-dark); font-weight: 600;">PayPal's developer dashboard</a>.
+            This is a separate PayPal site to the one you normally use and it may ask you to
+            sign in again. Make sure you are on the <strong style="color: var(--color-black);">Live</strong>
+            tab, not Sandbox.
+        </li>
+        <li style="margin-bottom: 0.5rem;">
+            Press <strong style="color: var(--color-black);">Create App</strong> and name it
+            <strong style="color: var(--color-black);">CEO Planner</strong>, so you can recognise it later.
+            Make a new one rather than reusing an existing app — see the note in step 3.
+        </li>
+        <li style="margin-bottom: 0.5rem;">
+            In the app's <strong style="color: var(--color-black);">Features</strong> list, tick
+            <strong style="color: var(--color-black);">Transaction Search</strong> and save. That is
+            the only permission this needs — it lets us read your payment history and nothing else.
+            <em>If you edit an app you have used before, PayPal can take up to 9 hours to apply a
+            newly ticked permission, which is why a brand new app is easier.</em>
+        </li>
+        <li style="margin-bottom: 0.5rem;">
+            Copy the <strong style="color: var(--color-black);">Client ID</strong> and the
+            <strong style="color: var(--color-black);">Secret</strong>. You will need to press
+            <strong style="color: var(--color-black);">Show</strong> to see the secret.
+        </li>
+        <li style="margin-bottom: 0.5rem;">Paste them both below and press <strong style="color: var(--color-black);">Connect PayPal</strong>.</li>
+        <li>
+            Then press <strong style="color: var(--color-black);">Import sales now</strong>, which appears
+            once you're connected. Connecting on its own doesn't bring anything in — that button is
+            what fetches your history the first time.
+        </li>
+    </ol>
+
+    <div class="form-group mb-3">
+        <label class="form-label" for="paypal-client-id-input" style="font-weight: 600;">Client ID</label>
+        <input type="text" id="paypal-client-id-input" class="form-input" placeholder="A…"
+               autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+    </div>
+
+    <div class="form-group mb-3">
+        <label class="form-label" for="paypal-secret-input" style="font-weight: 600;">Secret</label>
+        <input type="password" id="paypal-secret-input" class="form-input" placeholder="E…"
+               autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        <p style="font-size: 0.8rem; margin-top: 0.5rem; line-height: 1.5;">
+            The secret is stored securely and is never shown back to you or sent to your browser again.
+        </p>
+    </div>
+
+    <button type="button" id="btn-paypal-connect" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Connect PayPal</button>
+    `;
+}
+
+// Paints the PayPal panel and wires its buttons. Re-entrant: every action
+// re-paints, so there is one place that decides what the panel says. The twin of
+// paintStripeConnection().
+async function paintPayPalConnection() {
+    const host = document.getElementById('paypal-connection-state');
+    if (!host) return;
+
+    const { state, conn } = await fetchPayPalConnection();
+
+    // Couldn't find out. Never show the connect form here: telling someone to
+    // paste new credentials because a request failed is how a working connection
+    // gets replaced for no reason.
+    if (state === 'unknown') {
+        host.innerHTML = `
+            <p style="margin: 0 0 0.75rem 0;">Couldn't check your PayPal connection just now. Nothing has been lost.</p>
+            <button type="button" id="btn-paypal-recheck" class="btn btn-outline btn-sm" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Try again</button>
+        `;
+        document.getElementById('btn-paypal-recheck')?.addEventListener('click', () => {
+            host.innerHTML = 'Checking…';
+            paintPayPalConnection();
+        });
+        return;
+    }
+
+    if (state === 'none') {
+        host.innerHTML = paypalConnectFormHtml();
+
+        const idInput = document.getElementById('paypal-client-id-input');
+        const secretInput = document.getElementById('paypal-secret-input');
+        const button = document.getElementById('btn-paypal-connect');
+
+        const submit = async () => {
+            button.disabled = true;
+            button.textContent = 'Checking with PayPal…';
+
+            const err = await connectPayPalApp(idInput.value, secretInput.value);
+
+            if (err) {
+                button.disabled = false;
+                button.textContent = 'Connect PayPal';
+                showToast(err, 'error');
+                return;
+            }
+
+            // Clear both fields before anything else. Neither half is stored in
+            // the browser, and leaving the secret sitting in a DOM node after it
+            // has been accepted serves no purpose.
+            idInput.value = '';
+            secretInput.value = '';
+            showToast('PayPal connected. Import your sales whenever you are ready.', 'success');
+            paintPayPalConnection();
+        };
+
+        button.addEventListener('click', submit);
+        // Enter submits from either field. Two fields and one button; making
+        // someone reach for the mouse after pasting would be gratuitous.
+        [idInput, secretInput].forEach(input => {
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    submit();
+                }
+            });
+        });
+        return;
+    }
+
+    const lastSynced = conn.last_synced_at
+        ? new Date(conn.last_synced_at).toLocaleString()
+        : 'not yet';
+
+    // Counted per processor — see the note in paintStripeConnection().
+    await refreshImportedSales();
+    const paypalCount = countImportedFrom('paypal');
+    const importedSummary = paypalCount
+        ? ` — <strong style="color: var(--color-black);">${paypalCount} ${paypalCount === 1 ? 'sale' : 'sales'}</strong> imported, showing on your Revenue screen`
+        : '';
+
+    // 'unknown' is what paypal-connect stores when the app is valid but the
+    // account had no transactions in the last month to read the number off — a
+    // perfectly usable connection, so it connects anyway and this simply doesn't
+    // name the account.
+    const accountLine = conn.paypal_account_id && conn.paypal_account_id !== 'unknown'
+        ? ` — account ${conn.paypal_account_id}`
+        : '';
+    const modeNote = conn.livemode === false
+        ? ` <span style="color: #B54708;">(sandbox app, so this will only ever import test payments)</span>`
+        : '';
+
+    // Said out loud rather than assumed, because PayPal cannot promise it the
+    // way Stripe can. A restricted Stripe key is read-only by construction; a
+    // PayPal app is read-only only if its Features list says so, and the user is
+    // the one who ticked those boxes. If their app can also take payments they
+    // are entitled to know that the credential they handed over can do it.
+    const scopeNote = conn.read_only === false
+        ? `<p style="margin: 0 0 1rem 0; color: #B54708; line-height: 1.5;">
+               This app has more than read-only access to your PayPal account. The import only ever
+               reads, but if you would rather the credential could do nothing else, create a new app
+               with only <strong>Transaction Search</strong> ticked and reconnect.
+           </p>`
+        : '';
+
+    // Connecting imports nothing on its own, which is not obvious: the card says
+    // "connected", so the job looks finished. Until the first import has run this
+    // spells out the remaining step, rather than leaving it to a toast that has
+    // already disappeared by the time anyone goes looking for what changed.
+    const neverImported = !conn.last_synced_at;
+    const nextStep = neverImported
+        ? `<div style="background: var(--color-primary-light); border-left: 3px solid var(--color-primary); border-radius: 6px; padding: 0.75rem 0.875rem; margin: 0 0 1rem 0; color: var(--color-text-main); line-height: 1.5;">
+               <strong style="color: var(--color-black);">One more step.</strong>
+               Connecting doesn't bring your sales in by itself. Press
+               <strong style="color: var(--color-black);">Import sales now</strong> to fetch your history.
+           </div>`
+        : '';
+
+    host.innerHTML = `
+        <p style="margin: 0 0 0.5rem 0;"><strong style="color: var(--color-black);">PayPal connected</strong>${accountLine}${modeNote}</p>
+        <p style="margin: 0 0 1rem 0;">Last import: ${lastSynced}${importedSummary}</p>
+        ${nextStep}
+        ${scopeNote}
+        ${conn.last_sync_error ? `<p style="margin: 0 0 1rem 0; color: #B42318;">Last attempt failed: ${conn.last_sync_error}</p>` : ''}
+        <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+            <button type="button" id="btn-paypal-sync" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Import sales now</button>
+            <button type="button" id="btn-paypal-disconnect" class="btn btn-ghost">Disconnect</button>
+        </div>
+    `;
+
+    document.getElementById('btn-paypal-sync').addEventListener('click', async (e) => {
+        e.target.disabled = true;
+        e.target.textContent = 'Importing…';
+        const result = await syncPayPalSales();
+        if (result.error) {
+            showToast(result.error, 'error');
+        } else if (!result.imported) {
+            showToast('Up to date, nothing new to import.', 'success');
+        } else {
+            const sales = `${result.imported} ${result.imported === 1 ? 'sale' : 'sales'}`;
+            // `truncated` means we stopped at a ceiling, not that PayPal ran out.
+            // Saying so beats leaving someone to wonder why a long history
+            // arrived in pieces.
+            showToast(
+                result.truncated
+                    ? `Imported ${sales} so far. There are more to come — run it again to carry on.`
+                    : `Imported ${sales} from PayPal.`,
+                'success'
+            );
+        }
+        paintPayPalConnection();
+    });
+
+    document.getElementById('btn-paypal-disconnect').addEventListener('click', async () => {
+        const confirmed = await showConfirm(
+            'Your imported sales stay in your revenue history. This only stops new ones arriving.',
+            { title: 'Disconnect PayPal?', confirmText: 'Disconnect' }
+        );
+        if (!confirmed) return;
+
+        const err = await disconnectPayPal();
+        if (err) showToast(err, 'error');
+        else showToast('PayPal disconnected.', 'success');
+        paintPayPalConnection();
+    });
+}
+
 function accountAttachEvents() {
     paintStripeConnection();
+    // Each paint is independent and each no-ops when its panel isn't on screen,
+    // so an account with only one processor visible costs only that one lookup.
+    paintPayPalConnection();
 
     // Fill in the AI usage card from the server. This is the only way the page
     // can know: the figures otherwise ride back on AI calls, and Account is the
@@ -16028,9 +16644,11 @@ function bindGlobalNavEvents() {
 window.addEventListener('hashchange', router);
 window.addEventListener('load', () => {
     purgeLegacyKeys();
-    // ?stripe_preview=1 turns on the pre-launch Stripe import card for this
-    // browser. Must run before router(), so the first render already sees it.
+    // ?stripe_preview=1 / ?paypal_preview=1 turn on the pre-launch import cards
+    // for this browser. Must run before router(), so the first render already
+    // sees them.
     applyStripePreviewParam();
+    applyPayPalPreviewParam();
     bindGlobalNavEvents();
     // One delegated handler for every locked Pro control, bound once. Screens
     // render `data-pro-feature="..."` and never wire anything up themselves.
@@ -16051,6 +16669,10 @@ window.addEventListener('load', () => {
     // without it, sales only arrived when someone remembered to press a button.
     // Fire and forget — it must never delay or interrupt the app starting.
     autoSyncStripeIfDue();
+    // The same for PayPal, on its own throttle. Both are fire and forget, and
+    // an account with only one processor connected pays for only one lookup:
+    // each returns immediately when there is no connection row.
+    autoSyncPayPalIfDue();
 
     // Leave the Monday email's numbers ready to send. The cron that mails the
     // weekly digest cannot run getRevenueInsights() -- it lives in the browser --

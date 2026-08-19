@@ -1,0 +1,21 @@
+-- One definition of "what plan is this account on", 18 Aug 2026.
+--
+-- The rule was written inline in consume_ai_quota and get_ai_quota_status, and
+-- adding is_pro_account() for the weekly digest made it three copies -- worse
+-- than the two it set out to fix. This is the extraction.
+--
+-- It returns TWO values, not a boolean, and that is the whole point.
+-- consume_ai_quota must tell "no access at all" (a lapsed subscriber, which it
+-- answers with 'no_access') apart from "has access, base tier". A boolean
+-- collapses those, and the failure would be silent and generous: a lapsed
+-- account handed the base allowance instead of being refused.
+--
+-- Applied and verified 18 Aug 2026:
+--   * account_access vs the old inline expression: 0 of 13 rows disagree
+--   * tier distribution unchanged (pro 12, no-access 1)
+--   * is_pro_account still 12 of 13; digest 1, nudge 0
+--   * consume_ai_quota: unknown user -> no_profile, past_due -> no_access
+--     (both return before the ai_usage insert, so no quota was consumed)
+--
+-- The full function bodies are in the migration applied via MCP under the same
+-- name; this file records the intent and the verification. See UPGRADE_PLAN.md.

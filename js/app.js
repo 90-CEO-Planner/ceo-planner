@@ -3,6 +3,7 @@ import { getStore, seedMockData, getLocalDateString, refreshDigestSnapshot, REMI
 import { signOutAndClear } from './components/nav.js';
 import { initProGate } from './components/proGate.js';
 import { applyStripePreviewParam, autoSyncStripeIfDue } from './stripeImport.js';
+import { applyPayPalPreviewParam, autoSyncPayPalIfDue } from './paypalImport.js';
 
 // Screens
 // We'll import these dynamically or define them later to handle page renders
@@ -338,9 +339,11 @@ function bindGlobalNavEvents() {
 window.addEventListener('hashchange', router);
 window.addEventListener('load', () => {
     purgeLegacyKeys();
-    // ?stripe_preview=1 turns on the pre-launch Stripe import card for this
-    // browser. Must run before router(), so the first render already sees it.
+    // ?stripe_preview=1 / ?paypal_preview=1 turn on the pre-launch import cards
+    // for this browser. Must run before router(), so the first render already
+    // sees them.
     applyStripePreviewParam();
+    applyPayPalPreviewParam();
     bindGlobalNavEvents();
     // One delegated handler for every locked Pro control, bound once. Screens
     // render `data-pro-feature="..."` and never wire anything up themselves.
@@ -361,6 +364,10 @@ window.addEventListener('load', () => {
     // without it, sales only arrived when someone remembered to press a button.
     // Fire and forget — it must never delay or interrupt the app starting.
     autoSyncStripeIfDue();
+    // The same for PayPal, on its own throttle. Both are fire and forget, and
+    // an account with only one processor connected pays for only one lookup:
+    // each returns immediately when there is no connection row.
+    autoSyncPayPalIfDue();
 
     // Leave the Monday email's numbers ready to send. The cron that mails the
     // weekly digest cannot run getRevenueInsights() -- it lives in the browser --

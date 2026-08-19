@@ -1,10 +1,11 @@
 // store.js
 
-// Read-only: the in-memory cache of sales imported from Stripe, merged into the
+// Read-only: the in-memory cache of sales imported from a payment processor
+// (Stripe or PayPal), merged into the
 // revenue figures at read time. store.js does not write to it and does not fetch
 // it — the screens refresh it and this just reads whatever is there. An empty
 // cache means "manual entries only", which is the pre-import behaviour.
-import { getImportedSalesCache } from './stripeImport.js';
+import { getImportedSalesCache } from './importedSales.js';
 // proGate.js has no imports of its own, so this cannot cycle back. It is
 // concatenated after this file in the bundle, which is fine: quickOfferLimit is
 // a hoisted function declaration and is only called at save time.
@@ -374,7 +375,7 @@ export function deleteMetricSnapshot(id) {
     return store.metrics.length < initialLen;
 }
 
-// Combine manually logged sales with ones imported from Stripe.
+// Combine manually logged sales with ones imported from a payment processor.
 //
 // Nothing is hidden and nothing is deleted: if the same sale exists in both
 // places it appears twice, with the imported copy marked. Quietly dropping one
@@ -1088,7 +1089,7 @@ export function getRevenueInsights() {
     // Every entry ever logged. The pipeline feed, the history chart and the CSV
     // export all need the full list, so this stays unfiltered.
     //
-    // Sales imported from Stripe are merged in here rather than being written
+    // Sales imported from Stripe or PayPal are merged in here rather than written
     // into the store, so a sync can never overwrite something the user typed.
     // Merging at this single point means the totals, the quarter progress, the
     // conversion rates, the CSV export and the AI Coach's context all pick them
@@ -1574,7 +1575,7 @@ export function getQuarterHistory() {
 // so unlike the quarter columns, nothing is excluded here. The two therefore do
 // not always add up, which is why the screen says what this counts.
 //
-// Deduplicated by id: an imported Stripe sale dated inside an archived quarter
+// Deduplicated by id: an imported sale dated inside an archived quarter
 // appears in the live merged list as well, and counting it twice would inflate
 // the only figure on the screen someone might quote to an accountant.
 function getYearTotals(store, quarters) {

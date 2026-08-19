@@ -11,7 +11,9 @@
 import { renderNav, signOutAndClear } from '../components/nav.js';
 import { showToast, showConfirm } from '../components/toast.js';
 import { PRO_FEATURES, PRO_FEATURE_KEYS, getPlanTier, isProUser, isProTrial, trialDaysLeft, isFeatureLive, proBadge, aiDailyAllowance, AI_DAILY_LIMITS, getAiAllowanceToday, fetchAiAllowance } from '../components/proGate.js';
-import { fetchStripeConnection, connectStripeKey, disconnectStripe, syncStripeSales, canConnectStripe, STRIPE_KEY_PAGE, refreshImportedSales } from '../stripeImport.js';
+import { fetchStripeConnection, connectStripeKey, disconnectStripe, syncStripeSales, canConnectStripe, STRIPE_KEY_PAGE } from '../stripeImport.js';
+import { fetchPayPalConnection, connectPayPalApp, disconnectPayPal, syncPayPalSales, canConnectPayPal, PAYPAL_APP_PAGE } from '../paypalImport.js';
+import { refreshImportedSales, countImportedFrom } from '../importedSales.js';
 
 // Everything the base plan includes. Written out rather than derived, because
 // the point of this list is to make base feel like a complete product on its
@@ -151,7 +153,50 @@ function renderPlanCard() {
 // worse than no button. `canConnectStripe()` in stripeImport.js owns that rule —
 // the Revenue teaser links here and has to agree with it.
 function renderConnectionsCard() {
-    if (!canConnectStripe()) return '';
+    const showStripe = canConnectStripe();
+    const showPayPal = canConnectPayPal();
+    if (!showStripe && !showPayPal) return '';
+
+    // The promise is the same for both processors, so it is made once at the top
+    // rather than repeated per section. "Read-only" is the load-bearing word and
+    // it is true of both, though it is guaranteed differently: Stripe by the
+    // shape of the key, PayPal by the permissions on the app. The per-processor
+    // detail belongs in each section, not here.
+    const intro = showStripe && showPayPal
+        ? `Connect Stripe or PayPal and your sales are imported here automatically. Both connect
+           <strong>read-only</strong>, so they can see payments but can never move money, issue a
+           refund, or change anything in your account. Connect either, or both. You can disconnect
+           at any time and your imported sales stay with you.`
+        : showStripe
+            ? `Connect Stripe and your sales are imported here automatically. You give this a
+               <strong>read-only key</strong> that you create yourself, so it can see payments
+               but can never move money, issue a refund, or change anything in your Stripe
+               account. You can disconnect at any time and your imported sales stay with you.`
+            : `Connect PayPal and your sales are imported here automatically. It connects
+               <strong>read-only</strong>, so it can see payments but can never move money, issue a
+               refund, or change anything in your PayPal account. You can disconnect at any time
+               and your imported sales stay with you.`;
+
+    // Each processor gets its own heading only when both are on screen. With one
+    // connected the heading is noise; with two, an unlabelled pair of panels is
+    // genuinely ambiguous once both say "connected".
+    const sectionHeading = (label) => (showStripe && showPayPal)
+        ? `<p style="font-weight: 600; color: var(--color-black); margin: 0 0 0.5rem 0;">${label}</p>`
+        : '';
+
+    const stripeSection = showStripe ? `
+        <div style="margin-bottom: ${showPayPal ? '1.5rem' : '0'};">
+            ${sectionHeading('Stripe')}
+            <div id="stripe-connection-state" style="color: var(--color-text-muted); font-size: 0.875rem;">Checking…</div>
+        </div>
+    ` : '';
+
+    const paypalSection = showPayPal ? `
+        <div${showStripe ? ' style="border-top: 1px solid var(--color-border); padding-top: 1.25rem;"' : ''}>
+            ${sectionHeading('PayPal')}
+            <div id="paypal-connection-state" style="color: var(--color-text-muted); font-size: 0.875rem;">Checking…</div>
+        </div>
+    ` : '';
 
     return `
     <div class="card mb-6">
@@ -160,12 +205,10 @@ function renderConnectionsCard() {
             Connected accounts
         </h3>
         <p style="color: var(--color-text-muted); font-size: 0.875rem; line-height: 1.6; margin-bottom: 1.25rem;">
-            Connect Stripe and your sales are imported here automatically. You give this a
-            <strong>read-only key</strong> that you create yourself, so it can see payments
-            but can never move money, issue a refund, or change anything in your Stripe
-            account. You can disconnect at any time and your imported sales stay with you.
+            ${intro}
         </p>
-        <div id="stripe-connection-state" style="color: var(--color-text-muted); font-size: 0.875rem;">Checking…</div>
+        ${stripeSection}
+        ${paypalSection}
     </div>
     `;
 }
@@ -578,9 +621,14 @@ async function paintStripeConnection() {
     // in three and a half seconds, and if you happened to be looking elsewhere the
     // screen afterwards looks identical to the screen before. This is the same
     // information, written down and still there tomorrow.
-    const importedSales = await refreshImportedSales();
-    const importedSummary = importedSales.length
-        ? ` — <strong style="color: var(--color-black);">${importedSales.length} ${importedSales.length === 1 ? 'sale' : 'sales'}</strong> imported, showing on your Revenue screen`
+    //
+    // Counted per processor, not from the length of the whole cache. With both
+    // Stripe and PayPal connected the cache holds everything, so quoting its
+    // length here would have each panel claiming the other's sales as its own.
+    await refreshImportedSales();
+    const stripeCount = countImportedFrom('stripe');
+    const importedSummary = stripeCount
+        ? ` — <strong style="color: var(--color-black);">${stripeCount} ${stripeCount === 1 ? 'sale' : 'sales'}</strong> imported, showing on your Revenue screen`
         : '';
 
     // 'unknown' is what stripe-connect stores when a key can read charges but not
@@ -654,8 +702,251 @@ async function paintStripeConnection() {
     });
 }
 
+// The PayPal paste-your-credentials form.
+//
+// Written out step by step for the same reason the Stripe one is: this is the
+// hardest thing the app ever asks anyone to do, it happens once, and it happens
+// at the exact moment someone is deciding whether the import is worth the
+// bother. PayPal is arguably harder than Stripe, for two reasons worth knowing
+// before editing this copy:
+//
+//   1. THE DEVELOPER DASHBOARD IS NOT THE PAYPAL YOU KNOW. It is a different
+//      site with a different login, and it looks nothing like the account page
+//      where you check your balance. Someone who has used PayPal for ten years
+//      has probably never seen it. Saying so up front stops the "am I in the
+//      right place?" bounce.
+//   2. THE NINE HOUR DELAY IS REAL AND IT LOOKS LIKE A BUG. PayPal caches
+//      issued tokens, so ticking Transaction Search on an app that has been
+//      used before can take up to nine hours to take effect. Someone who ticks
+//      the box and connects immediately gets an error about a permission they
+//      can see is enabled. paypal-connect explains it when it happens; this
+//      warns before, so a fresh app is created rather than an existing one
+//      edited.
+//
+// Two fields rather than one, because PayPal's credential is a pair and neither
+// half works alone.
+function paypalConnectFormHtml() {
+    return `
+    <ol style="margin: 0 0 1.25rem 0; padding-left: 1.25rem; line-height: 1.7; color: var(--color-text-muted);">
+        <li style="margin-bottom: 0.5rem;">
+            Open <a href="${PAYPAL_APP_PAGE}" target="_blank" rel="noopener noreferrer" style="color: var(--color-primary-dark); font-weight: 600;">PayPal's developer dashboard</a>.
+            This is a separate PayPal site to the one you normally use and it may ask you to
+            sign in again. Make sure you are on the <strong style="color: var(--color-black);">Live</strong>
+            tab, not Sandbox.
+        </li>
+        <li style="margin-bottom: 0.5rem;">
+            Press <strong style="color: var(--color-black);">Create App</strong> and name it
+            <strong style="color: var(--color-black);">CEO Planner</strong>, so you can recognise it later.
+            Make a new one rather than reusing an existing app — see the note in step 3.
+        </li>
+        <li style="margin-bottom: 0.5rem;">
+            In the app's <strong style="color: var(--color-black);">Features</strong> list, tick
+            <strong style="color: var(--color-black);">Transaction Search</strong> and save. That is
+            the only permission this needs — it lets us read your payment history and nothing else.
+            <em>If you edit an app you have used before, PayPal can take up to 9 hours to apply a
+            newly ticked permission, which is why a brand new app is easier.</em>
+        </li>
+        <li style="margin-bottom: 0.5rem;">
+            Copy the <strong style="color: var(--color-black);">Client ID</strong> and the
+            <strong style="color: var(--color-black);">Secret</strong>. You will need to press
+            <strong style="color: var(--color-black);">Show</strong> to see the secret.
+        </li>
+        <li style="margin-bottom: 0.5rem;">Paste them both below and press <strong style="color: var(--color-black);">Connect PayPal</strong>.</li>
+        <li>
+            Then press <strong style="color: var(--color-black);">Import sales now</strong>, which appears
+            once you're connected. Connecting on its own doesn't bring anything in — that button is
+            what fetches your history the first time.
+        </li>
+    </ol>
+
+    <div class="form-group mb-3">
+        <label class="form-label" for="paypal-client-id-input" style="font-weight: 600;">Client ID</label>
+        <input type="text" id="paypal-client-id-input" class="form-input" placeholder="A…"
+               autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+    </div>
+
+    <div class="form-group mb-3">
+        <label class="form-label" for="paypal-secret-input" style="font-weight: 600;">Secret</label>
+        <input type="password" id="paypal-secret-input" class="form-input" placeholder="E…"
+               autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        <p style="font-size: 0.8rem; margin-top: 0.5rem; line-height: 1.5;">
+            The secret is stored securely and is never shown back to you or sent to your browser again.
+        </p>
+    </div>
+
+    <button type="button" id="btn-paypal-connect" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Connect PayPal</button>
+    `;
+}
+
+// Paints the PayPal panel and wires its buttons. Re-entrant: every action
+// re-paints, so there is one place that decides what the panel says. The twin of
+// paintStripeConnection().
+async function paintPayPalConnection() {
+    const host = document.getElementById('paypal-connection-state');
+    if (!host) return;
+
+    const { state, conn } = await fetchPayPalConnection();
+
+    // Couldn't find out. Never show the connect form here: telling someone to
+    // paste new credentials because a request failed is how a working connection
+    // gets replaced for no reason.
+    if (state === 'unknown') {
+        host.innerHTML = `
+            <p style="margin: 0 0 0.75rem 0;">Couldn't check your PayPal connection just now. Nothing has been lost.</p>
+            <button type="button" id="btn-paypal-recheck" class="btn btn-outline btn-sm" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Try again</button>
+        `;
+        document.getElementById('btn-paypal-recheck')?.addEventListener('click', () => {
+            host.innerHTML = 'Checking…';
+            paintPayPalConnection();
+        });
+        return;
+    }
+
+    if (state === 'none') {
+        host.innerHTML = paypalConnectFormHtml();
+
+        const idInput = document.getElementById('paypal-client-id-input');
+        const secretInput = document.getElementById('paypal-secret-input');
+        const button = document.getElementById('btn-paypal-connect');
+
+        const submit = async () => {
+            button.disabled = true;
+            button.textContent = 'Checking with PayPal…';
+
+            const err = await connectPayPalApp(idInput.value, secretInput.value);
+
+            if (err) {
+                button.disabled = false;
+                button.textContent = 'Connect PayPal';
+                showToast(err, 'error');
+                return;
+            }
+
+            // Clear both fields before anything else. Neither half is stored in
+            // the browser, and leaving the secret sitting in a DOM node after it
+            // has been accepted serves no purpose.
+            idInput.value = '';
+            secretInput.value = '';
+            showToast('PayPal connected. Import your sales whenever you are ready.', 'success');
+            paintPayPalConnection();
+        };
+
+        button.addEventListener('click', submit);
+        // Enter submits from either field. Two fields and one button; making
+        // someone reach for the mouse after pasting would be gratuitous.
+        [idInput, secretInput].forEach(input => {
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    submit();
+                }
+            });
+        });
+        return;
+    }
+
+    const lastSynced = conn.last_synced_at
+        ? new Date(conn.last_synced_at).toLocaleString()
+        : 'not yet';
+
+    // Counted per processor — see the note in paintStripeConnection().
+    await refreshImportedSales();
+    const paypalCount = countImportedFrom('paypal');
+    const importedSummary = paypalCount
+        ? ` — <strong style="color: var(--color-black);">${paypalCount} ${paypalCount === 1 ? 'sale' : 'sales'}</strong> imported, showing on your Revenue screen`
+        : '';
+
+    // 'unknown' is what paypal-connect stores when the app is valid but the
+    // account had no transactions in the last month to read the number off — a
+    // perfectly usable connection, so it connects anyway and this simply doesn't
+    // name the account.
+    const accountLine = conn.paypal_account_id && conn.paypal_account_id !== 'unknown'
+        ? ` — account ${conn.paypal_account_id}`
+        : '';
+    const modeNote = conn.livemode === false
+        ? ` <span style="color: #B54708;">(sandbox app, so this will only ever import test payments)</span>`
+        : '';
+
+    // Said out loud rather than assumed, because PayPal cannot promise it the
+    // way Stripe can. A restricted Stripe key is read-only by construction; a
+    // PayPal app is read-only only if its Features list says so, and the user is
+    // the one who ticked those boxes. If their app can also take payments they
+    // are entitled to know that the credential they handed over can do it.
+    const scopeNote = conn.read_only === false
+        ? `<p style="margin: 0 0 1rem 0; color: #B54708; line-height: 1.5;">
+               This app has more than read-only access to your PayPal account. The import only ever
+               reads, but if you would rather the credential could do nothing else, create a new app
+               with only <strong>Transaction Search</strong> ticked and reconnect.
+           </p>`
+        : '';
+
+    // Connecting imports nothing on its own, which is not obvious: the card says
+    // "connected", so the job looks finished. Until the first import has run this
+    // spells out the remaining step, rather than leaving it to a toast that has
+    // already disappeared by the time anyone goes looking for what changed.
+    const neverImported = !conn.last_synced_at;
+    const nextStep = neverImported
+        ? `<div style="background: var(--color-primary-light); border-left: 3px solid var(--color-primary); border-radius: 6px; padding: 0.75rem 0.875rem; margin: 0 0 1rem 0; color: var(--color-text-main); line-height: 1.5;">
+               <strong style="color: var(--color-black);">One more step.</strong>
+               Connecting doesn't bring your sales in by itself. Press
+               <strong style="color: var(--color-black);">Import sales now</strong> to fetch your history.
+           </div>`
+        : '';
+
+    host.innerHTML = `
+        <p style="margin: 0 0 0.5rem 0;"><strong style="color: var(--color-black);">PayPal connected</strong>${accountLine}${modeNote}</p>
+        <p style="margin: 0 0 1rem 0;">Last import: ${lastSynced}${importedSummary}</p>
+        ${nextStep}
+        ${scopeNote}
+        ${conn.last_sync_error ? `<p style="margin: 0 0 1rem 0; color: #B42318;">Last attempt failed: ${conn.last_sync_error}</p>` : ''}
+        <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+            <button type="button" id="btn-paypal-sync" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Import sales now</button>
+            <button type="button" id="btn-paypal-disconnect" class="btn btn-ghost">Disconnect</button>
+        </div>
+    `;
+
+    document.getElementById('btn-paypal-sync').addEventListener('click', async (e) => {
+        e.target.disabled = true;
+        e.target.textContent = 'Importing…';
+        const result = await syncPayPalSales();
+        if (result.error) {
+            showToast(result.error, 'error');
+        } else if (!result.imported) {
+            showToast('Up to date, nothing new to import.', 'success');
+        } else {
+            const sales = `${result.imported} ${result.imported === 1 ? 'sale' : 'sales'}`;
+            // `truncated` means we stopped at a ceiling, not that PayPal ran out.
+            // Saying so beats leaving someone to wonder why a long history
+            // arrived in pieces.
+            showToast(
+                result.truncated
+                    ? `Imported ${sales} so far. There are more to come — run it again to carry on.`
+                    : `Imported ${sales} from PayPal.`,
+                'success'
+            );
+        }
+        paintPayPalConnection();
+    });
+
+    document.getElementById('btn-paypal-disconnect').addEventListener('click', async () => {
+        const confirmed = await showConfirm(
+            'Your imported sales stay in your revenue history. This only stops new ones arriving.',
+            { title: 'Disconnect PayPal?', confirmText: 'Disconnect' }
+        );
+        if (!confirmed) return;
+
+        const err = await disconnectPayPal();
+        if (err) showToast(err, 'error');
+        else showToast('PayPal disconnected.', 'success');
+        paintPayPalConnection();
+    });
+}
+
 function accountAttachEvents() {
     paintStripeConnection();
+    // Each paint is independent and each no-ops when its panel isn't on screen,
+    // so an account with only one processor visible costs only that one lookup.
+    paintPayPalConnection();
 
     // Fill in the AI usage card from the server. This is the only way the page
     // can know: the figures otherwise ride back on AI calls, and Account is the

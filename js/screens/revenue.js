@@ -6,7 +6,9 @@ import { showToast, showConfirm, rerenderScreen } from '../components/toast.js';
 import { proTeaser, proLock, proCardHeading, proBadge, PRO_CARD_HEADING_STYLE, canUseLeadPipeline, canExportPdf, canUseUnlimitedOffers, QUICK_OFFER_BASE_LIMIT } from '../components/proGate.js';
 import { escapeText } from '../liveAI.js';
 import { showPdfReportModal, rememberAiReport } from '../components/pdfReport.js';
-import { canConnectStripe, refreshImportedSales, getImportedSalesCache, fetchStripeConnection, syncStripeSales } from '../stripeImport.js';
+import { canConnectStripe, fetchStripeConnection, syncStripeSales } from '../stripeImport.js';
+import { canConnectPayPal, fetchPayPalConnection, syncPayPalSales } from '../paypalImport.js';
+import { refreshImportedSales, getImportedSalesCache } from '../importedSales.js';
 
 // Pipeline list state. Module level so it survives a re-render — delete an entry
 // on page 3 of the list and you stay on page 3 instead of being thrown back to
@@ -414,7 +416,7 @@ export function renderRevenue() {
                        // advert but left a hole on the screen where the most
                        // useful control should be. Painted in attachEvents,
                        // because the connection state is an async read.
-                       ? `<div id="revenue-stripe-panel" class="card mb-6" style="padding: 1.25rem; font-size: 0.875rem; color: var(--color-text-muted);">Checking Stripe…</div>`
+                       ? `<div id="revenue-import-panel" class="card mb-6" style="padding: 1.25rem; font-size: 0.875rem; color: var(--color-text-muted);">Checking…</div>`
                        : proTeaser(
                            'payment-import',
                            'Never log a sale by hand again',
@@ -1130,74 +1132,127 @@ window.closeAiModal = function() {
 
 // Document click listener removed
 
-// The Stripe panel in the Revenue sidebar, for accounts that have the import.
+// The import panel in the Revenue sidebar, for accounts that have the feature.
 //
 // This replaces the teaser strip, which deletes itself once a feature is live for
-// you. That is correct for an advert and wrong for the slot: the moment Stripe
-// starts working is the moment you want a button to pull new sales in, not an
-// empty gap where the explanation used to be.
-async function paintRevenueStripePanel() {
-    const host = document.getElementById('revenue-stripe-panel');
+// you. That is correct for an advert and wrong for the slot: the moment the
+// import starts working is the moment you want a button to pull new sales in, not
+// an empty gap where the explanation used to be.
+//
+// Covers BOTH processors. It was Stripe-only until PayPal landed, and the two
+// things that had to change are the two that would have been wrong rather than
+// merely incomplete: the heading said "Stripe connected" whoever was connected,
+// and the button synced Stripe whether or not Stripe was the one with sales
+// waiting.
+async function paintRevenueImportPanel() {
+    const host = document.getElementById('revenue-import-panel');
     if (!host) return;
 
-    const { state, conn } = await fetchStripeConnection();
+    // Asked together rather than one after the other: this is a sidebar panel on
+    // a screen that is already doing a lot, and two sequential round trips before
+    // it can say anything is two too many.
+    const [stripe, paypal] = await Promise.all([
+        fetchStripeConnection(),
+        canConnectPayPal() ? fetchPayPalConnection() : Promise.resolve({ state: 'none', conn: null }),
+    ]);
 
-    // Couldn't find out. Say so quietly and leave it — this is a sidebar panel,
-    // not somewhere to start a troubleshooting flow, and offering "connect Stripe"
-    // to someone who already has would be actively wrong.
-    if (state === 'unknown') {
+    // Couldn't find out. Say so quietly and leave it - this is a sidebar panel,
+    // not somewhere to start a troubleshooting flow, and offering "connect
+    // Stripe" to someone who already has would be actively wrong.
+    //
+    // Only when BOTH are unknown. One processor answering is enough to paint a
+    // useful panel, and refusing to show a working PayPal connection because the
+    // Stripe read timed out would be losing information we already have.
+    if (stripe.state === 'unknown' && paypal.state === 'unknown') {
         host.innerHTML = `
-            <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('payment-import', 'Stripe')}</p>
+            <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('payment-import', 'Sales import')}</p>
             <p style="margin: 0; line-height: 1.5;">Couldn't check your connection just now. Nothing has been lost, it'll retry when you reload.</p>
         `;
         return;
     }
 
+    const connected = [];
+    if (stripe.state === 'connected') connected.push({ name: 'Stripe', conn: stripe.conn, sync: syncStripeSales });
+    if (paypal.state === 'connected') connected.push({ name: 'PayPal', conn: paypal.conn, sync: syncPayPalSales });
+
     // Both remaining states head with proCardHeading, the shared wrapper that owns
     // the PRO chip. Building this heading by hand is how the badge went missing
     // when this panel replaced the teaser strip.
-    if (state === 'none') {
+    if (!connected.length) {
+        // Names PayPal only when PayPal can actually be connected. Offering it
+        // while it is still behind its flag would be the exact "promised in the
+        // UI, not built" problem that put item 10 on the plan in the first place.
+        const what = canConnectPayPal() ? 'Connect Stripe or PayPal once' : 'Connect Stripe once';
         host.innerHTML = `
             <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('payment-import', 'Stop logging sales by hand')}</p>
-            <p style="margin: 0 0 1rem 0; line-height: 1.5;">Importing your sales automatically is part of Pro. Connect Stripe once and they appear here on their own.</p>
-            <a href="#/account" class="btn btn-outline btn-sm" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Connect Stripe →</a>
+            <p style="margin: 0 0 1rem 0; line-height: 1.5;">Importing your sales automatically is part of Pro. ${what} and they appear here on their own.</p>
+            <a href="#/account" class="btn btn-outline btn-sm" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Connect &rarr;</a>
         `;
         return;
     }
 
+    const names = connected.map(c => c.name).join(' and ');
+
+    // The combined count is right here, unlike on the Account screen where each
+    // processor has its own panel and must claim only its own sales. This one
+    // sentence covers everything that arrived on its own.
     const count = getImportedSalesCache().length;
-    const lastSynced = conn.last_synced_at
-        ? new Date(conn.last_synced_at).toLocaleDateString()
+
+    // The most recent successful check across everything connected. Two dates in
+    // a sidebar strip is more precision than the sentence can carry; the Account
+    // screen is where each connection reports for itself.
+    const syncedTimes = connected
+        .map(c => c.conn.last_synced_at)
+        .filter(Boolean)
+        .map(t => new Date(t).getTime());
+    const lastSynced = syncedTimes.length
+        ? new Date(Math.max(...syncedTimes)).toLocaleDateString()
         : 'not yet';
 
+    const errors = connected
+        .filter(c => c.conn.last_sync_error)
+        .map(c => `<p style="margin: 0 0 1rem 0; color: #B42318;">${c.name} last attempt failed: ${c.conn.last_sync_error}</p>`)
+        .join('');
+
     host.innerHTML = `
-        <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('payment-import', 'Stripe connected')}</p>
+        <p style="${PRO_CARD_HEADING_STYLE}">${proCardHeading('payment-import', `${names} connected`)}</p>
         <p style="margin: 0 0 1rem 0; line-height: 1.5;">
             ${count} ${count === 1 ? 'sale' : 'sales'} imported automatically, part of your Pro plan. Last checked ${lastSynced}.
         </p>
-        ${conn.last_sync_error ? `<p style="margin: 0 0 1rem 0; color: #B42318;">Last attempt failed: ${conn.last_sync_error}</p>` : ''}
+        ${errors}
         <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
-            <button type="button" id="btn-revenue-stripe-sync" class="btn btn-outline btn-sm" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Import sales now</button>
+            <button type="button" id="btn-revenue-import-sync" class="btn btn-outline btn-sm" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Import sales now</button>
             <a href="#/account" style="font-size: 0.8rem; color: var(--color-text-muted); text-decoration: underline;">Manage</a>
         </div>
     `;
 
-    document.getElementById('btn-revenue-stripe-sync')?.addEventListener('click', async (e) => {
+    document.getElementById('btn-revenue-import-sync')?.addEventListener('click', async (e) => {
         e.target.disabled = true;
-        e.target.textContent = 'Importing…';
-        const result = await syncStripeSales();
-        if (result.error) {
-            showToast(result.error, 'error');
-            paintRevenueStripePanel();
+        e.target.textContent = 'Importing...';
+
+        // Every connected processor, in parallel. One button that syncs only one
+        // of two connections would leave the other silently stale.
+        const results = await Promise.all(connected.map(c => c.sync()));
+
+        const failures = [];
+        let importedTotal = 0;
+        results.forEach((result, i) => {
+            if (result.error) failures.push(`${connected[i].name}: ${result.error}`);
+            else importedTotal += result.imported || 0;
+        });
+
+        // A failure on one side does not hide a success on the other, so both are
+        // reported rather than the first one found.
+        if (failures.length) showToast(failures.join(' '), 'error');
+
+        if (!importedTotal) {
+            if (!failures.length) showToast('Up to date, nothing new to import.', 'success');
+            paintRevenueImportPanel();
             return;
         }
-        if (!result.imported) {
-            showToast('Up to date, nothing new to import.', 'success');
-            paintRevenueStripePanel();
-            return;
-        }
-        const sales = `${result.imported} ${result.imported === 1 ? 'sale' : 'sales'}`;
-        showToast(`Imported ${sales} from Stripe.`, 'success');
+
+        const sales = `${importedTotal} ${importedTotal === 1 ? 'sale' : 'sales'}`;
+        if (!failures.length) showToast(`Imported ${sales} from ${names}.`, 'success');
         // New sales change every figure on this screen, so re-read them and
         // repaint the whole thing rather than only this corner of it.
         await refreshImportedSales();
@@ -1217,7 +1272,7 @@ function revenueAttachEvents() {
     // rerenderScreen fires hashchange, which runs attachEvents, which lands here.
     refreshImportedSales().then(sales => {
         if (sales.length !== importedCountAtRender) rerenderScreen();
-        else paintRevenueStripePanel();
+        else paintRevenueImportPanel();
     }).catch(() => { /* decoration on top of the user's own data, never fatal */ });
 
     const closeTooltipBtn = document.getElementById('btn-close-revenue-tooltip');
