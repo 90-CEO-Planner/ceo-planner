@@ -144,10 +144,132 @@ function toEntryShape(row) {
         // by processor does not have to reverse the label back into an id.
         sourceKey: key,
         offer: row.product_name || row.description || `${label} payment`,
+        // What the processor called the thing that was bought. Both kept so the
+        // product can be identified for offer matching — `product_id` was being
+        // selected from the database and then dropped here, which is the same
+        // shape of mistake that lost `currency`.
+        //
+        // ⚠️ `productId` is null far more often than you would expect. Six of the
+        // eight rows on the first live account have none: they came through a
+        // third-party checkout platform sitting on top of Stripe, which raises
+        // charges with no Stripe product behind them. So the id can never be the
+        // only key — see productKeyFor().
+        productId: row.product_id || '',
+        productName: row.product_name || row.description || '',
         type: 'sale',
         imported: true,
         customerEmail: row.customer_email || ''
     };
+}
+
+// --- Product to offer matching ----------------------------------------------
+//
+// A processor names things the way a processor does: "CEOPlanner", "Subscription
+// update", "Payment to The Women's Entrepreneurial Network". Those names go
+// straight into `offer`, which is what the revenue-by-offer breakdown, the top
+// offer and the branded report all group by — so imported sales report under a
+// different set of names from the ones the user logs by hand, and the two never
+// add up together.
+//
+// The fix is to map PRODUCTS, not sales. A handful, once, and automatic
+// afterwards: the cost does not grow with use, which is the whole reason this
+// friction is acceptable when per-sale friction would not be.
+//
+// The mapping lives in `settings.productOffers` and is applied at READ time, in
+// mergeImportedSales(). Never written into the imported rows — those belong to
+// the processor, and rewriting them would mean a re-import silently undoing the
+// user's choices.
+
+// A stable identity for a processor product.
+//
+// Namespaced by processor, because two of them can and do issue ids in the same
+// shape and nothing guarantees they never collide.
+//
+// Falls back to the NAME when there is no product id, which is not a rare path:
+// on the first live account six of eight rows have no id at all. Lowercased,
+// because a product that differs only in capitalisation is the same product, and
+// two keys for it would split one offer's revenue across two rows.
+//
+// Returns null when there is nothing stable to key on, and a null key is never
+// matched or offered — better to leave a sale under its raw name than to invent
+// an identity for it that a later import might reuse for something else.
+export function productKeyFor(entry) {
+    if (!entry) return null;
+    const source = String(entry.sourceKey || 'stripe').toLowerCase();
+
+    const id = String(entry.productId || '').trim();
+    if (id) return `${source}:id:${id}`;
+
+    const name = String(entry.productName || '').trim();
+    if (name) return `${source}:name:${name.toLowerCase()}`;
+
+    return null;
+}
+
+// Rewrite one entry's `offer` to the user's own name for it, if they have set one.
+//
+// Returns a NEW entry, never mutates. `originalOffer` is kept so the Revenue feed
+// can still show what the processor called it — somebody reconciling against a
+// Stripe dashboard needs to find the row they are looking at.
+export function applyProductOffer(entry, mapping) {
+    if (!mapping) return entry;
+
+    const key = productKeyFor(entry);
+    if (!key) return entry;
+
+    const mapped = mapping[key];
+    // An empty string means "keep as is" and is stored deliberately rather than
+    // deleted, so the Account card can tell a product the user has decided about
+    // from one they have not seen yet.
+    if (typeof mapped !== 'string' || mapped.trim() === '') return entry;
+    if (mapped === entry.offer) return entry;
+
+    return { ...entry, offer: mapped, originalOffer: entry.offer, mappedOffer: true };
+}
+
+// The distinct products present in the imported sales, for the Account card.
+//
+// Counts and totals come along so the card can be ordered by what actually
+// matters — a product with 40 sales behind it is worth naming before one with a
+// single refunded charge — and so the user can recognise a product they cannot
+// remember by name.
+//
+// `amount` deliberately, not `grossAmount`: a product whose only sales are
+// refunded or awaiting an exchange rate shows a total of 0, which is true and is
+// the same figure the rest of the app is reporting for it.
+export function importedProducts(entries) {
+    const groups = new Map();
+
+    (entries || []).forEach(e => {
+        const key = productKeyFor(e);
+        if (!key) return;
+
+        const current = groups.get(key) || {
+            key,
+            // What the processor calls it. Read from the entry rather than
+            // stored, so a product renamed in Stripe shows its new name here
+            // without the mapping breaking — the key is the id, not the label.
+            label: e.productName || e.offer || 'Untitled',
+            sourceLabel: e.source || 'Imported',
+            count: 0,
+            total: 0
+        };
+        current.count += 1;
+        current.total += parseFloat(e.amount) || 0;
+        groups.set(key, current);
+    });
+
+    return Array.from(groups.values()).sort((a, b) => b.count - a.count || b.total - a.total);
+}
+
+// Products the user has never been asked about.
+//
+// This is what makes the card appear on first import and then go away, and come
+// back on its own when a new product shows up months later. A product mapped to
+// "keep as is" holds an empty string, which counts as decided.
+export function unmatchedProducts(entries, mapping) {
+    const map = mapping || {};
+    return importedProducts(entries).filter(p => typeof map[p.key] !== 'string');
 }
 
 // Pull the latest imported sales into the cache. Returns the cache.

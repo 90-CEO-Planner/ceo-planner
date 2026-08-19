@@ -5,7 +5,7 @@
 // revenue figures at read time. store.js does not write to it and does not fetch
 // it — the screens refresh it and this just reads whatever is there. An empty
 // cache means "manual entries only", which is the pre-import behaviour.
-import { getImportedSalesCache } from './importedSales.js';
+import { getImportedSalesCache, applyProductOffer } from './importedSales.js';
 // Translates the processor's ISO code into the user's own currency at read time,
 // and refuses to guess when no rate has been set. Concatenated before this file
 // in the bundle; it imports nothing, so it cannot cycle back.
@@ -140,6 +140,11 @@ const defaultState = {
     metrics: [], // Array of { id, date, traffic, calls, social }
     settings: {
         currency: '$',
+        // The user's own name for each product a processor reports, keyed by
+        // productKeyFor(): { 'stripe:id:prod_X': 'CEO Planner' }. An empty
+        // string means "keep the processor's name", stored rather than deleted
+        // so a decided product is not asked about again. See importedSales.js.
+        productOffers: {},
         // Rates for turning imported foreign sales into `currency`, keyed by the
         // processor's ISO code: { USD: { rate: 0.79, base: 'GBP' } }.
         //
@@ -412,8 +417,16 @@ function mergeImportedSales(manualEntries, importedEntries, store) {
     // A sale in a currency with no rate set comes back with amount 0 and
     // `needsRate`, so it is excluded from every total rather than guessed at.
     // See js/currency.js for why that is the right failure.
+    // Then the user's own name for what was sold, so imported sales group with
+    // hand-logged ones instead of forming a parallel set of offer names that
+    // never add up together. Same read-time principle as the conversion above:
+    // the mapping lives in settings and can change, so it is applied on the way
+    // out rather than written into rows the processor owns.
     const base = baseCurrencyCode(store);
-    const converted = importedEntries.map(e => convertImportedEntry(e, base, store));
+    const offerMap = (store.settings && store.settings.productOffers) || {};
+    const converted = importedEntries
+        .map(e => convertImportedEntry(e, base, store))
+        .map(e => applyProductOffer(e, offerMap));
 
     const DAY = 24 * 60 * 60 * 1000;
     const manualStamps = manualEntries.map(e => ({

@@ -990,10 +990,132 @@ function toEntryShape(row) {
         // by processor does not have to reverse the label back into an id.
         sourceKey: key,
         offer: row.product_name || row.description || `${label} payment`,
+        // What the processor called the thing that was bought. Both kept so the
+        // product can be identified for offer matching — `product_id` was being
+        // selected from the database and then dropped here, which is the same
+        // shape of mistake that lost `currency`.
+        //
+        // ⚠️ `productId` is null far more often than you would expect. Six of the
+        // eight rows on the first live account have none: they came through a
+        // third-party checkout platform sitting on top of Stripe, which raises
+        // charges with no Stripe product behind them. So the id can never be the
+        // only key — see productKeyFor().
+        productId: row.product_id || '',
+        productName: row.product_name || row.description || '',
         type: 'sale',
         imported: true,
         customerEmail: row.customer_email || ''
     };
+}
+
+// --- Product to offer matching ----------------------------------------------
+//
+// A processor names things the way a processor does: "CEOPlanner", "Subscription
+// update", "Payment to The Women's Entrepreneurial Network". Those names go
+// straight into `offer`, which is what the revenue-by-offer breakdown, the top
+// offer and the branded report all group by — so imported sales report under a
+// different set of names from the ones the user logs by hand, and the two never
+// add up together.
+//
+// The fix is to map PRODUCTS, not sales. A handful, once, and automatic
+// afterwards: the cost does not grow with use, which is the whole reason this
+// friction is acceptable when per-sale friction would not be.
+//
+// The mapping lives in `settings.productOffers` and is applied at READ time, in
+// mergeImportedSales(). Never written into the imported rows — those belong to
+// the processor, and rewriting them would mean a re-import silently undoing the
+// user's choices.
+
+// A stable identity for a processor product.
+//
+// Namespaced by processor, because two of them can and do issue ids in the same
+// shape and nothing guarantees they never collide.
+//
+// Falls back to the NAME when there is no product id, which is not a rare path:
+// on the first live account six of eight rows have no id at all. Lowercased,
+// because a product that differs only in capitalisation is the same product, and
+// two keys for it would split one offer's revenue across two rows.
+//
+// Returns null when there is nothing stable to key on, and a null key is never
+// matched or offered — better to leave a sale under its raw name than to invent
+// an identity for it that a later import might reuse for something else.
+function productKeyFor(entry) {
+    if (!entry) return null;
+    const source = String(entry.sourceKey || 'stripe').toLowerCase();
+
+    const id = String(entry.productId || '').trim();
+    if (id) return `${source}:id:${id}`;
+
+    const name = String(entry.productName || '').trim();
+    if (name) return `${source}:name:${name.toLowerCase()}`;
+
+    return null;
+}
+
+// Rewrite one entry's `offer` to the user's own name for it, if they have set one.
+//
+// Returns a NEW entry, never mutates. `originalOffer` is kept so the Revenue feed
+// can still show what the processor called it — somebody reconciling against a
+// Stripe dashboard needs to find the row they are looking at.
+function applyProductOffer(entry, mapping) {
+    if (!mapping) return entry;
+
+    const key = productKeyFor(entry);
+    if (!key) return entry;
+
+    const mapped = mapping[key];
+    // An empty string means "keep as is" and is stored deliberately rather than
+    // deleted, so the Account card can tell a product the user has decided about
+    // from one they have not seen yet.
+    if (typeof mapped !== 'string' || mapped.trim() === '') return entry;
+    if (mapped === entry.offer) return entry;
+
+    return { ...entry, offer: mapped, originalOffer: entry.offer, mappedOffer: true };
+}
+
+// The distinct products present in the imported sales, for the Account card.
+//
+// Counts and totals come along so the card can be ordered by what actually
+// matters — a product with 40 sales behind it is worth naming before one with a
+// single refunded charge — and so the user can recognise a product they cannot
+// remember by name.
+//
+// `amount` deliberately, not `grossAmount`: a product whose only sales are
+// refunded or awaiting an exchange rate shows a total of 0, which is true and is
+// the same figure the rest of the app is reporting for it.
+function importedProducts(entries) {
+    const groups = new Map();
+
+    (entries || []).forEach(e => {
+        const key = productKeyFor(e);
+        if (!key) return;
+
+        const current = groups.get(key) || {
+            key,
+            // What the processor calls it. Read from the entry rather than
+            // stored, so a product renamed in Stripe shows its new name here
+            // without the mapping breaking — the key is the id, not the label.
+            label: e.productName || e.offer || 'Untitled',
+            sourceLabel: e.source || 'Imported',
+            count: 0,
+            total: 0
+        };
+        current.count += 1;
+        current.total += parseFloat(e.amount) || 0;
+        groups.set(key, current);
+    });
+
+    return Array.from(groups.values()).sort((a, b) => b.count - a.count || b.total - a.total);
+}
+
+// Products the user has never been asked about.
+//
+// This is what makes the card appear on first import and then go away, and come
+// back on its own when a new product shows up months later. A product mapped to
+// "keep as is" holds an empty string, which counts as decided.
+function unmatchedProducts(entries, mapping) {
+    const map = mapping || {};
+    return importedProducts(entries).filter(p => typeof map[p.key] !== 'string');
 }
 
 // Pull the latest imported sales into the cache. Returns the cache.
@@ -1251,6 +1373,11 @@ const defaultState = {
     metrics: [], // Array of { id, date, traffic, calls, social }
     settings: {
         currency: '$',
+        // The user's own name for each product a processor reports, keyed by
+        // productKeyFor(): { 'stripe:id:prod_X': 'CEO Planner' }. An empty
+        // string means "keep the processor's name", stored rather than deleted
+        // so a decided product is not asked about again. See importedSales.js.
+        productOffers: {},
         // Rates for turning imported foreign sales into `currency`, keyed by the
         // processor's ISO code: { USD: { rate: 0.79, base: 'GBP' } }.
         //
@@ -1523,8 +1650,16 @@ function mergeImportedSales(manualEntries, importedEntries, store) {
     // A sale in a currency with no rate set comes back with amount 0 and
     // `needsRate`, so it is excluded from every total rather than guessed at.
     // See js/currency.js for why that is the right failure.
+    // Then the user's own name for what was sold, so imported sales group with
+    // hand-logged ones instead of forming a parallel set of offer names that
+    // never add up together. Same read-time principle as the conversion above:
+    // the mapping lives in settings and can change, so it is applied on the way
+    // out rather than written into rows the processor owns.
     const base = baseCurrencyCode(store);
-    const converted = importedEntries.map(e => convertImportedEntry(e, base, store));
+    const offerMap = (store.settings && store.settings.productOffers) || {};
+    const converted = importedEntries
+        .map(e => convertImportedEntry(e, base, store))
+        .map(e => applyProductOffer(e, offerMap));
 
     const DAY = 24 * 60 * 60 * 1000;
     const manualStamps = manualEntries.map(e => ({
@@ -13488,6 +13623,25 @@ function renderConversionRates(store) {
     `;
 }
 
+// ⚠️ NOTHING ON THIS FORM IS `required`. Do not put it back.
+//
+// Seven inputs carried `required` — name, business name, focus, outcome,
+// priority 1, and the two goals — and the effect was that **six of the eleven
+// accounts with data could not save Settings at all**. Not the field they were
+// editing: *anything*. Change your currency, press Save, and the browser refuses
+// the whole submit because a field you have never filled in, somewhere else on a
+// very long page, is empty.
+//
+// Found 19 Aug 2026 when Jen tried to switch from $ to £ and got "Please fill in
+// this field" — a native tooltip pointing at "Your Name", far above the fold and
+// half-hidden behind the sticky nav. Her profile name and business name were
+// both blank, as they are on five accounts.
+//
+// `required` belongs in the wizard, which is setup. This is an EDIT screen, and
+// empty is a state the whole app already handles: every read here is `|| ''` or
+// `|| 0`, and every consumer has a fallback. So the attribute never protected
+// any data — it only ever blocked people, silently, and worst for exactly the
+// users it was meant to prompt, since they could not save anything at all.
 function renderSettings() {
     // We bind the event listeners after HTML is rendered using setScreenModule
     window.setScreenModule({ attachEvents: settingsAttachEvents });
@@ -13530,11 +13684,11 @@ function renderSettings() {
             
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Your Name</label>
-                <input type="text" id="set-name" class="form-input" value="${store.profile.name || ''}" required>
+                <input type="text" id="set-name" class="form-input" value="${store.profile.name || ''}">
             </div>
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Business Name</label>
-                <input type="text" id="set-biz" class="form-input" value="${store.profile.businessName || ''}" required>
+                <input type="text" id="set-biz" class="form-input" value="${store.profile.businessName || ''}">
             </div>
             
             <div class="form-group mb-4">
@@ -13623,11 +13777,11 @@ function renderSettings() {
             
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Main Focus</label>
-                <input type="text" id="set-focus" class="form-input" value="${store.goals.focus || ''}" placeholder="e.g. Launch new coaching program" required>
+                <input type="text" id="set-focus" class="form-input" value="${store.goals.focus || ''}" placeholder="e.g. Launch new coaching program">
             </div>
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Measurable Outcome</label>
-                <input type="text" id="set-outcome" class="form-input" value="${store.goals.outcome || ''}" placeholder="e.g. 10 beta clients at $1.5k" required>
+                <input type="text" id="set-outcome" class="form-input" value="${store.goals.outcome || ''}" placeholder="e.g. 10 beta clients at $1.5k">
             </div>
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Currency</label>
@@ -13641,12 +13795,12 @@ function renderSettings() {
                 <label class="form-label" style="font-weight: 600;">Quarterly Revenue Goal</label>
                 <div style="position: relative; display: flex; align-items: center;">
                     <span style="position: absolute; left: 1rem; z-index: 1; font-weight: 600; color: var(--color-text-muted);">${store.settings?.currency || '$'}</span>
-                    <input type="number" id="set-revenue-goal" class="form-input" value="${store.revenue?.quarterlyGoal || 0}" min="0" required style="padding-left: 2rem;">
+                    <input type="number" id="set-revenue-goal" class="form-input" value="${store.revenue?.quarterlyGoal || 0}" min="0" style="padding-left: 2rem;">
                 </div>
             </div>
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Quarterly Lead Goal</label>
-                <input type="number" id="set-lead-goal" class="form-input" value="${store.leads?.quarterlyGoal || 0}" min="0" required>
+                <input type="number" id="set-lead-goal" class="form-input" value="${store.leads?.quarterlyGoal || 0}" min="0">
             </div>
             <!-- Only settable in the onboarding wizard until now, so anyone who
                  skipped past it or priced differently since had no way to correct
@@ -13662,7 +13816,7 @@ function renderSettings() {
             
             <div class="form-group mb-0">
                 <label class="form-label" style="font-weight: 600;">Top 3 Priorities</label>
-                <input type="text" id="set-p1" class="form-input mb-2" value="${store.goals.priorities?.[0] || ''}" placeholder="Priority 1" required>
+                <input type="text" id="set-p1" class="form-input mb-2" value="${store.goals.priorities?.[0] || ''}" placeholder="Priority 1">
                 <input type="text" id="set-p2" class="form-input mb-2" value="${store.goals.priorities?.[1] || ''}" placeholder="Priority 2">
                 <input type="text" id="set-p3" class="form-input" value="${store.goals.priorities?.[2] || ''}" placeholder="Priority 3">
             </div>
@@ -14026,6 +14180,7 @@ function renderAccount() {
     ${renderPlanCard()}
     ${renderAiUsageCard()}
     ${renderConnectionsCard()}
+    ${renderProductMatchCard()}
     ${renderBillingCard()}
     ${renderLoginCard()}
     ${renderDangerCard()}
@@ -14166,6 +14321,107 @@ async function portalOnClick(button, busyLabel, intent) {
         button.disabled = false;
         button.textContent = original;
     }
+}
+
+// "We found N products — match them to your offers."
+//
+// The friction here is acceptable in a way per-sale friction never would be: the
+// user names PRODUCTS, a handful of them, once. Sales never stop arriving;
+// products barely change. So the cost does not grow with use.
+//
+// It appears on first import, disappears once every product has been decided
+// about, and comes back on its own the day a new product shows up — because
+// `unmatchedProducts()` asks the mapping, not a "have we shown this yet" flag.
+// A flag would have to be reset by hand and would eventually be wrong.
+//
+// Deliberately a dropdown of the user's EXISTING offers rather than a free-text
+// box. The entire point is that imported sales group with hand-logged ones, and
+// free text invites "CEO planner" beside "CEO Planner" — two rows in every
+// breakdown, for one offer, and no way to tell it has happened.
+function renderProductMatchCard() {
+    const store = getStore();
+    const mapping = store.settings?.productOffers || {};
+    const products = importedProducts(getImportedSalesCache());
+    if (products.length === 0) return '';
+
+    const offers = (store.revenue?.quickOffers || []).filter(o => o && String(o.name || '').trim());
+    const pending = unmatchedProducts(getImportedSalesCache(), mapping);
+    const currency = store.settings?.currency || '$';
+
+    // No offers to map onto. Currently the state EVERY account is in — not one
+    // of the 13 has a single quick offer saved — so this is the first thing most
+    // people will see here, and it has to be a useful sentence rather than an
+    // empty dropdown.
+    if (offers.length === 0) {
+        return `
+        <div class="card mb-6">
+            ${productMatchHeading(products.length)}
+            <p style="color: var(--color-text-muted); font-size: 0.875rem; line-height: 1.6; margin-bottom: 1rem;">
+                Right now they are filed under whatever your payment processor calls them,
+                which is usually not what you call them. Set up your offers first and you can
+                match them here, so your imported sales and the ones you log by hand add up
+                together instead of sitting in separate rows.
+            </p>
+            <a href="#/revenue" class="btn btn-outline btn-sm" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">
+                Set up my offers
+            </a>
+        </div>
+        `;
+    }
+
+    const rows = products.map(p => {
+        const chosen = mapping[p.key];
+        const decided = typeof chosen === 'string';
+        const options = offers.map(o =>
+            `<option value="${escapeText(o.name)}" ${chosen === o.name ? 'selected' : ''}>${escapeText(o.name)}</option>`
+        ).join('');
+
+        return `
+            <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;padding:0.75rem 0;border-bottom:1px solid var(--color-border);">
+                <div style="flex:1 1 200px;min-width:0;">
+                    <span style="font-weight:600;color:var(--color-black);display:block;overflow-wrap:anywhere;">${escapeText(p.label)}</span>
+                    <span style="font-size:0.8rem;color:var(--color-text-muted);">
+                        ${p.sourceLabel} • ${p.count} ${p.count === 1 ? 'sale' : 'sales'} • ${currency}${formatAmount(p.total)}
+                    </span>
+                </div>
+                <select class="form-select product-offer-select" data-key="${escapeText(p.key)}" style="flex:0 1 220px;min-width:180px;">
+                    <option value="" ${decided && chosen === '' ? 'selected' : ''}>Keep as is</option>
+                    ${options}
+                </select>
+            </div>
+        `;
+    }).join('');
+
+    const intro = pending.length === products.length
+        ? `We found ${products.length} ${products.length === 1 ? 'product' : 'products'} in your imported sales. Match each one to an offer of yours and it will be counted under your name for it, in every breakdown and every report.`
+        : (pending.length > 0
+            ? `${pending.length} new ${pending.length === 1 ? 'product' : 'products'} since you last looked. Everything else is already matched.`
+            : `All matched. Change any of these whenever you like — it applies to sales already imported, not just new ones.`);
+
+    return `
+    <div class="card mb-6">
+        ${productMatchHeading(products.length)}
+        <p style="color: var(--color-text-muted); font-size: 0.875rem; line-height: 1.6; margin-bottom: 0.5rem;">
+            ${intro}
+        </p>
+        ${rows}
+        <button type="button" id="btn-save-product-offers" class="btn btn-primary btn-sm" style="margin-top:1.25rem;font-weight:600;">
+            Save matches
+        </button>
+        <p style="font-size:0.75rem;color:var(--color-text-muted);margin:0.75rem 0 0;line-height:1.5;">
+            "Keep as is" leaves the processor's own name on it, and stops us asking again.
+        </p>
+    </div>
+    `;
+}
+
+function productMatchHeading(count) {
+    return `
+        <h3 class="mb-2" style="display: flex; align-items: center; gap: 0.5rem; color: var(--color-black);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg>
+            What you sold
+        </h3>
+    `;
 }
 
 // Connected payment processors, for Pro item 1.
@@ -14999,6 +15255,20 @@ async function paintPayPalConnection() {
 }
 
 function accountAttachEvents() {
+    // "What you sold" is built from the imported-sales cache, and on a cold load
+    // straight to #/account that cache is empty — so the card would be invisible
+    // exactly when it matters most, right after someone connects a processor and
+    // lands back here.
+    //
+    // The two paints below refresh the cache too, but they only repaint their own
+    // panel, so they would fill the cache without ever showing this card. Same
+    // re-render guard as the Revenue and Settings screens: only repaint when the
+    // count actually changed, or rerenderScreen would loop through attachEvents.
+    const importedCountAtRender = getImportedSalesCache().length;
+    refreshImportedSales().then(sales => {
+        if (sales.length !== importedCountAtRender) rerenderScreen();
+    }).catch(() => { /* the rest of the screen works without it */ });
+
     paintStripeConnection();
     // Each paint is independent and each no-ops when its panel isn't on screen,
     // so an account with only one processor visible costs only that one lookup.
@@ -15044,6 +15314,35 @@ function accountAttachEvents() {
     const btnUpgrade = document.getElementById('btn-upgrade-pro');
     if (btnUpgrade) {
         btnUpgrade.addEventListener('click', () => portalOnClick(btnUpgrade, 'Opening…', 'upgrade'));
+    }
+
+    // Saving every dropdown at once, including the ones left on "Keep as is".
+    //
+    // That is the point of the button: pressing it is the user saying "I have
+    // looked at this list", which is what stops the card asking again. Saving
+    // each select on change instead would leave anything untouched looking
+    // undecided forever, and the card would never go away.
+    const btnSaveOffers = document.getElementById('btn-save-product-offers');
+    if (btnSaveOffers) {
+        btnSaveOffers.addEventListener('click', () => {
+            const selects = Array.from(document.querySelectorAll('.product-offer-select'));
+            if (!selects.length) return;
+
+            // Merged onto what is already stored, not replacing it. A product
+            // that stops appearing in the imported sales — an offer retired last
+            // year, or a row that fell outside the import window — is not on
+            // screen to be re-selected, and rebuilding the map from the visible
+            // rows alone would quietly forget it.
+            const productOffers = { ...(getStore().settings?.productOffers || {}) };
+            selects.forEach(sel => {
+                const key = sel.dataset.key;
+                if (key) productOffers[key] = sel.value;
+            });
+
+            updateSettings({ productOffers });
+            showToast('Saved. Your imported sales now count under your own offer names.', 'success');
+            rerenderScreen();
+        });
     }
 
     // Same flow as "forgot password" on the login screen: Supabase emails a link

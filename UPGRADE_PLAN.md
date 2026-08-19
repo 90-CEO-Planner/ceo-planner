@@ -22,6 +22,68 @@ same shape as Batch 7, covering everything built across the whole programme.
 Do not start it early and do not fold it into a feature session. It is its own
 piece of work, and its value comes from running against the finished thing.
 
+### The checklist, as it stands 19 Aug 2026
+
+Added to as each item ships. Everything here needs a **real signed-in account**,
+which is exactly why none of it could be done in the build session — the house
+rule is never to browser-test against a signed-in account, because `saveStore()`
+upserts to the live `user_data` row on every save.
+
+**Billing and access**
+
+1. **The paywall screen has still never been reached by an expiring trial.**
+   Every check so far proves an account is correctly *refused*; none proves the
+   screen it lands on behaves. Scheduled to happen by itself:
+   `hello+ceoplannertest@…` on 27 Aug, `hello+consultant@…` on 28 Aug.
+2. **No Stripe billing portal has ever actually opened.** The configuration is
+   proven (`bpc_1U6D9s…`, verified field by field); the *session* is not, because
+   no account has a real `stripe_customer_id` with a live planner subscription.
+   Needs one real Base subscriber. Then: **do the upgrade** and check the
+   prorated figure Stripe quotes, that `plan_tier` flips to `pro` via the
+   webhook, and that the app picks it up on the way back without a manual
+   refresh.
+3. **A downgrade.** Pro → Base should schedule at the renewal date, not take
+   effect immediately and not issue a credit.
+
+**Imported sales**
+
+4. **Currency: a real foreign-currency sale.** Set the app to £, import a USD
+   sale, confirm it is *excluded* from the quarter and named in the warning; set
+   a rate; confirm it counts, the banner clears, and the row reads "converted
+   from $X". Then change the app currency and confirm the rate correctly reads as
+   unset again rather than being reused.
+5. **Product → offer matching.** Needs quick offers to exist first — **no
+   account has a single one**, so set some up, then match a product, save, and
+   confirm the imported sales move into that offer's row in the revenue
+   breakdown and add up with hand-logged sales rather than sitting beside them.
+   Then confirm the card stays away, and comes back when a new product appears.
+6. **A real PayPal sale.** The exclusion half is proven on live data (24
+   transactions, none imported, all correctly). The positive half is not: the
+   31-day windowing, the T00xx/T11xx filter and the refund matching have never
+   met an actual sale. Check the figures against PayPal's own dashboard.
+7. **The AI Executive Report does not survive closing the modal.** `lastAiReport`
+   is session-scoped while the tooltip says the write-up is included — true in
+   the session that generated it, silently not true afterwards. Confirm the gap,
+   then decide whether to fix it or change the tooltip.
+
+**Copy that may be lying**
+
+8. **The PayPal Account card tells users to create a read-only app.** If a
+   genuinely read-only PayPal app turns out to be impossible (two attempts have
+   failed to save), that copy is instructing people to do something that does not
+   work and must change. This is a copy fix waiting on an answer, not a test.
+9. **Emailing the branded report** is deliberately not built, and is cheaper than
+   first planned — a link in an event property rather than an attachment. It
+   needs the digest workflow proven in the wild first.
+
+**Settings**
+
+10. **Saving Settings, on an account with a blank profile.** Fixed 19 Aug 2026
+    (v89) after Jen hit it live: seven `required` attributes meant **6 of the 11
+    accounts with data could not save Settings at all** — not the field being
+    edited, anything. Re-check on one of the five accounts with a blank name that
+    every section saves, including the new exchange rates.
+
 ### ✅ 1. TRIALS NEVER END — FIXED 19 Aug 2026
 
 **Was:** every account was on a free trial that never expired, so nobody had ever
@@ -1519,12 +1581,34 @@ the reader to push v76. Corrected here so nobody acts on it again; the underlyin
 lesson is the one this file keeps relearning, which is that a "next session" note
 rots faster than anything else in the document.
 
+### ⚠️ Fixed 19 Aug 2026 (v89): Settings could not be saved at all
+
+Found live, by Jen, trying to change the currency from $ to £. She got a native
+browser tooltip reading "Please fill in this field", pointing at a field far above
+the fold and half-hidden behind the sticky nav, and nothing saved.
+
+Seven inputs on the Settings form carried `required` — name, business name, focus,
+outcome, priority 1 and the two goals. Against the live data that meant **6 of the
+11 accounts with stored data could not save Settings at all.** Not the field they
+were editing: *anything*. Five accounts have a blank `profile.name` and
+`businessName`, Jen's among them.
+
+`required` belongs in the wizard, which is setup, and it is still there — 21 of
+them. Settings is an EDIT screen, and empty is a state the whole app already
+handles: every read is `|| ''` or `|| 0` and every consumer has a fallback. So the
+attribute never protected any data. It only blocked people, silently, and worst of
+all for exactly the users it was meant to prompt, since they could not save
+anything at all.
+
+Pre-existing and unrelated to the currency or product-matching work — but it also
+blocked the new exchange-rate inputs, which is how it surfaced.
+
 ### What is actually left, in the order it is worth doing
 
 1. ~~**Currency handling for imported sales**~~ ✅ **Done 19 Aug 2026** — see
    "Pro item 1, sub-item 3" below for what shipped.
-2. **Product to offer matching** — Pro item 1, sub-item 2. Not built. One-time
-   friction by design; low stakes next to the above.
+2. ~~**Product to offer matching**~~ ✅ **Done 19 Aug 2026** — see "Pro item 1,
+   sub-item 2" below.
 3. **Persist generated AI reports.** `lastAiReport` is session-scoped, so the
    branded report loses its AI write-up once the modal is closed — while the
    tooltip still says the write-up is included. Roughly 30 lines, no new
@@ -1695,7 +1779,91 @@ The product name lives on the **invoice line items** (subscriptions) or the
 being captured for exactly this. Resolve the name from there, fall back to
 `description`, then to "Stripe sale".
 
-### 2. One-time product → offer matching
+### 2. One-time product → offer matching ✅ DONE 19 Aug 2026, bundle v88
+
+Built to the spec below, with one change forced by the live data. What shipped:
+
+**The mapping helpers live in [js/importedSales.js](js/importedSales.js)** —
+`productKeyFor()`, `applyProductOffer()`, `importedProducts()`,
+`unmatchedProducts()`. No new file: product identity is an imported-sales
+concept, and `store.js` already imports from there.
+
+**⚠️ The product id cannot be the key, and the live data is why.** The spec
+assumed Stripe products. On the first real account **six of the eight imported
+rows have `product_id = null`** — they came through the third-party checkout
+platform sitting on top of Stripe (the `ca_HMR7Te…` one), which raises charges
+with no Stripe product behind them. Keying on the id alone would have left three
+quarters of the real data unmatchable while looking perfectly correct in review.
+
+So `productKeyFor()` falls back to the product **name**, lowercased, namespaced
+by processor:
+
+```
+stripe:id:prod_UUEG0EkBHYzWhv
+stripe:name:payment to the women's entrepreneurial network
+```
+
+Lowercased because a product differing only in capitalisation is the same
+product, and two keys for it would split one offer's revenue across two rows —
+the exact failure this feature exists to prevent. Namespaced because two
+processors can issue ids in the same shape. An entry with neither id nor name
+returns `null` and is never matched or offered: better to leave a sale under its
+raw name than to invent an identity a later import might reuse.
+
+**`settings.productOffers`** holds `{ key: 'offer name' }`, applied at **read
+time** in `mergeImportedSales()`, immediately after the currency conversion.
+Never written into the imported rows — those belong to the processor, and a
+re-import would silently undo the user's choices.
+
+**"Keep as is" stores an empty string rather than deleting the key.** That is
+what makes the card go away: `unmatchedProducts()` asks whether the mapping *has*
+an entry, not whether it has a name. A "have we shown this yet" flag would have
+to be reset by hand and would eventually be wrong; asking the mapping means the
+card reappears on its own the day a new product shows up, and never otherwise.
+
+**The card is on Account**, under Connected accounts — you meet it right after
+connecting a processor, which is when the products exist. A dropdown of the
+user's **existing** offers, deliberately not free text: the whole point is that
+imported sales group with hand-logged ones, and free text invites "CEO planner"
+beside "CEO Planner", which is two rows in every breakdown for one offer with no
+way to notice.
+
+**⚠️ Nobody has any quick offers.** Not one of the 13 accounts has a single one
+saved, so "no offers to map onto" is not an edge case — it is the state every
+user is in today, and the first thing most people will see. That state gets its
+own card explaining the problem and linking to `#/revenue`, rather than an empty
+dropdown or a silently hidden section.
+
+Also fixed on the way: `product_id` and `product_name` were being **selected from
+the database and then dropped** by `toEntryShape()` — the same shape of mistake
+that had lost `currency` the session before. Both are now carried through.
+
+#### Verified
+
+**57 assertions** in node against the real functions, put through the same
+transform `build_bundle.ps1` applies.
+
+- 26 on identity and mapping: id preferred over name, name fallback,
+  case-insensitivity, processor namespacing, non-colliding ids across
+  processors, unkeyable entries, "keep as is", whitespace-only names and
+  mappings, and that nothing is ever mutated. Reproduced **the real 6-of-8
+  id-less shape** and checked both products are found and keyed correctly.
+- 11 through `getRevenueInsights()`: unmapped leaves two separate offer rows;
+  mapped makes imported and hand-logged **add up together** (34 + 50 = 84);
+  the id-less product maps too; totals and source grouping are undisturbed by a
+  rename; and the interaction with the currency rule — an unrated sale still
+  counts zero when mapped, still reports as needing a rate, and converts *and*
+  renames once a rate exists.
+- 20 on the card: hidden when nothing is imported, the no-offers state and its
+  link, one row per **product** not per sale, counts and values, singular vs
+  plural, every quick offer selectable, the `data-key` the save handler reads,
+  choices remembered including "keep as is", "1 new product" when one appears —
+  and that a product name coming from a processor **cannot inject markup**,
+  neither in the label nor in the `data-key` built from it.
+
+Bundle `node --check`ed, v88, both trees synced and hash-verified.
+
+#### The original spec, kept
 
 On first import, Account shows "We found N products in your Stripe — match them to
 your offers", pre-filled with the real Stripe names, one dropdown each mapping to

@@ -9,11 +9,13 @@
 // details, and erasing everything. Settings keeps the business profile, goals,
 // strategy mode and reminders, all of which feed the AI rather than the account.
 import { renderNav, signOutAndClear } from '../components/nav.js';
-import { showToast, showConfirm } from '../components/toast.js';
+import { getStore, updateSettings, formatAmount } from '../store.js';
+import { showToast, showConfirm, rerenderScreen } from '../components/toast.js';
 import { PRO_FEATURES, PRO_FEATURE_KEYS, baseFeatures, getPlanTier, isProUser, isProTrial, trialTimeLeftPhrase, isFeatureLive, proBadge, planPricing, aiDailyAllowance, AI_DAILY_LIMITS, getAiAllowanceToday, fetchAiAllowance } from '../components/proGate.js';
 import { fetchStripeConnection, connectStripeKey, disconnectStripe, syncStripeSales, canConnectStripe, STRIPE_KEY_PAGE } from '../stripeImport.js';
 import { fetchPayPalConnection, connectPayPalApp, disconnectPayPal, syncPayPalSales, canConnectPayPal, PAYPAL_APP_PAGE } from '../paypalImport.js';
-import { refreshImportedSales, countImportedFrom } from '../importedSales.js';
+import { refreshImportedSales, countImportedFrom, getImportedSalesCache, importedProducts, unmatchedProducts } from '../importedSales.js';
+import { escapeText } from '../liveAI.js';
 import { openBillingPortal, canUpgradeToPro, watchForPlanChange } from '../stripePortal.js';
 
 const TICK_SVG = `<svg class="plan-feature-mark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
@@ -34,6 +36,7 @@ export function renderAccount() {
     ${renderPlanCard()}
     ${renderAiUsageCard()}
     ${renderConnectionsCard()}
+    ${renderProductMatchCard()}
     ${renderBillingCard()}
     ${renderLoginCard()}
     ${renderDangerCard()}
@@ -174,6 +177,107 @@ async function portalOnClick(button, busyLabel, intent) {
         button.disabled = false;
         button.textContent = original;
     }
+}
+
+// "We found N products — match them to your offers."
+//
+// The friction here is acceptable in a way per-sale friction never would be: the
+// user names PRODUCTS, a handful of them, once. Sales never stop arriving;
+// products barely change. So the cost does not grow with use.
+//
+// It appears on first import, disappears once every product has been decided
+// about, and comes back on its own the day a new product shows up — because
+// `unmatchedProducts()` asks the mapping, not a "have we shown this yet" flag.
+// A flag would have to be reset by hand and would eventually be wrong.
+//
+// Deliberately a dropdown of the user's EXISTING offers rather than a free-text
+// box. The entire point is that imported sales group with hand-logged ones, and
+// free text invites "CEO planner" beside "CEO Planner" — two rows in every
+// breakdown, for one offer, and no way to tell it has happened.
+function renderProductMatchCard() {
+    const store = getStore();
+    const mapping = store.settings?.productOffers || {};
+    const products = importedProducts(getImportedSalesCache());
+    if (products.length === 0) return '';
+
+    const offers = (store.revenue?.quickOffers || []).filter(o => o && String(o.name || '').trim());
+    const pending = unmatchedProducts(getImportedSalesCache(), mapping);
+    const currency = store.settings?.currency || '$';
+
+    // No offers to map onto. Currently the state EVERY account is in — not one
+    // of the 13 has a single quick offer saved — so this is the first thing most
+    // people will see here, and it has to be a useful sentence rather than an
+    // empty dropdown.
+    if (offers.length === 0) {
+        return `
+        <div class="card mb-6">
+            ${productMatchHeading(products.length)}
+            <p style="color: var(--color-text-muted); font-size: 0.875rem; line-height: 1.6; margin-bottom: 1rem;">
+                Right now they are filed under whatever your payment processor calls them,
+                which is usually not what you call them. Set up your offers first and you can
+                match them here, so your imported sales and the ones you log by hand add up
+                together instead of sitting in separate rows.
+            </p>
+            <a href="#/revenue" class="btn btn-outline btn-sm" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">
+                Set up my offers
+            </a>
+        </div>
+        `;
+    }
+
+    const rows = products.map(p => {
+        const chosen = mapping[p.key];
+        const decided = typeof chosen === 'string';
+        const options = offers.map(o =>
+            `<option value="${escapeText(o.name)}" ${chosen === o.name ? 'selected' : ''}>${escapeText(o.name)}</option>`
+        ).join('');
+
+        return `
+            <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;padding:0.75rem 0;border-bottom:1px solid var(--color-border);">
+                <div style="flex:1 1 200px;min-width:0;">
+                    <span style="font-weight:600;color:var(--color-black);display:block;overflow-wrap:anywhere;">${escapeText(p.label)}</span>
+                    <span style="font-size:0.8rem;color:var(--color-text-muted);">
+                        ${p.sourceLabel} • ${p.count} ${p.count === 1 ? 'sale' : 'sales'} • ${currency}${formatAmount(p.total)}
+                    </span>
+                </div>
+                <select class="form-select product-offer-select" data-key="${escapeText(p.key)}" style="flex:0 1 220px;min-width:180px;">
+                    <option value="" ${decided && chosen === '' ? 'selected' : ''}>Keep as is</option>
+                    ${options}
+                </select>
+            </div>
+        `;
+    }).join('');
+
+    const intro = pending.length === products.length
+        ? `We found ${products.length} ${products.length === 1 ? 'product' : 'products'} in your imported sales. Match each one to an offer of yours and it will be counted under your name for it, in every breakdown and every report.`
+        : (pending.length > 0
+            ? `${pending.length} new ${pending.length === 1 ? 'product' : 'products'} since you last looked. Everything else is already matched.`
+            : `All matched. Change any of these whenever you like — it applies to sales already imported, not just new ones.`);
+
+    return `
+    <div class="card mb-6">
+        ${productMatchHeading(products.length)}
+        <p style="color: var(--color-text-muted); font-size: 0.875rem; line-height: 1.6; margin-bottom: 0.5rem;">
+            ${intro}
+        </p>
+        ${rows}
+        <button type="button" id="btn-save-product-offers" class="btn btn-primary btn-sm" style="margin-top:1.25rem;font-weight:600;">
+            Save matches
+        </button>
+        <p style="font-size:0.75rem;color:var(--color-text-muted);margin:0.75rem 0 0;line-height:1.5;">
+            "Keep as is" leaves the processor's own name on it, and stops us asking again.
+        </p>
+    </div>
+    `;
+}
+
+function productMatchHeading(count) {
+    return `
+        <h3 class="mb-2" style="display: flex; align-items: center; gap: 0.5rem; color: var(--color-black);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg>
+            What you sold
+        </h3>
+    `;
 }
 
 // Connected payment processors, for Pro item 1.
@@ -1007,6 +1111,20 @@ async function paintPayPalConnection() {
 }
 
 function accountAttachEvents() {
+    // "What you sold" is built from the imported-sales cache, and on a cold load
+    // straight to #/account that cache is empty — so the card would be invisible
+    // exactly when it matters most, right after someone connects a processor and
+    // lands back here.
+    //
+    // The two paints below refresh the cache too, but they only repaint their own
+    // panel, so they would fill the cache without ever showing this card. Same
+    // re-render guard as the Revenue and Settings screens: only repaint when the
+    // count actually changed, or rerenderScreen would loop through attachEvents.
+    const importedCountAtRender = getImportedSalesCache().length;
+    refreshImportedSales().then(sales => {
+        if (sales.length !== importedCountAtRender) rerenderScreen();
+    }).catch(() => { /* the rest of the screen works without it */ });
+
     paintStripeConnection();
     // Each paint is independent and each no-ops when its panel isn't on screen,
     // so an account with only one processor visible costs only that one lookup.
@@ -1052,6 +1170,35 @@ function accountAttachEvents() {
     const btnUpgrade = document.getElementById('btn-upgrade-pro');
     if (btnUpgrade) {
         btnUpgrade.addEventListener('click', () => portalOnClick(btnUpgrade, 'Opening…', 'upgrade'));
+    }
+
+    // Saving every dropdown at once, including the ones left on "Keep as is".
+    //
+    // That is the point of the button: pressing it is the user saying "I have
+    // looked at this list", which is what stops the card asking again. Saving
+    // each select on change instead would leave anything untouched looking
+    // undecided forever, and the card would never go away.
+    const btnSaveOffers = document.getElementById('btn-save-product-offers');
+    if (btnSaveOffers) {
+        btnSaveOffers.addEventListener('click', () => {
+            const selects = Array.from(document.querySelectorAll('.product-offer-select'));
+            if (!selects.length) return;
+
+            // Merged onto what is already stored, not replacing it. A product
+            // that stops appearing in the imported sales — an offer retired last
+            // year, or a row that fell outside the import window — is not on
+            // screen to be re-selected, and rebuilding the map from the visible
+            // rows alone would quietly forget it.
+            const productOffers = { ...(getStore().settings?.productOffers || {}) };
+            selects.forEach(sel => {
+                const key = sel.dataset.key;
+                if (key) productOffers[key] = sel.value;
+            });
+
+            updateSettings({ productOffers });
+            showToast('Saved. Your imported sales now count under your own offer names.', 'success');
+            rerenderScreen();
+        });
     }
 
     // Same flow as "forgot password" on the login screen: Supabase emails a link

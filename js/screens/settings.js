@@ -70,6 +70,25 @@ function renderConversionRates(store) {
     `;
 }
 
+// ⚠️ NOTHING ON THIS FORM IS `required`. Do not put it back.
+//
+// Seven inputs carried `required` — name, business name, focus, outcome,
+// priority 1, and the two goals — and the effect was that **six of the eleven
+// accounts with data could not save Settings at all**. Not the field they were
+// editing: *anything*. Change your currency, press Save, and the browser refuses
+// the whole submit because a field you have never filled in, somewhere else on a
+// very long page, is empty.
+//
+// Found 19 Aug 2026 when Jen tried to switch from $ to £ and got "Please fill in
+// this field" — a native tooltip pointing at "Your Name", far above the fold and
+// half-hidden behind the sticky nav. Her profile name and business name were
+// both blank, as they are on five accounts.
+//
+// `required` belongs in the wizard, which is setup. This is an EDIT screen, and
+// empty is a state the whole app already handles: every read here is `|| ''` or
+// `|| 0`, and every consumer has a fallback. So the attribute never protected
+// any data — it only ever blocked people, silently, and worst for exactly the
+// users it was meant to prompt, since they could not save anything at all.
 export function renderSettings() {
     // We bind the event listeners after HTML is rendered using setScreenModule
     window.setScreenModule({ attachEvents: settingsAttachEvents });
@@ -112,11 +131,11 @@ export function renderSettings() {
             
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Your Name</label>
-                <input type="text" id="set-name" class="form-input" value="${store.profile.name || ''}" required>
+                <input type="text" id="set-name" class="form-input" value="${store.profile.name || ''}">
             </div>
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Business Name</label>
-                <input type="text" id="set-biz" class="form-input" value="${store.profile.businessName || ''}" required>
+                <input type="text" id="set-biz" class="form-input" value="${store.profile.businessName || ''}">
             </div>
             
             <div class="form-group mb-4">
@@ -205,11 +224,11 @@ export function renderSettings() {
             
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Main Focus</label>
-                <input type="text" id="set-focus" class="form-input" value="${store.goals.focus || ''}" placeholder="e.g. Launch new coaching program" required>
+                <input type="text" id="set-focus" class="form-input" value="${store.goals.focus || ''}" placeholder="e.g. Launch new coaching program">
             </div>
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Measurable Outcome</label>
-                <input type="text" id="set-outcome" class="form-input" value="${store.goals.outcome || ''}" placeholder="e.g. 10 beta clients at $1.5k" required>
+                <input type="text" id="set-outcome" class="form-input" value="${store.goals.outcome || ''}" placeholder="e.g. 10 beta clients at $1.5k">
             </div>
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Currency</label>
@@ -223,12 +242,12 @@ export function renderSettings() {
                 <label class="form-label" style="font-weight: 600;">Quarterly Revenue Goal</label>
                 <div style="position: relative; display: flex; align-items: center;">
                     <span style="position: absolute; left: 1rem; z-index: 1; font-weight: 600; color: var(--color-text-muted);">${store.settings?.currency || '$'}</span>
-                    <input type="number" id="set-revenue-goal" class="form-input" value="${store.revenue?.quarterlyGoal || 0}" min="0" required style="padding-left: 2rem;">
+                    <input type="number" id="set-revenue-goal" class="form-input" value="${store.revenue?.quarterlyGoal || 0}" min="0" style="padding-left: 2rem;">
                 </div>
             </div>
             <div class="form-group mb-4">
                 <label class="form-label" style="font-weight: 600;">Quarterly Lead Goal</label>
-                <input type="number" id="set-lead-goal" class="form-input" value="${store.leads?.quarterlyGoal || 0}" min="0" required>
+                <input type="number" id="set-lead-goal" class="form-input" value="${store.leads?.quarterlyGoal || 0}" min="0">
             </div>
             <!-- Only settable in the onboarding wizard until now, so anyone who
                  skipped past it or priced differently since had no way to correct
@@ -244,7 +263,7 @@ export function renderSettings() {
             
             <div class="form-group mb-0">
                 <label class="form-label" style="font-weight: 600;">Top 3 Priorities</label>
-                <input type="text" id="set-p1" class="form-input mb-2" value="${store.goals.priorities?.[0] || ''}" placeholder="Priority 1" required>
+                <input type="text" id="set-p1" class="form-input mb-2" value="${store.goals.priorities?.[0] || ''}" placeholder="Priority 1">
                 <input type="text" id="set-p2" class="form-input mb-2" value="${store.goals.priorities?.[1] || ''}" placeholder="Priority 2">
                 <input type="text" id="set-p3" class="form-input" value="${store.goals.priorities?.[2] || ''}" placeholder="Priority 3">
             </div>
