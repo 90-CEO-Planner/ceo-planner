@@ -1,4 +1,5 @@
-import { getStore, addWeeklyPlan, updateWeeklyPlan, getRevenueInsights, clearDraftMondayPlan, getLocalDateString, updateDailyLog, planSourceKey, stripDayLabel } from '../store.js';
+import { getStore, addWeeklyPlan, updateWeeklyPlan, getRevenueInsights, clearDraftMondayPlan, getLocalDateString, updateDailyLog, planSourceKey, stripDayLabel, stripPriorityLabels } from '../store.js';
+import { escapeText } from '../liveAI.js';
 
 let mondayStep = 1;
 const MONDAY_TOTAL_STEPS = 5;
@@ -19,10 +20,13 @@ export function renderMondayPlan() {
     if (store.draftMondayPlan && !mondayPlanData.loadedFromDraft) {
         mondayPlanData.weeklyFocus = store.draftMondayPlan.weeklyFocus || '';
         if (store.draftMondayPlan.priorities) {
+            // Plans generated before v99 carry "Task:"/"Execution:" labels the
+            // prompt had banned and the model wrote anyway. Cleaned on read so
+            // existing plans come out tidy, not just new ones.
             mondayPlanData.priorities = [
-                store.draftMondayPlan.priorities[0] || '',
-                store.draftMondayPlan.priorities[1] || '',
-                store.draftMondayPlan.priorities[2] || ''
+                stripPriorityLabels(store.draftMondayPlan.priorities[0] || ''),
+                stripPriorityLabels(store.draftMondayPlan.priorities[1] || ''),
+                stripPriorityLabels(store.draftMondayPlan.priorities[2] || '')
             ];
         }
         mondayPlanData.revenueAction = store.draftMondayPlan.revenueAction || '';
@@ -36,9 +40,9 @@ export function renderMondayPlan() {
             mondayPlanData.weeklyFocus = nextGenPlan.winCondition || '';
             if (nextGenPlan.topActions) {
                 mondayPlanData.priorities = [
-                    nextGenPlan.topActions[0] || '',
-                    nextGenPlan.topActions[1] || '',
-                    nextGenPlan.topActions[2] || ''
+                    stripPriorityLabels(nextGenPlan.topActions[0] || ''),
+                    stripPriorityLabels(nextGenPlan.topActions[1] || ''),
+                    stripPriorityLabels(nextGenPlan.topActions[2] || '')
                 ];
             }
             mondayPlanData.revenueAction = nextGenPlan.revenueAction || '';
@@ -112,15 +116,15 @@ export function renderMondayPlan() {
                     <div style="display: flex; flex-direction: column; gap: 1rem;">
                         <div style="position: relative;">
                             <span style="position: absolute; left: 1rem; top: 1rem; z-index: 1; color: #F2C21D; font-weight: bold; font-size: 1.1rem;">1.</span>
-                            <input type="text" id="w-p1" class="form-input" style="padding: 1rem 1rem 1rem 2.5rem; font-size: 1.05rem; border-radius: 8px;" placeholder="Priority One" value="${mondayPlanData.priorities[0]}" required autocomplete="off"/>
+                            <textarea id="w-p1" class="form-input" style="padding: 1rem 1rem 1rem 2.5rem; font-size: 1.05rem; border-radius: 8px; min-height: 80px; resize: vertical; font-family: inherit; line-height: 1.5;" placeholder="Priority One" required autocomplete="off">${escapeText(mondayPlanData.priorities[0])}</textarea>
                         </div>
                         <div style="position: relative;">
                             <span style="position: absolute; left: 1rem; top: 1rem; z-index: 1; color: #F2C21D; font-weight: bold; font-size: 1.1rem;">2.</span>
-                            <input type="text" id="w-p2" class="form-input" style="padding: 1rem 1rem 1rem 2.5rem; font-size: 1.05rem; border-radius: 8px;" placeholder="Priority Two" value="${mondayPlanData.priorities[1]}" required autocomplete="off"/>
+                            <textarea id="w-p2" class="form-input" style="padding: 1rem 1rem 1rem 2.5rem; font-size: 1.05rem; border-radius: 8px; min-height: 80px; resize: vertical; font-family: inherit; line-height: 1.5;" placeholder="Priority Two" required autocomplete="off">${escapeText(mondayPlanData.priorities[1])}</textarea>
                         </div>
                         <div style="position: relative;">
                             <span style="position: absolute; left: 1rem; top: 1rem; z-index: 1; color: #F2C21D; font-weight: bold; font-size: 1.1rem;">3.</span>
-                            <input type="text" id="w-p3" class="form-input" style="padding: 1rem 1rem 1rem 2.5rem; font-size: 1.05rem; border-radius: 8px;" placeholder="Priority Three" value="${mondayPlanData.priorities[2]}" required autocomplete="off"/>
+                            <textarea id="w-p3" class="form-input" style="padding: 1rem 1rem 1rem 2.5rem; font-size: 1.05rem; border-radius: 8px; min-height: 80px; resize: vertical; font-family: inherit; line-height: 1.5;" placeholder="Priority Three" required autocomplete="off">${escapeText(mondayPlanData.priorities[2])}</textarea>
                         </div>
                     </div>
                     

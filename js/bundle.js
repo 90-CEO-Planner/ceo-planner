@@ -3101,6 +3101,38 @@ function stripDayLabel(task) {
     return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
 }
 
+// Strips the scaffolding labels out of a generated priority.
+//
+// The plan prompt banned "Task:" and "Execution:" and the model wrote them
+// anyway: "Task: Define service offerings. Execution: List 3-5 core services..."
+// A rule the model ignores is not a rule, so the app removes them instead of
+// asking twice.
+//
+// The two-part shape is deliberately KEPT — an action, then how to do it. Only
+// the labels go, because the sentence break already separates the two, and this
+// text lands in an editable box, travels into the coach's context, the CSV and
+// the branded report, where a label reads like a form.
+//
+// A label only counts at the start of a sentence, so "Decide how: many to make"
+// mid-sentence survives — over-stripping someone's own words is worse than
+// leaving a stray label.
+const PRIORITY_LABEL = /(^|[.!?]\s+)(?:task|execution|action|what|how|step)\s*[:\-–—]\s*/gi;
+
+function stripPriorityLabels(text) {
+    if (typeof text !== 'string') return text;
+    const cleaned = text.replace(PRIORITY_LABEL, '$1').replace(/\s{2,}/g, ' ').trim()
+        // Removing a label mid-string leaves the sentence it introduced starting
+        // in lower case: "Post the reel. film it on your phone".
+        .replace(/([.!?]\s+)([a-z])/g, (m, sep, ch) => sep + ch.toUpperCase());
+    if (cleaned === '') return text.trim();
+    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
+function cleanPriorities(list) {
+    if (!Array.isArray(list)) return list;
+    return list.map(stripPriorityLabels);
+}
+
 function cleanDaily3(list) {
     if (!Array.isArray(list)) return list;
     return list.map(stripDayLabel);
@@ -3139,7 +3171,7 @@ function applyGeneratedPlan(plan) {
             weekNumber: w.weekNumber,
             monthIndex: w.monthIndex,
             winCondition: w.weeklyFocus,
-            topActions: w.topPriorities,
+            topActions: cleanPriorities(w.topPriorities),
             visibilityAction: w.visibilityAction,
             revenueAction: w.revenueAction,
             followUps: w.followUpAction,
@@ -3198,7 +3230,7 @@ function replaceGeneratedWeek(planId, week) {
     store.weeklyPlans[idx] = {
         ...existing,
         winCondition: week.weeklyFocus,
-        topActions: week.topPriorities,
+        topActions: cleanPriorities(week.topPriorities),
         visibilityAction: week.visibilityAction,
         revenueAction: week.revenueAction,
         followUps: week.followUpAction,
@@ -4211,7 +4243,7 @@ RULES (apply all of them):
 8. Write in their voice: warm, direct, specific, no hype, no jargon. The user is a tired founder reading this on their phone.
 10. The 'successCheck' for each week MUST be highly realistic and grounded based on the user's stage. Do NOT set unattainable lag-metric checks (e.g., "10 new sales" or "50 signups" for a beginner). Instead, tie the check to the completion of the week's input actions (e.g., "Drafted 3 emails" or "Pitched 5 people").
 11. NEVER recommend tools they did not mention. NEVER assume budget or team. Default to "free or already-owned" tools.
-12. Keep each topPriorities entry under 70 characters. They are rendered in single-line inputs on the weekly planner, so anything longer is cut off mid-sentence and the user cannot read their own priorities. One action per entry, no "Task:"/"Execution:" labels, no semicolons joining two actions.
+12. Write each topPriorities entry as TWO sentences and nothing else: the action, then how to do it. "Define service offerings. List 3-5 core services with detailed descriptions and pricing." No labels of any kind in front of either half — not "Task:", "Execution:", "What:", "How:" or "Step 1:". The full stop already separates them, and this text goes into a box the user edits, so a label is scaffolding she has to delete by hand. One action per entry, no semicolons joining two unrelated actions, and keep the whole thing under 160 characters.
 13. dailyThree entries carry NO day names and no labels of any kind. Never write "Mon-Tue:", "Monday –", "Day 1" or anything like it. The app decides which day each task lands on, and it puts all three in front of the user on the same day, so a task labelled Wednesday contradicts the screen it is sitting on.
 14. Output JSON only. No markdown, no code fences, no prose before or after.
 OUTPUT FORMAT (return exactly this JSON shape):
@@ -4236,9 +4268,9 @@ OUTPUT FORMAT (return exactly this JSON shape):
       "monthIndex": 1,
       "weeklyFocus": "One sentence focus for the week, tied to monthly theme.",
       "topPriorities": [
-        "[One specific action, max 70 characters, no 'Task:' or 'Execution:' prefix]",
-        "[One specific action, max 70 characters, no 'Task:' or 'Execution:' prefix]",
-        "[One specific action, max 70 characters, no 'Task:' or 'Execution:' prefix]"
+        "[The action. Then how to do it. Two sentences, no labels, under 160 characters]",
+        "[The action. Then how to do it. Two sentences, no labels, under 160 characters]",
+        "[The action. Then how to do it. Two sentences, no labels, under 160 characters]"
       ],
       "visibilityAction": "ONE specific visibility task this week (audience-facing, no sale).",
       "revenueAction": "ONE specific revenue task this week (a direct invitation to buy).",
@@ -4365,7 +4397,7 @@ RULES (apply all of them):
 5. Respect where the quarter actually is. Week ${weekNumber} of 12 with ${currency}${(insights.totalRevenue || 0).toLocaleString()} logged is not week one; do not send them back to foundations they have already built, and do not set a target the remaining weeks cannot carry.
 6. Tie every action to their #1 bottleneck or their 90-Day Outcome. Generic tasks ("post on social media") are forbidden.
 7. Match intensity to their stage. A tired founder is reading this on their phone. Warm, direct, specific, no hype, no jargon.
-8. Keep each topPriorities entry under 70 characters. They render in single-line inputs and anything longer is cut off mid-sentence. One action per entry, no "Task:"/"Execution:" labels, no semicolons joining two actions.
+8. Write each topPriorities entry as TWO sentences and nothing else: the action, then how to do it. "Define service offerings. List 3-5 core services with detailed descriptions and pricing." No labels in front of either half — not "Task:", "Execution:", "What:", "How:" or "Step 1:". One action per entry, no semicolons joining two unrelated actions, under 160 characters.
 8b. dailyThree entries carry NO day names and no labels of any kind. Never write "Mon-Tue:", "Monday –", "Day 1" or anything like it. The app decides which day each task lands on, and it puts all three in front of the user on the same day, so a task labelled Wednesday contradicts the screen it is sitting on.
 9. The successCheck must be realistic for their stage and tied to completing this week's actions, not to a lag metric they cannot control.
 10. Never recommend tools they did not mention. Never assume budget or team.
@@ -4377,9 +4409,9 @@ OUTPUT FORMAT (return exactly this JSON shape, one object, not an array):
   "monthIndex": ${monthIndex},
   "weeklyFocus": "One sentence focus for the week, tied to the monthly theme.",
   "topPriorities": [
-    "[One specific action, max 70 characters]",
-    "[One specific action, max 70 characters]",
-    "[One specific action, max 70 characters]"
+    "[The action. Then how to do it. Two sentences, no labels, under 160 characters]",
+    "[The action. Then how to do it. Two sentences, no labels, under 160 characters]",
+    "[The action. Then how to do it. Two sentences, no labels, under 160 characters]"
   ],
   "visibilityAction": "ONE specific visibility task this week (audience-facing, no sale).",
   "revenueAction": "ONE specific revenue task this week (a direct invitation to buy).",
@@ -9711,9 +9743,9 @@ function renderPlanner() {
     const currentMilestone = store.goals?.milestones?.[`month${currentMonthInQuarter}`] || 'Not set';
 
     const win = activePlan ? activePlan.winCondition : (nextGeneratedPlan ? nextGeneratedPlan.winCondition : '');
-    const p1 = activePlan && activePlan.topActions ? (activePlan.topActions[0] || '') : (nextGeneratedPlan && nextGeneratedPlan.topActions ? nextGeneratedPlan.topActions[0] : (store.goals?.priorities?.[0] || ''));
-    const p2 = activePlan && activePlan.topActions ? (activePlan.topActions[1] || '') : (nextGeneratedPlan && nextGeneratedPlan.topActions ? nextGeneratedPlan.topActions[1] : (store.goals?.priorities?.[1] || ''));
-    const p3 = activePlan && activePlan.topActions ? (activePlan.topActions[2] || '') : (nextGeneratedPlan && nextGeneratedPlan.topActions ? nextGeneratedPlan.topActions[2] : (store.goals?.priorities?.[2] || ''));
+    const p1 = stripPriorityLabels(activePlan && activePlan.topActions ? (activePlan.topActions[0] || '') : (nextGeneratedPlan && nextGeneratedPlan.topActions ? nextGeneratedPlan.topActions[0] : (store.goals?.priorities?.[0] || '')));
+    const p2 = stripPriorityLabels(activePlan && activePlan.topActions ? (activePlan.topActions[1] || '') : (nextGeneratedPlan && nextGeneratedPlan.topActions ? nextGeneratedPlan.topActions[1] : (store.goals?.priorities?.[1] || '')));
+    const p3 = stripPriorityLabels(activePlan && activePlan.topActions ? (activePlan.topActions[2] || '') : (nextGeneratedPlan && nextGeneratedPlan.topActions ? nextGeneratedPlan.topActions[2] : (store.goals?.priorities?.[2] || '')));
     const rev = activePlan ? activePlan.revenueAction : (nextGeneratedPlan ? nextGeneratedPlan.revenueAction : '');
     const vis = activePlan ? activePlan.visibilityAction : (nextGeneratedPlan ? nextGeneratedPlan.visibilityAction : '');
     const fol = activePlan ? activePlan.followUps : (nextGeneratedPlan ? nextGeneratedPlan.followUps : '');
@@ -16425,10 +16457,13 @@ function renderMondayPlan() {
     if (store.draftMondayPlan && !mondayPlanData.loadedFromDraft) {
         mondayPlanData.weeklyFocus = store.draftMondayPlan.weeklyFocus || '';
         if (store.draftMondayPlan.priorities) {
+            // Plans generated before v99 carry "Task:"/"Execution:" labels the
+            // prompt had banned and the model wrote anyway. Cleaned on read so
+            // existing plans come out tidy, not just new ones.
             mondayPlanData.priorities = [
-                store.draftMondayPlan.priorities[0] || '',
-                store.draftMondayPlan.priorities[1] || '',
-                store.draftMondayPlan.priorities[2] || ''
+                stripPriorityLabels(store.draftMondayPlan.priorities[0] || ''),
+                stripPriorityLabels(store.draftMondayPlan.priorities[1] || ''),
+                stripPriorityLabels(store.draftMondayPlan.priorities[2] || '')
             ];
         }
         mondayPlanData.revenueAction = store.draftMondayPlan.revenueAction || '';
@@ -16442,9 +16477,9 @@ function renderMondayPlan() {
             mondayPlanData.weeklyFocus = nextGenPlan.winCondition || '';
             if (nextGenPlan.topActions) {
                 mondayPlanData.priorities = [
-                    nextGenPlan.topActions[0] || '',
-                    nextGenPlan.topActions[1] || '',
-                    nextGenPlan.topActions[2] || ''
+                    stripPriorityLabels(nextGenPlan.topActions[0] || ''),
+                    stripPriorityLabels(nextGenPlan.topActions[1] || ''),
+                    stripPriorityLabels(nextGenPlan.topActions[2] || '')
                 ];
             }
             mondayPlanData.revenueAction = nextGenPlan.revenueAction || '';
@@ -16518,15 +16553,15 @@ function renderMondayPlan() {
                     <div style="display: flex; flex-direction: column; gap: 1rem;">
                         <div style="position: relative;">
                             <span style="position: absolute; left: 1rem; top: 1rem; z-index: 1; color: #F2C21D; font-weight: bold; font-size: 1.1rem;">1.</span>
-                            <input type="text" id="w-p1" class="form-input" style="padding: 1rem 1rem 1rem 2.5rem; font-size: 1.05rem; border-radius: 8px;" placeholder="Priority One" value="${mondayPlanData.priorities[0]}" required autocomplete="off"/>
+                            <textarea id="w-p1" class="form-input" style="padding: 1rem 1rem 1rem 2.5rem; font-size: 1.05rem; border-radius: 8px; min-height: 80px; resize: vertical; font-family: inherit; line-height: 1.5;" placeholder="Priority One" required autocomplete="off">${escapeText(mondayPlanData.priorities[0])}</textarea>
                         </div>
                         <div style="position: relative;">
                             <span style="position: absolute; left: 1rem; top: 1rem; z-index: 1; color: #F2C21D; font-weight: bold; font-size: 1.1rem;">2.</span>
-                            <input type="text" id="w-p2" class="form-input" style="padding: 1rem 1rem 1rem 2.5rem; font-size: 1.05rem; border-radius: 8px;" placeholder="Priority Two" value="${mondayPlanData.priorities[1]}" required autocomplete="off"/>
+                            <textarea id="w-p2" class="form-input" style="padding: 1rem 1rem 1rem 2.5rem; font-size: 1.05rem; border-radius: 8px; min-height: 80px; resize: vertical; font-family: inherit; line-height: 1.5;" placeholder="Priority Two" required autocomplete="off">${escapeText(mondayPlanData.priorities[1])}</textarea>
                         </div>
                         <div style="position: relative;">
                             <span style="position: absolute; left: 1rem; top: 1rem; z-index: 1; color: #F2C21D; font-weight: bold; font-size: 1.1rem;">3.</span>
-                            <input type="text" id="w-p3" class="form-input" style="padding: 1rem 1rem 1rem 2.5rem; font-size: 1.05rem; border-radius: 8px;" placeholder="Priority Three" value="${mondayPlanData.priorities[2]}" required autocomplete="off"/>
+                            <textarea id="w-p3" class="form-input" style="padding: 1rem 1rem 1rem 2.5rem; font-size: 1.05rem; border-radius: 8px; min-height: 80px; resize: vertical; font-family: inherit; line-height: 1.5;" placeholder="Priority Three" required autocomplete="off">${escapeText(mondayPlanData.priorities[2])}</textarea>
                         </div>
                     </div>
                     

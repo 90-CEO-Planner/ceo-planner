@@ -327,7 +327,7 @@ RULES (apply all of them):
 8. Write in their voice: warm, direct, specific, no hype, no jargon. The user is a tired founder reading this on their phone.
 10. The 'successCheck' for each week MUST be highly realistic and grounded based on the user's stage. Do NOT set unattainable lag-metric checks (e.g., "10 new sales" or "50 signups" for a beginner). Instead, tie the check to the completion of the week's input actions (e.g., "Drafted 3 emails" or "Pitched 5 people").
 11. NEVER recommend tools they did not mention. NEVER assume budget or team. Default to "free or already-owned" tools.
-12. Keep each topPriorities entry under 70 characters. They are rendered in single-line inputs on the weekly planner, so anything longer is cut off mid-sentence and the user cannot read their own priorities. One action per entry, no "Task:"/"Execution:" labels, no semicolons joining two actions.
+12. Write each topPriorities entry as TWO sentences and nothing else: the action, then how to do it. "Define service offerings. List 3-5 core services with detailed descriptions and pricing." No labels of any kind in front of either half — not "Task:", "Execution:", "What:", "How:" or "Step 1:". The full stop already separates them, and this text goes into a box the user edits, so a label is scaffolding she has to delete by hand. One action per entry, no semicolons joining two unrelated actions, and keep the whole thing under 160 characters.
 13. dailyThree entries carry NO day names and no labels of any kind. Never write "Mon-Tue:", "Monday –", "Day 1" or anything like it. The app decides which day each task lands on, and it puts all three in front of the user on the same day, so a task labelled Wednesday contradicts the screen it is sitting on.
 14. Output JSON only. No markdown, no code fences, no prose before or after.
 OUTPUT FORMAT (return exactly this JSON shape):
@@ -352,9 +352,9 @@ OUTPUT FORMAT (return exactly this JSON shape):
       "monthIndex": 1,
       "weeklyFocus": "One sentence focus for the week, tied to monthly theme.",
       "topPriorities": [
-        "[One specific action, max 70 characters, no 'Task:' or 'Execution:' prefix]",
-        "[One specific action, max 70 characters, no 'Task:' or 'Execution:' prefix]",
-        "[One specific action, max 70 characters, no 'Task:' or 'Execution:' prefix]"
+        "[The action. Then how to do it. Two sentences, no labels, under 160 characters]",
+        "[The action. Then how to do it. Two sentences, no labels, under 160 characters]",
+        "[The action. Then how to do it. Two sentences, no labels, under 160 characters]"
       ],
       "visibilityAction": "ONE specific visibility task this week (audience-facing, no sale).",
       "revenueAction": "ONE specific revenue task this week (a direct invitation to buy).",
@@ -481,7 +481,7 @@ RULES (apply all of them):
 5. Respect where the quarter actually is. Week ${weekNumber} of 12 with ${currency}${(insights.totalRevenue || 0).toLocaleString()} logged is not week one; do not send them back to foundations they have already built, and do not set a target the remaining weeks cannot carry.
 6. Tie every action to their #1 bottleneck or their 90-Day Outcome. Generic tasks ("post on social media") are forbidden.
 7. Match intensity to their stage. A tired founder is reading this on their phone. Warm, direct, specific, no hype, no jargon.
-8. Keep each topPriorities entry under 70 characters. They render in single-line inputs and anything longer is cut off mid-sentence. One action per entry, no "Task:"/"Execution:" labels, no semicolons joining two actions.
+8. Write each topPriorities entry as TWO sentences and nothing else: the action, then how to do it. "Define service offerings. List 3-5 core services with detailed descriptions and pricing." No labels in front of either half — not "Task:", "Execution:", "What:", "How:" or "Step 1:". One action per entry, no semicolons joining two unrelated actions, under 160 characters.
 8b. dailyThree entries carry NO day names and no labels of any kind. Never write "Mon-Tue:", "Monday –", "Day 1" or anything like it. The app decides which day each task lands on, and it puts all three in front of the user on the same day, so a task labelled Wednesday contradicts the screen it is sitting on.
 9. The successCheck must be realistic for their stage and tied to completing this week's actions, not to a lag metric they cannot control.
 10. Never recommend tools they did not mention. Never assume budget or team.
@@ -493,9 +493,9 @@ OUTPUT FORMAT (return exactly this JSON shape, one object, not an array):
   "monthIndex": ${monthIndex},
   "weeklyFocus": "One sentence focus for the week, tied to the monthly theme.",
   "topPriorities": [
-    "[One specific action, max 70 characters]",
-    "[One specific action, max 70 characters]",
-    "[One specific action, max 70 characters]"
+    "[The action. Then how to do it. Two sentences, no labels, under 160 characters]",
+    "[The action. Then how to do it. Two sentences, no labels, under 160 characters]",
+    "[The action. Then how to do it. Two sentences, no labels, under 160 characters]"
   ],
   "visibilityAction": "ONE specific visibility task this week (audience-facing, no sale).",
   "revenueAction": "ONE specific revenue task this week (a direct invitation to buy).",

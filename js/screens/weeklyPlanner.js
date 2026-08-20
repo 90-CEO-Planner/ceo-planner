@@ -1,6 +1,6 @@
 // weeklyPlanner.js
 import { renderNav } from '../components/nav.js';
-import { getStore, saveStore, addWeeklyPlan, updateWeeklyPlan, getLocalDateString, getActivePlan } from '../store.js';
+import { getStore, saveStore, addWeeklyPlan, updateWeeklyPlan, getLocalDateString, getActivePlan, stripPriorityLabels } from '../store.js';
 import { showToast } from '../components/toast.js';
 import { proTeaser } from '../components/proGate.js';
 import { canUseLiveAI, getCachedLive, planSuggestionsFingerprint, hydratePlanSuggestions, liveAINote, escapeText } from '../liveAI.js';
@@ -26,9 +26,9 @@ export function renderPlanner() {
     const currentMilestone = store.goals?.milestones?.[`month${currentMonthInQuarter}`] || 'Not set';
 
     const win = activePlan ? activePlan.winCondition : (nextGeneratedPlan ? nextGeneratedPlan.winCondition : '');
-    const p1 = activePlan && activePlan.topActions ? (activePlan.topActions[0] || '') : (nextGeneratedPlan && nextGeneratedPlan.topActions ? nextGeneratedPlan.topActions[0] : (store.goals?.priorities?.[0] || ''));
-    const p2 = activePlan && activePlan.topActions ? (activePlan.topActions[1] || '') : (nextGeneratedPlan && nextGeneratedPlan.topActions ? nextGeneratedPlan.topActions[1] : (store.goals?.priorities?.[1] || ''));
-    const p3 = activePlan && activePlan.topActions ? (activePlan.topActions[2] || '') : (nextGeneratedPlan && nextGeneratedPlan.topActions ? nextGeneratedPlan.topActions[2] : (store.goals?.priorities?.[2] || ''));
+    const p1 = stripPriorityLabels(activePlan && activePlan.topActions ? (activePlan.topActions[0] || '') : (nextGeneratedPlan && nextGeneratedPlan.topActions ? nextGeneratedPlan.topActions[0] : (store.goals?.priorities?.[0] || '')));
+    const p2 = stripPriorityLabels(activePlan && activePlan.topActions ? (activePlan.topActions[1] || '') : (nextGeneratedPlan && nextGeneratedPlan.topActions ? nextGeneratedPlan.topActions[1] : (store.goals?.priorities?.[1] || '')));
+    const p3 = stripPriorityLabels(activePlan && activePlan.topActions ? (activePlan.topActions[2] || '') : (nextGeneratedPlan && nextGeneratedPlan.topActions ? nextGeneratedPlan.topActions[2] : (store.goals?.priorities?.[2] || '')));
     const rev = activePlan ? activePlan.revenueAction : (nextGeneratedPlan ? nextGeneratedPlan.revenueAction : '');
     const vis = activePlan ? activePlan.visibilityAction : (nextGeneratedPlan ? nextGeneratedPlan.visibilityAction : '');
     const fol = activePlan ? activePlan.followUps : (nextGeneratedPlan ? nextGeneratedPlan.followUps : '');

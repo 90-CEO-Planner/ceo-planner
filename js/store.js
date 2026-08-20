@@ -1842,6 +1842,38 @@ export function stripDayLabel(task) {
     return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
 }
 
+// Strips the scaffolding labels out of a generated priority.
+//
+// The plan prompt banned "Task:" and "Execution:" and the model wrote them
+// anyway: "Task: Define service offerings. Execution: List 3-5 core services..."
+// A rule the model ignores is not a rule, so the app removes them instead of
+// asking twice.
+//
+// The two-part shape is deliberately KEPT — an action, then how to do it. Only
+// the labels go, because the sentence break already separates the two, and this
+// text lands in an editable box, travels into the coach's context, the CSV and
+// the branded report, where a label reads like a form.
+//
+// A label only counts at the start of a sentence, so "Decide how: many to make"
+// mid-sentence survives — over-stripping someone's own words is worse than
+// leaving a stray label.
+const PRIORITY_LABEL = /(^|[.!?]\s+)(?:task|execution|action|what|how|step)\s*[:\-–—]\s*/gi;
+
+export function stripPriorityLabels(text) {
+    if (typeof text !== 'string') return text;
+    const cleaned = text.replace(PRIORITY_LABEL, '$1').replace(/\s{2,}/g, ' ').trim()
+        // Removing a label mid-string leaves the sentence it introduced starting
+        // in lower case: "Post the reel. film it on your phone".
+        .replace(/([.!?]\s+)([a-z])/g, (m, sep, ch) => sep + ch.toUpperCase());
+    if (cleaned === '') return text.trim();
+    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
+export function cleanPriorities(list) {
+    if (!Array.isArray(list)) return list;
+    return list.map(stripPriorityLabels);
+}
+
 export function cleanDaily3(list) {
     if (!Array.isArray(list)) return list;
     return list.map(stripDayLabel);
@@ -1880,7 +1912,7 @@ export function applyGeneratedPlan(plan) {
             weekNumber: w.weekNumber,
             monthIndex: w.monthIndex,
             winCondition: w.weeklyFocus,
-            topActions: w.topPriorities,
+            topActions: cleanPriorities(w.topPriorities),
             visibilityAction: w.visibilityAction,
             revenueAction: w.revenueAction,
             followUps: w.followUpAction,
@@ -1939,7 +1971,7 @@ export function replaceGeneratedWeek(planId, week) {
     store.weeklyPlans[idx] = {
         ...existing,
         winCondition: week.weeklyFocus,
-        topActions: week.topPriorities,
+        topActions: cleanPriorities(week.topPriorities),
         visibilityAction: week.visibilityAction,
         revenueAction: week.revenueAction,
         followUps: week.followUpAction,
