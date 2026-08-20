@@ -15582,7 +15582,9 @@ function accountAttachEvents() {
             }
 
             const { error } = await window.db.auth.resetPasswordForEmail(email, {
-                redirectTo: window.location.origin + window.location.pathname + '#/reset-password',
+                // No '#/reset-password' on the end: Supabase appends the token as
+                // a fragment, and a redirect that already has one collides with it.
+                redirectTo: window.location.origin + window.location.pathname,
                 captchaToken: token
             });
 
@@ -17108,7 +17110,9 @@ function authAttachEvents() {
         if (isForgot) {
             if (email) {
                 window.db.auth.resetPasswordForEmail(email, {
-                    redirectTo: window.location.origin + window.location.pathname + '#/reset-password',
+                    // No '#/reset-password' on the end: Supabase appends the token as a
+                    // fragment, and a redirect that already has one collides with it.
+                    redirectTo: window.location.origin + window.location.pathname,
                     captchaToken: token
                 }).then(({ error }) => {
                     btn.innerText = originalText;
@@ -17888,7 +17892,39 @@ const appContainer = document.getElementById('app-container');
 // Simple Router
 function router() {
     const hash = window.location.hash || '#/';
-    const path = hash.split('?')[0];
+
+    // Supabase hands the password-recovery token back as a URL *fragment*, and
+    // this app is hash-routed, so the fragment slot is already taken. Asking it
+    // to return to '#/reset-password' produced
+    // '#/reset-password#access_token=...', which matched no route: the user was
+    // bounced to the login screen and the token was thrown away. Found 20 Aug
+    // 2026, the first time a reset link ever reached the live app.
+    //
+    // The redirect no longer carries a route (see resetPasswordForEmail in
+    // auth.js and account.js), so the token arrives as '#access_token=...'.
+    // Anything carrying a recovery token IS the reset screen, whatever shape it
+    // arrives in — and the hash is deliberately left alone, because supabase-js
+    // reads the token straight off the URL to build the recovery session.
+    const isRecoveryLink = hash.includes('type=recovery') || hash.includes('access_token=');
+
+    // A reset link that has expired, or already been used, comes back as
+    // '#error=access_denied&error_code=otp_expired' — which is not a route
+    // either, so it landed on the login screen with no explanation and the
+    // customer had no idea why. Send them to login, but say what happened.
+    if (!isRecoveryLink && hash.includes('error_code=')) {
+        const expired = hash.includes('otp_expired');
+        window.location.hash = '#/login';
+        showToast(
+            expired
+                ? 'That password link has expired. Ask for a new one and it will work.'
+                : 'That link could not be used. Ask for a new one and it will work.',
+            'error',
+            7000
+        );
+        return;
+    }
+
+    const path = isRecoveryLink ? '#/reset-password' : hash.split('?')[0];
     
     // Auth Intercept
     const isAuthenticated = localStorage.getItem('ceo_auth') === 'true';
@@ -18189,6 +18225,25 @@ function bindGlobalNavEvents() {
         if (!logout) return;
         e.preventDefault();
         signOutAndClear();
+    });
+}
+
+// Two ways onto the reset screen, because the two can race.
+//
+// The router above reads the recovery token straight off the URL. But
+// supabase-js also reads it, and strips it from the URL with replaceState once
+// it has — so on a slow load it can be gone before router() looks. This is the
+// documented signal and it fires once the recovery session actually exists,
+// whichever order the two happen in. Landing on the reset screen twice is
+// harmless; landing on it never is what sent people back to the login page.
+if (window.db && window.db.auth && typeof window.db.auth.onAuthStateChange === 'function') {
+    window.db.auth.onAuthStateChange((event) => {
+        if (event !== 'PASSWORD_RECOVERY') return;
+        if (window.location.hash === '#/reset-password') {
+            router();
+        } else {
+            window.location.hash = '#/reset-password';
+        }
     });
 }
 

@@ -1277,7 +1277,9 @@ function accountAttachEvents() {
             }
 
             const { error } = await window.db.auth.resetPasswordForEmail(email, {
-                redirectTo: window.location.origin + window.location.pathname + '#/reset-password',
+                // No '#/reset-password' on the end: Supabase appends the token as
+                // a fragment, and a redirect that already has one collides with it.
+                redirectTo: window.location.origin + window.location.pathname,
                 captchaToken: token
             });
 
