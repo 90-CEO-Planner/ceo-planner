@@ -1779,6 +1779,35 @@ export function clearDraftMondayPlan() {
     saveStore(store);
 }
 
+// Strips a day label off the front of a generated micro task.
+//
+// The 90-day plan prompt used to ask for `["Mon-Tue micro task", "Wed-Thu micro
+// task", "Fri micro task"]`, so the model dutifully returned "Monday: draft the
+// emails". Those strings are stored as `daily3` and dropped straight into the
+// Daily 3 boxes on the Monday Plan and the dashboard, where a day name is worse
+// than noise: the app already decides which day a task lands on, so a task
+// labelled Wednesday sitting in Monday's list contradicts the screen it is on.
+//
+// The prompt no longer asks for them, but every plan generated before 20 Aug
+// 2026 still carries them, which is why this also runs on read.
+//
+// A separator is required, so "Monday morning call with Sam" — a real task that
+// happens to start with a day — is left alone. Only "Monday:", "Mon-Tue —" and
+// friends are removed.
+const DAY_LABEL = /^\s*(?:mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s*(?:[-–—/&+]|to|and|,)\s*(?:mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday))*\s*[:–—-]\s*/i;
+
+export function stripDayLabel(task) {
+    if (typeof task !== 'string') return task;
+    const cleaned = task.replace(DAY_LABEL, '').trim();
+    if (cleaned === '') return task.trim(); // it was only a label; keep the original rather than emptying the box
+    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
+export function cleanDaily3(list) {
+    if (!Array.isArray(list)) return list;
+    return list.map(stripDayLabel);
+}
+
 export function applyGeneratedPlan(plan) {
     if (!plan || !plan.summary || !plan.weeks || plan.weeks.length !== 12 || !plan.setupChecklist || !plan.redFlags || !plan.monthlyThemes) {
         console.error("Invalid plan structure passed to applyGeneratedPlan");
@@ -1816,7 +1845,7 @@ export function applyGeneratedPlan(plan) {
             visibilityAction: w.visibilityAction,
             revenueAction: w.revenueAction,
             followUps: w.followUpAction,
-            daily3: w.dailyThree,
+            daily3: cleanDaily3(w.dailyThree),
             successCheck: w.successCheck,
             generated: true,
             applied: false
@@ -1875,7 +1904,7 @@ export function replaceGeneratedWeek(planId, week) {
         visibilityAction: week.visibilityAction,
         revenueAction: week.revenueAction,
         followUps: week.followUpAction,
-        daily3: week.dailyThree,
+        daily3: cleanDaily3(week.dailyThree),
         successCheck: week.successCheck,
         generated: true,
         applied: false,

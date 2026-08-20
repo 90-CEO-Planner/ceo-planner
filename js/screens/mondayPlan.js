@@ -1,4 +1,4 @@
-import { getStore, addWeeklyPlan, updateWeeklyPlan, getRevenueInsights, clearDraftMondayPlan, getLocalDateString, updateDailyLog, planSourceKey } from '../store.js';
+import { getStore, addWeeklyPlan, updateWeeklyPlan, getRevenueInsights, clearDraftMondayPlan, getLocalDateString, updateDailyLog, planSourceKey, stripDayLabel } from '../store.js';
 
 let mondayStep = 1;
 const MONDAY_TOTAL_STEPS = 5;
@@ -404,7 +404,7 @@ function generateDaily3Suggestions(data) {
         : plans.filter(p => p.generated && !p.applied).sort((a, b) => a.weekNumber - b.weekNumber)[0];
 
     const fromPlan = (source && Array.isArray(source.daily3))
-        ? source.daily3.filter(t => typeof t === 'string' && t.trim() !== '')
+        ? source.daily3.filter(t => typeof t === 'string' && t.trim() !== '').map(stripDayLabel)
         : [];
 
     if (fromPlan.length >= 3) return fromPlan.slice(0, 3);

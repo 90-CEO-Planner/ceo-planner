@@ -328,7 +328,8 @@ RULES (apply all of them):
 10. The 'successCheck' for each week MUST be highly realistic and grounded based on the user's stage. Do NOT set unattainable lag-metric checks (e.g., "10 new sales" or "50 signups" for a beginner). Instead, tie the check to the completion of the week's input actions (e.g., "Drafted 3 emails" or "Pitched 5 people").
 11. NEVER recommend tools they did not mention. NEVER assume budget or team. Default to "free or already-owned" tools.
 12. Keep each topPriorities entry under 70 characters. They are rendered in single-line inputs on the weekly planner, so anything longer is cut off mid-sentence and the user cannot read their own priorities. One action per entry, no "Task:"/"Execution:" labels, no semicolons joining two actions.
-13. Output JSON only. No markdown, no code fences, no prose before or after.
+13. dailyThree entries carry NO day names and no labels of any kind. Never write "Mon-Tue:", "Monday –", "Day 1" or anything like it. The app decides which day each task lands on, and it puts all three in front of the user on the same day, so a task labelled Wednesday contradicts the screen it is sitting on.
+14. Output JSON only. No markdown, no code fences, no prose before or after.
 OUTPUT FORMAT (return exactly this JSON shape):
 {
   "summary": "One paragraph (3-4 sentences) explaining the plan's logic, what's realistic, and what's stretch.",
@@ -358,7 +359,7 @@ OUTPUT FORMAT (return exactly this JSON shape):
       "visibilityAction": "ONE specific visibility task this week (audience-facing, no sale).",
       "revenueAction": "ONE specific revenue task this week (a direct invitation to buy).",
       "followUpAction": "ONE specific follow-up task this week (nurture an existing lead).",
-      "dailyThree": ["Mon-Tue micro task", "Wed-Thu micro task", "Fri micro task"],
+      "dailyThree": ["One micro task", "One micro task", "One micro task"],
       "successCheck": "How they will know this week worked (a measurable outcome)."
     }
   ]
@@ -481,6 +482,7 @@ RULES (apply all of them):
 6. Tie every action to their #1 bottleneck or their 90-Day Outcome. Generic tasks ("post on social media") are forbidden.
 7. Match intensity to their stage. A tired founder is reading this on their phone. Warm, direct, specific, no hype, no jargon.
 8. Keep each topPriorities entry under 70 characters. They render in single-line inputs and anything longer is cut off mid-sentence. One action per entry, no "Task:"/"Execution:" labels, no semicolons joining two actions.
+8b. dailyThree entries carry NO day names and no labels of any kind. Never write "Mon-Tue:", "Monday –", "Day 1" or anything like it. The app decides which day each task lands on, and it puts all three in front of the user on the same day, so a task labelled Wednesday contradicts the screen it is sitting on.
 9. The successCheck must be realistic for their stage and tied to completing this week's actions, not to a lag metric they cannot control.
 10. Never recommend tools they did not mention. Never assume budget or team.
 11. Output JSON only. No markdown, no code fences, no prose before or after.
@@ -498,7 +500,7 @@ OUTPUT FORMAT (return exactly this JSON shape, one object, not an array):
   "visibilityAction": "ONE specific visibility task this week (audience-facing, no sale).",
   "revenueAction": "ONE specific revenue task this week (a direct invitation to buy).",
   "followUpAction": "ONE specific follow-up task this week (nurture an existing lead).",
-  "dailyThree": ["Mon-Tue micro task", "Wed-Thu micro task", "Fri micro task"],
+  "dailyThree": ["One micro task", "One micro task", "One micro task"],
   "successCheck": "How they will know this week worked (a measurable outcome).",
   "whatChanged": "One short sentence, addressed to the user, saying how this week now differs from the one it replaced."
 }

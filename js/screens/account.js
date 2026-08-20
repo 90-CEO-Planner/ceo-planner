@@ -17,6 +17,7 @@ import { fetchPayPalConnection, connectPayPalApp, disconnectPayPal, syncPayPalSa
 import { refreshImportedSales, countImportedFrom, getImportedSalesCache, importedProducts, unmatchedProducts } from '../importedSales.js';
 import { escapeText } from '../liveAI.js';
 import { openBillingPortal, canUpgradeToPro, watchForPlanChange } from '../stripePortal.js';
+import { mountCaptcha, captchaToken, resetCaptcha, captchaAppliesTo } from './auth.js';
 
 const TICK_SVG = `<svg class="plan-feature-mark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
 const LOCK_SVG = `<svg class="plan-feature-mark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>`;
@@ -592,6 +593,10 @@ function renderLoginCard() {
                 to. To change it, email support so both can be moved together.
             </p>
         </div>
+
+        <!-- Turnstile. Supabase captcha-protects the recovery endpoint, so the
+             button below cannot work without a token — see mountCaptcha in auth.js. -->
+        <div id="account-captcha" style="display: flex; margin-bottom: 1rem;"></div>
 
         <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
             <button type="button" id="btn-change-password" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Change password</button>
@@ -1245,6 +1250,8 @@ function accountAttachEvents() {
     // unlocked laptop can't be used to lock the owner out of her own account.
     const btnPassword = document.getElementById('btn-change-password');
     if (btnPassword) {
+        mountCaptcha('auth', 0, 'account-captcha');
+
         btnPassword.addEventListener('click', async () => {
             const { data } = await window.db.auth.getSession();
             const email = data?.session?.user?.email;
@@ -1257,12 +1264,29 @@ function accountAttachEvents() {
             const original = btnPassword.textContent;
             btnPassword.textContent = 'Sending…';
 
+            // Turnstile usually solves itself in the background, but on a slow
+            // connection the widget can still be working when the button is
+            // pressed. Say so, rather than letting Supabase answer with a raw
+            // "no captcha_token found" that means nothing to a customer.
+            const token = captchaToken('auth');
+            if (captchaAppliesTo('auth') && !token) {
+                btnPassword.disabled = false;
+                btnPassword.textContent = original;
+                showToast('Just finishing the security check. Try that again in a moment.', 'error');
+                return;
+            }
+
             const { error } = await window.db.auth.resetPasswordForEmail(email, {
-                redirectTo: window.location.origin + window.location.pathname + '#/reset-password'
+                redirectTo: window.location.origin + window.location.pathname + '#/reset-password',
+                captchaToken: token
             });
 
             btnPassword.disabled = false;
             btnPassword.textContent = original;
+
+            // Tokens are single use, so the widget needs a fresh one either way
+            // or a second press is refused for a reason nobody can see.
+            resetCaptcha();
 
             if (error) {
                 showToast(error.message, 'error');

@@ -1,4 +1,4 @@
-import { getStore, getRevenueInsights, addRevenueEntry, updateDailyLog, addLeadEntry, applyGeneratedPlan, updateProfile, getLocalDateString, parseDateInput, getWeekStart, getWeeksElapsed, planSourceKey, getActivePlan } from '../store.js';
+import { getStore, getRevenueInsights, addRevenueEntry, updateDailyLog, addLeadEntry, applyGeneratedPlan, updateProfile, getLocalDateString, parseDateInput, getWeekStart, getWeeksElapsed, planSourceKey, getActivePlan, stripDayLabel } from '../store.js';
 import { renderNav } from '../components/nav.js';
 import { renderTooltip } from '../components/tooltip.js';
 import { generate90DayActionPlan } from '../aiService.js';
@@ -540,7 +540,7 @@ export function renderDashboard() {
         const isStale = Boolean(todaysLog) && builtFrom !== planKey;
 
         const plannedDaily3 = Array.isArray(activePlan.daily3)
-            ? activePlan.daily3.map(t => (t || '').trim()).filter(Boolean)
+            ? activePlan.daily3.map(t => stripDayLabel((t || '').trim())).filter(Boolean)
             : [];
         const currentPriorities = [0, 1, 2].map(i => (activePlan.topActions || g.priorities)[i] || '');
 

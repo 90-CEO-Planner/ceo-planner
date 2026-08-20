@@ -3039,6 +3039,35 @@ function clearDraftMondayPlan() {
     saveStore(store);
 }
 
+// Strips a day label off the front of a generated micro task.
+//
+// The 90-day plan prompt used to ask for `["Mon-Tue micro task", "Wed-Thu micro
+// task", "Fri micro task"]`, so the model dutifully returned "Monday: draft the
+// emails". Those strings are stored as `daily3` and dropped straight into the
+// Daily 3 boxes on the Monday Plan and the dashboard, where a day name is worse
+// than noise: the app already decides which day a task lands on, so a task
+// labelled Wednesday sitting in Monday's list contradicts the screen it is on.
+//
+// The prompt no longer asks for them, but every plan generated before 20 Aug
+// 2026 still carries them, which is why this also runs on read.
+//
+// A separator is required, so "Monday morning call with Sam" — a real task that
+// happens to start with a day — is left alone. Only "Monday:", "Mon-Tue —" and
+// friends are removed.
+const DAY_LABEL = /^\s*(?:mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s*(?:[-–—/&+]|to|and|,)\s*(?:mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday))*\s*[:–—-]\s*/i;
+
+function stripDayLabel(task) {
+    if (typeof task !== 'string') return task;
+    const cleaned = task.replace(DAY_LABEL, '').trim();
+    if (cleaned === '') return task.trim(); // it was only a label; keep the original rather than emptying the box
+    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
+function cleanDaily3(list) {
+    if (!Array.isArray(list)) return list;
+    return list.map(stripDayLabel);
+}
+
 function applyGeneratedPlan(plan) {
     if (!plan || !plan.summary || !plan.weeks || plan.weeks.length !== 12 || !plan.setupChecklist || !plan.redFlags || !plan.monthlyThemes) {
         console.error("Invalid plan structure passed to applyGeneratedPlan");
@@ -3076,7 +3105,7 @@ function applyGeneratedPlan(plan) {
             visibilityAction: w.visibilityAction,
             revenueAction: w.revenueAction,
             followUps: w.followUpAction,
-            daily3: w.dailyThree,
+            daily3: cleanDaily3(w.dailyThree),
             successCheck: w.successCheck,
             generated: true,
             applied: false
@@ -3135,7 +3164,7 @@ function replaceGeneratedWeek(planId, week) {
         visibilityAction: week.visibilityAction,
         revenueAction: week.revenueAction,
         followUps: week.followUpAction,
-        daily3: week.dailyThree,
+        daily3: cleanDaily3(week.dailyThree),
         successCheck: week.successCheck,
         generated: true,
         applied: false,
@@ -4145,7 +4174,8 @@ RULES (apply all of them):
 10. The 'successCheck' for each week MUST be highly realistic and grounded based on the user's stage. Do NOT set unattainable lag-metric checks (e.g., "10 new sales" or "50 signups" for a beginner). Instead, tie the check to the completion of the week's input actions (e.g., "Drafted 3 emails" or "Pitched 5 people").
 11. NEVER recommend tools they did not mention. NEVER assume budget or team. Default to "free or already-owned" tools.
 12. Keep each topPriorities entry under 70 characters. They are rendered in single-line inputs on the weekly planner, so anything longer is cut off mid-sentence and the user cannot read their own priorities. One action per entry, no "Task:"/"Execution:" labels, no semicolons joining two actions.
-13. Output JSON only. No markdown, no code fences, no prose before or after.
+13. dailyThree entries carry NO day names and no labels of any kind. Never write "Mon-Tue:", "Monday –", "Day 1" or anything like it. The app decides which day each task lands on, and it puts all three in front of the user on the same day, so a task labelled Wednesday contradicts the screen it is sitting on.
+14. Output JSON only. No markdown, no code fences, no prose before or after.
 OUTPUT FORMAT (return exactly this JSON shape):
 {
   "summary": "One paragraph (3-4 sentences) explaining the plan's logic, what's realistic, and what's stretch.",
@@ -4175,7 +4205,7 @@ OUTPUT FORMAT (return exactly this JSON shape):
       "visibilityAction": "ONE specific visibility task this week (audience-facing, no sale).",
       "revenueAction": "ONE specific revenue task this week (a direct invitation to buy).",
       "followUpAction": "ONE specific follow-up task this week (nurture an existing lead).",
-      "dailyThree": ["Mon-Tue micro task", "Wed-Thu micro task", "Fri micro task"],
+      "dailyThree": ["One micro task", "One micro task", "One micro task"],
       "successCheck": "How they will know this week worked (a measurable outcome)."
     }
   ]
@@ -4298,6 +4328,7 @@ RULES (apply all of them):
 6. Tie every action to their #1 bottleneck or their 90-Day Outcome. Generic tasks ("post on social media") are forbidden.
 7. Match intensity to their stage. A tired founder is reading this on their phone. Warm, direct, specific, no hype, no jargon.
 8. Keep each topPriorities entry under 70 characters. They render in single-line inputs and anything longer is cut off mid-sentence. One action per entry, no "Task:"/"Execution:" labels, no semicolons joining two actions.
+8b. dailyThree entries carry NO day names and no labels of any kind. Never write "Mon-Tue:", "Monday –", "Day 1" or anything like it. The app decides which day each task lands on, and it puts all three in front of the user on the same day, so a task labelled Wednesday contradicts the screen it is sitting on.
 9. The successCheck must be realistic for their stage and tied to completing this week's actions, not to a lag metric they cannot control.
 10. Never recommend tools they did not mention. Never assume budget or team.
 11. Output JSON only. No markdown, no code fences, no prose before or after.
@@ -4315,7 +4346,7 @@ OUTPUT FORMAT (return exactly this JSON shape, one object, not an array):
   "visibilityAction": "ONE specific visibility task this week (audience-facing, no sale).",
   "revenueAction": "ONE specific revenue task this week (a direct invitation to buy).",
   "followUpAction": "ONE specific follow-up task this week (nurture an existing lead).",
-  "dailyThree": ["Mon-Tue micro task", "Wed-Thu micro task", "Fri micro task"],
+  "dailyThree": ["One micro task", "One micro task", "One micro task"],
   "successCheck": "How they will know this week worked (a measurable outcome).",
   "whatChanged": "One short sentence, addressed to the user, saying how this week now differs from the one it replaced."
 }
@@ -8894,7 +8925,7 @@ function renderDashboard() {
         const isStale = Boolean(todaysLog) && builtFrom !== planKey;
 
         const plannedDaily3 = Array.isArray(activePlan.daily3)
-            ? activePlan.daily3.map(t => (t || '').trim()).filter(Boolean)
+            ? activePlan.daily3.map(t => stripDayLabel((t || '').trim())).filter(Boolean)
             : [];
         const currentPriorities = [0, 1, 2].map(i => (activePlan.topActions || g.priorities)[i] || '');
 
@@ -14868,6 +14899,10 @@ function renderLoginCard() {
             </p>
         </div>
 
+        <!-- Turnstile. Supabase captcha-protects the recovery endpoint, so the
+             button below cannot work without a token — see mountCaptcha in auth.js. -->
+        <div id="account-captcha" style="display: flex; margin-bottom: 1rem;"></div>
+
         <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
             <button type="button" id="btn-change-password" class="btn btn-outline" style="border-color: var(--color-primary); color: var(--color-primary-dark); font-weight: 600;">Change password</button>
             <button type="button" id="btn-account-signout" class="btn btn-ghost">Sign out</button>
@@ -15520,6 +15555,8 @@ function accountAttachEvents() {
     // unlocked laptop can't be used to lock the owner out of her own account.
     const btnPassword = document.getElementById('btn-change-password');
     if (btnPassword) {
+        mountCaptcha('auth', 0, 'account-captcha');
+
         btnPassword.addEventListener('click', async () => {
             const { data } = await window.db.auth.getSession();
             const email = data?.session?.user?.email;
@@ -15532,12 +15569,29 @@ function accountAttachEvents() {
             const original = btnPassword.textContent;
             btnPassword.textContent = 'Sending…';
 
+            // Turnstile usually solves itself in the background, but on a slow
+            // connection the widget can still be working when the button is
+            // pressed. Say so, rather than letting Supabase answer with a raw
+            // "no captcha_token found" that means nothing to a customer.
+            const token = captchaToken('auth');
+            if (captchaAppliesTo('auth') && !token) {
+                btnPassword.disabled = false;
+                btnPassword.textContent = original;
+                showToast('Just finishing the security check. Try that again in a moment.', 'error');
+                return;
+            }
+
             const { error } = await window.db.auth.resetPasswordForEmail(email, {
-                redirectTo: window.location.origin + window.location.pathname + '#/reset-password'
+                redirectTo: window.location.origin + window.location.pathname + '#/reset-password',
+                captchaToken: token
             });
 
             btnPassword.disabled = false;
             btnPassword.textContent = original;
+
+            // Tokens are single use, so the widget needs a fresh one either way
+            // or a second press is refused for a reason nobody can see.
+            resetCaptcha();
 
             if (error) {
                 showToast(error.message, 'error');
@@ -16716,7 +16770,7 @@ function generateDaily3Suggestions(data) {
         : plans.filter(p => p.generated && !p.applied).sort((a, b) => a.weekNumber - b.weekNumber)[0];
 
     const fromPlan = (source && Array.isArray(source.daily3))
-        ? source.daily3.filter(t => typeof t === 'string' && t.trim() !== '')
+        ? source.daily3.filter(t => typeof t === 'string' && t.trim() !== '').map(stripDayLabel)
         : [];
 
     if (fromPlan.length >= 3) return fromPlan.slice(0, 3);
@@ -16905,21 +16959,28 @@ function captchaSiteKey() {
 // recovery the moment it is switched on, so all three need a token. Only the
 // reset form is exempt: it calls updateUser on an already-valid session, which
 // is not a captcha-protected endpoint.
+//
+// The Account page's "Change password" asks for a recovery email too, so it is
+// captcha-protected in exactly the same way. It had no widget at all until
+// 20 Aug 2026, which meant it sent no token and failed every single time with
+// "no captcha_token found" — a button that could never once have worked. These
+// three are exported rather than copied so the two screens cannot drift into
+// disagreeing about when a token is needed.
 function captchaAppliesTo(mode) {
     return mode !== 'reset' && !!captchaSiteKey();
 }
 
-function mountCaptcha(mode, attempt = 0) {
+function mountCaptcha(mode, attempt = 0, holderId = 'auth-captcha') {
     if (!captchaAppliesTo(mode)) return;
 
-    const holder = document.getElementById('auth-captcha');
+    const holder = document.getElementById(holderId);
     if (!holder) return;
 
     // The Turnstile script is loaded async from Cloudflare, so on a cold load it
     // is routinely not ready by the time this screen attaches its events. Wait
     // for it rather than leaving the form with no widget and no way to submit.
     if (typeof window.turnstile === 'undefined') {
-        if (attempt < 40) setTimeout(() => mountCaptcha(mode, attempt + 1), 150);
+        if (attempt < 40) setTimeout(() => mountCaptcha(mode, attempt + 1, holderId), 150);
         return;
     }
 

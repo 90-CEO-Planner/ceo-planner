@@ -124,21 +124,28 @@ function captchaSiteKey() {
 // recovery the moment it is switched on, so all three need a token. Only the
 // reset form is exempt: it calls updateUser on an already-valid session, which
 // is not a captcha-protected endpoint.
-function captchaAppliesTo(mode) {
+//
+// The Account page's "Change password" asks for a recovery email too, so it is
+// captcha-protected in exactly the same way. It had no widget at all until
+// 20 Aug 2026, which meant it sent no token and failed every single time with
+// "no captcha_token found" — a button that could never once have worked. These
+// three are exported rather than copied so the two screens cannot drift into
+// disagreeing about when a token is needed.
+export function captchaAppliesTo(mode) {
     return mode !== 'reset' && !!captchaSiteKey();
 }
 
-function mountCaptcha(mode, attempt = 0) {
+export function mountCaptcha(mode, attempt = 0, holderId = 'auth-captcha') {
     if (!captchaAppliesTo(mode)) return;
 
-    const holder = document.getElementById('auth-captcha');
+    const holder = document.getElementById(holderId);
     if (!holder) return;
 
     // The Turnstile script is loaded async from Cloudflare, so on a cold load it
     // is routinely not ready by the time this screen attaches its events. Wait
     // for it rather than leaving the form with no widget and no way to submit.
     if (typeof window.turnstile === 'undefined') {
-        if (attempt < 40) setTimeout(() => mountCaptcha(mode, attempt + 1), 150);
+        if (attempt < 40) setTimeout(() => mountCaptcha(mode, attempt + 1, holderId), 150);
         return;
     }
 
@@ -155,7 +162,7 @@ function mountCaptcha(mode, attempt = 0) {
     });
 }
 
-function captchaToken(mode) {
+export function captchaToken(mode) {
     if (!captchaAppliesTo(mode) || turnstileWidgetId === null) return undefined;
     try {
         return window.turnstile.getResponse(turnstileWidgetId) || undefined;
@@ -166,7 +173,7 @@ function captchaToken(mode) {
 
 // Tokens are single use. Every failed attempt has to hand the widget back a
 // fresh one, or the retry is refused for a reason the customer cannot see.
-function resetCaptcha() {
+export function resetCaptcha() {
     if (turnstileWidgetId === null || typeof window.turnstile === 'undefined') return;
     try { window.turnstile.reset(turnstileWidgetId); } catch (err) { /* nothing to reset */ }
 }
