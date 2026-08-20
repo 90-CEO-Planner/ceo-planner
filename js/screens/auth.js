@@ -368,6 +368,32 @@ function authAttachEvents() {
                     // the read used .single(), which throws when there is no row —
                     // so logging in as a second user on a shared browser handed them
                     // the first user's plans and revenue, and wrote it to their row.
+                    // Never destroy the outgoing copy outright. Signing in
+                    // replaces local data with whatever the server holds, and on
+                    // 20 Aug 2026 that meant a Monday plan written on a desktop
+                    // with a dead session — never synced, so never on the server —
+                    // would have been gone for good the moment she signed in
+                    // again. Keep the last three, so a bad sync is recoverable
+                    // instead of final.
+                    //
+                    // Deliberately NOT auto-restored: this wipe exists because a
+                    // shared browser once wrote one person's plans into another
+                    // person's row, and nothing here can prove whose data this is.
+                    // Recovery is a decision, not a default.
+                    try {
+                        const outgoing = localStorage.getItem('ceoPlanner_store');
+                        if (outgoing && outgoing.length > 2) {
+                            localStorage.setItem('ceoPlanner_rescue_' + new Date().toISOString(), outgoing);
+                            const rescues = Object.keys(localStorage)
+                                .filter(k => k.startsWith('ceoPlanner_rescue_'))
+                                .sort();
+                            while (rescues.length > 3) localStorage.removeItem(rescues.shift());
+                        }
+                    } catch (err) {
+                        // A full storage quota must not block signing in.
+                        console.warn('Could not keep a rescue copy:', err.message);
+                    }
+
                     localStorage.removeItem('ceoPlanner_store');
                     // Same reasoning for the cached AI suggestions and the AI
                     // usage count: both belonged to the previous account.

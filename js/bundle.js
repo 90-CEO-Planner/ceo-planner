@@ -1532,27 +1532,65 @@ function getStore() {
     return defaultState;
 }
 
+// Says once, out loud, that the work on this screen is not reaching the server.
+//
+// It used to say nothing at all, which is how a whole Monday plan was lost on
+// 20 Aug 2026: the desktop session had expired, `ceo_auth` was still 'true' so
+// the app looked signed in, and every save quietly went no further than the
+// browser. The loss only became visible on another device, hours later, showing
+// data from May. Silence is the wrong default when the promise on the tin is
+// that your work follows you between devices.
+function warnNotSyncing(detail) {
+    console.warn('Not syncing to the cloud: ' + detail);
+    if (window._syncErrorAlerted) return;
+    window._syncErrorAlerted = true;
+    if (typeof showToast === 'function') {
+        showToast(
+            'Your work is saved on this device but is not reaching your account. Sign out and back in to sync it, and avoid using another device until you have.',
+            'error',
+            12000
+        );
+    }
+}
+
 function saveStore(state) {
     try {
+        state.lastSavedAt = new Date().toISOString();
         localStorage.setItem(STORE_KEY, JSON.stringify(state));
-        
+
         // Fire-and-forget background cloud sync
         if (localStorage.getItem('ceo_auth') === 'true') {
-            window.db.auth.getSession().then(({ data: sessionData }) => {
-                if (sessionData && sessionData.session) {
-                    const user = sessionData.session.user;
-                    window.db.from('user_data').upsert({
-                        user_id: user.id,
-                        data: state
-                    }).then(({ error }) => {
-                        if (error) {
-                            console.error("Background cloud sync failed", error);
-                            if (!window._syncErrorAlerted) {
-                                console.warn("Cloud sync failed. Your data is only saved locally. Please check your Supabase RLS policies on the user_data table. Error: " + error.message);
-                                window._syncErrorAlerted = true;
-                            }
-                        }
-                    });
+            window.db.auth.getSession().then(async ({ data: sessionData }) => {
+                let session = sessionData && sessionData.session;
+
+                // An expired refresh token leaves the app looking signed in with
+                // no session behind it. One refresh attempt covers the ordinary
+                // case of a token that simply aged out while the tab was open.
+                if (!session) {
+                    try {
+                        const { data: refreshed } = await window.db.auth.refreshSession();
+                        session = refreshed && refreshed.session;
+                    } catch (err) {
+                        session = null;
+                    }
+                }
+
+                if (!session) {
+                    warnNotSyncing('the session has expired and could not be refreshed');
+                    return;
+                }
+
+                const { error } = await window.db.from('user_data').upsert({
+                    user_id: session.user.id,
+                    data: state
+                });
+
+                if (error) {
+                    warnNotSyncing(error.message);
+                } else {
+                    // A timestamp anyone can check, in the console or in a bug
+                    // report, to tell "saved here" from "saved to the account".
+                    localStorage.setItem('ceo_last_sync', new Date().toISOString());
                 }
             });
         }
@@ -17205,6 +17243,32 @@ function authAttachEvents() {
                     // the read used .single(), which throws when there is no row —
                     // so logging in as a second user on a shared browser handed them
                     // the first user's plans and revenue, and wrote it to their row.
+                    // Never destroy the outgoing copy outright. Signing in
+                    // replaces local data with whatever the server holds, and on
+                    // 20 Aug 2026 that meant a Monday plan written on a desktop
+                    // with a dead session — never synced, so never on the server —
+                    // would have been gone for good the moment she signed in
+                    // again. Keep the last three, so a bad sync is recoverable
+                    // instead of final.
+                    //
+                    // Deliberately NOT auto-restored: this wipe exists because a
+                    // shared browser once wrote one person's plans into another
+                    // person's row, and nothing here can prove whose data this is.
+                    // Recovery is a decision, not a default.
+                    try {
+                        const outgoing = localStorage.getItem('ceoPlanner_store');
+                        if (outgoing && outgoing.length > 2) {
+                            localStorage.setItem('ceoPlanner_rescue_' + new Date().toISOString(), outgoing);
+                            const rescues = Object.keys(localStorage)
+                                .filter(k => k.startsWith('ceoPlanner_rescue_'))
+                                .sort();
+                            while (rescues.length > 3) localStorage.removeItem(rescues.shift());
+                        }
+                    } catch (err) {
+                        // A full storage quota must not block signing in.
+                        console.warn('Could not keep a rescue copy:', err.message);
+                    }
+
                     localStorage.removeItem('ceoPlanner_store');
                     // Same reasoning for the cached AI suggestions and the AI
                     // usage count: both belonged to the previous account.

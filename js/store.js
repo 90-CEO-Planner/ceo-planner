@@ -14,6 +14,7 @@ import { baseCurrencyCode, convertImportedEntry, unconvertedSummary } from './cu
 // concatenated after this file in the bundle, which is fine: quickOfferLimit is
 // a hoisted function declaration and is only called at save time.
 import { quickOfferLimit } from './components/proGate.js';
+import { showToast } from './components/toast.js';
 
 const STORE_KEY = 'ceoPlanner_store';
 
@@ -272,27 +273,65 @@ export function getStore() {
     return defaultState;
 }
 
+// Says once, out loud, that the work on this screen is not reaching the server.
+//
+// It used to say nothing at all, which is how a whole Monday plan was lost on
+// 20 Aug 2026: the desktop session had expired, `ceo_auth` was still 'true' so
+// the app looked signed in, and every save quietly went no further than the
+// browser. The loss only became visible on another device, hours later, showing
+// data from May. Silence is the wrong default when the promise on the tin is
+// that your work follows you between devices.
+function warnNotSyncing(detail) {
+    console.warn('Not syncing to the cloud: ' + detail);
+    if (window._syncErrorAlerted) return;
+    window._syncErrorAlerted = true;
+    if (typeof showToast === 'function') {
+        showToast(
+            'Your work is saved on this device but is not reaching your account. Sign out and back in to sync it, and avoid using another device until you have.',
+            'error',
+            12000
+        );
+    }
+}
+
 export function saveStore(state) {
     try {
+        state.lastSavedAt = new Date().toISOString();
         localStorage.setItem(STORE_KEY, JSON.stringify(state));
-        
+
         // Fire-and-forget background cloud sync
         if (localStorage.getItem('ceo_auth') === 'true') {
-            window.db.auth.getSession().then(({ data: sessionData }) => {
-                if (sessionData && sessionData.session) {
-                    const user = sessionData.session.user;
-                    window.db.from('user_data').upsert({
-                        user_id: user.id,
-                        data: state
-                    }).then(({ error }) => {
-                        if (error) {
-                            console.error("Background cloud sync failed", error);
-                            if (!window._syncErrorAlerted) {
-                                console.warn("Cloud sync failed. Your data is only saved locally. Please check your Supabase RLS policies on the user_data table. Error: " + error.message);
-                                window._syncErrorAlerted = true;
-                            }
-                        }
-                    });
+            window.db.auth.getSession().then(async ({ data: sessionData }) => {
+                let session = sessionData && sessionData.session;
+
+                // An expired refresh token leaves the app looking signed in with
+                // no session behind it. One refresh attempt covers the ordinary
+                // case of a token that simply aged out while the tab was open.
+                if (!session) {
+                    try {
+                        const { data: refreshed } = await window.db.auth.refreshSession();
+                        session = refreshed && refreshed.session;
+                    } catch (err) {
+                        session = null;
+                    }
+                }
+
+                if (!session) {
+                    warnNotSyncing('the session has expired and could not be refreshed');
+                    return;
+                }
+
+                const { error } = await window.db.from('user_data').upsert({
+                    user_id: session.user.id,
+                    data: state
+                });
+
+                if (error) {
+                    warnNotSyncing(error.message);
+                } else {
+                    // A timestamp anyone can check, in the console or in a bug
+                    // report, to tell "saved here" from "saved to the account".
+                    localStorage.setItem('ceo_last_sync', new Date().toISOString());
                 }
             });
         }
