@@ -18228,6 +18228,42 @@ function bindGlobalNavEvents() {
     });
 }
 
+// Links emailed before v96 point at '#/reset-password#access_token=...', where
+// the auth params sit in a SECOND fragment. supabase-js only reads them when
+// they start the fragment, so those links reach the reset screen with no session
+// behind them and saving fails with "Auth session missing". Found 20 Aug 2026,
+// on a link sent an hour before the redirect was fixed.
+//
+// Rather than tell people their link is stale, adopt the token by hand. Only the
+// second-fragment case is handled here — '#access_token=...' is left alone,
+// because supabase-js does that one correctly and doing it twice would consume a
+// single-use token.
+function hasEmbeddedRecoveryToken() {
+    const hash = window.location.hash || '';
+    return hash.includes('access_token=') && hash.lastIndexOf('#') > 0;
+}
+
+async function adoptRecoveryTokenFromUrl() {
+    const hash = window.location.hash || '';
+    const params = new URLSearchParams(hash.slice(hash.lastIndexOf('#') + 1));
+    const access_token = params.get('access_token');
+    const refresh_token = params.get('refresh_token');
+    if (!access_token || !refresh_token) return;
+
+    try {
+        const { error } = await window.db.auth.setSession({ access_token, refresh_token });
+        if (error) {
+            console.warn('Could not adopt the recovery token:', error.message);
+            return;
+        }
+        // Tidy the address bar to the route the user is actually on, without a
+        // reload and without leaving a used token sitting in their history.
+        window.history.replaceState(null, '', window.location.pathname + '#/reset-password');
+    } catch (err) {
+        console.warn('Could not adopt the recovery token:', err.message);
+    }
+}
+
 // Two ways onto the reset screen, because the two can race.
 //
 // The router above reads the recovery token straight off the URL. But
@@ -18261,7 +18297,15 @@ window.addEventListener('load', () => {
     // One delegated handler for every locked Pro control, bound once. Screens
     // render `data-pro-feature="..."` and never wire anything up themselves.
     initProGate();
-    router();
+
+    // A stale recovery link has to become a session before the reset screen is
+    // any use, and that is async. Everything else keeps the synchronous path it
+    // has always had.
+    if (hasEmbeddedRecoveryToken()) {
+        adoptRecoveryTokenFromUrl().then(() => router());
+    } else {
+        router();
+    }
 
     // Confirm the trial is still valid against the database, not just localStorage
     lastRevalidatedAt = Date.now();
