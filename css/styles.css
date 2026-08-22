@@ -119,12 +119,32 @@ a:hover {
     animation: fadeUp 0.4s ease-out forwards;
 }
 
-/* Responsive Grids */
-.grid-cols-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--spacing-md); }
-.grid-cols-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--spacing-md); }
-.grid-cols-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--spacing-md); }
-.grid-sidebar { display: grid; grid-template-columns: 2fr 1fr; gap: var(--spacing-lg); }
-.grid-sidebar-right { display: grid; grid-template-columns: 1fr 2fr; gap: var(--spacing-lg); }
+/* Responsive Grids
+ *
+ * Every track is minmax(0, ...) rather than a bare fr. A bare `1fr` means
+ * `minmax(auto, 1fr)`, and an `auto` minimum resolves to MIN-CONTENT -- which for
+ * a word with no spaces in it is the width of the whole word. So one long URL,
+ * file name or SKU typed by a user overrides the equal split and drags the other
+ * columns off the side of the screen.
+ *
+ * Found 22 Aug 2026 on the dashboard: a single unbroken string turned
+ * repeat(3, 1fr) into 939px / 258px / 179px at a 1263px viewport, pushing two
+ * cards out of view entirely and making the page scroll sideways. The reporter's
+ * words were "I've lost the boxes on the dashboard" -- they were never lost, they
+ * were off-screen.
+ *
+ * The wrap rule below is the other half: minmax(0, ...) stops the COLUMN
+ * stretching, overflow-wrap stops the TEXT spilling out of the correctly sized
+ * column. Both are needed. */
+.grid-cols-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--spacing-md); }
+.grid-cols-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--spacing-md); }
+.grid-cols-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--spacing-md); }
+.grid-sidebar { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: var(--spacing-lg); }
+.grid-sidebar-right { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: var(--spacing-lg); }
+
+/* Anything a user typed can be unbreakable. Cards wrap it rather than widening. */
+.grid-cols-2 > *, .grid-cols-3 > *, .grid-cols-4 > *,
+.grid-sidebar > *, .grid-sidebar-right > * { min-width: 0; overflow-wrap: anywhere; }
 
 /* Responsive */
 @media (max-width: 768px) {
